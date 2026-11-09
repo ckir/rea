@@ -477,14 +477,20 @@ assert_eq "plan_confirm step_tools_bin step_jdk step_ghidra tools_lock_release" 
 # --- an install plan is re-checked under the lock: what another run installed meanwhile is reused ---
 r3=$(
   PLAN_ghidra=install
-  ghidra_choose() { GHIDRA_REUSED=1; return 0; }
+  ghidra_choose() {
+    GHIDRA_REUSED=1
+    return 0
+  }
   ghidra_install() { echo INSTALLED; }
   step_ghidra 2>/dev/null
 )
 assert_eq "" "$r3" "step_ghidra: the plan said install, the recheck found one, nothing is installed"
 r3=$(
   PLAN_ghidra=install
-  ghidra_choose() { GHIDRA_REUSED=0; return 1; }
+  ghidra_choose() {
+    GHIDRA_REUSED=0
+    return 1
+  }
   ghidra_install() { echo INSTALLED; }
   step_ghidra 2>/dev/null
 )
