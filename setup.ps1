@@ -3246,10 +3246,13 @@ function Invoke-ReaPlanConfirm {
 
 # --- env file, summary and launch ---
 
-# Text in single quotes, each embedded ' doubled (safe for any PowerShell).
+# Text in single quotes, each embedded single quote (the ASCII one and the four typographic ones) doubled (safe for
+# any PowerShell).
 function ConvertTo-ReaPsQuoted {
     param([AllowEmptyString()][string]$Text)
-    return ("'" + $Text.Replace("'", "''") + "'")
+    # PowerShell reads U+2018, U+2019, U+201A and U+201B as single quotes too (a user name like O'Brien is often
+    # typed with U+2019), so each of the five is doubled; the escapes keep this file ASCII.
+    return ("'" + [regex]::Replace($Text, '[\u0027\u2018\u2019\u201A\u201B]', '$0$0') + "'")
 }
 
 # Writes ToolsDir\env.ps1, which sets GHIDRA_INSTALL_DIR and JAVA_HOME and puts the bin directory first on PATH,
@@ -3319,10 +3322,16 @@ function Write-ReaSummary {
     Write-ReaOutput '  (to launch again, run this script again: it skips everything that is already in place)'
 }
 
-# The two-terminal flow, for a machine where clavity-ls cannot open a terminal itself.
+# The two-terminal flow, for a machine where clavity-ls cannot open a terminal itself; -Soft is for a start that
+# failed quickly, where the message above may or may not be about a terminal.
 function Write-ReaLaunchInstruction {
+    param([switch]$Soft)
     $envFile = Join-Path $script:ToolsDir 'env.ps1'
-    Write-ReaOutput 'Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.'
+    if ($Soft) {
+        Write-ReaOutput 'If the message above says clavity-ls could not open a terminal, use two terminals:'
+    } else {
+        Write-ReaOutput 'Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.'
+    }
     Write-ReaOutput 'Terminal 1:'
     Write-ReaOutput ('  . "{0}"' -f $envFile)
     Write-ReaOutput ('  clavity-ls agy "{0}"' -f $script:Opt.Folder)
@@ -3332,8 +3341,12 @@ function Write-ReaLaunchInstruction {
     Write-ReaOutput 'Use these commands exactly as written: the attach hint that clavity-ls agy prints omits --profile, and must not be used, because it would start Claude on your default profile.'
 }
 
-# Runs FilePath with ArgumentList and the three variables in the child's environment only. stdin and stdout are
-# the console's; stderr is shown as it comes and kept. Returns ExitCode and the Stderr text.
+# An exit 1 sooner than this many seconds after the start is how clavity-ls start fails to open a terminal.
+$script:LaunchShortSeconds = 10
+
+# Runs FilePath with ArgumentList and the variables in Environment in the child's environment only. Nothing is
+# redirected: the child has this process's stdin, stdout and stderr, so a terminal window it opens (which keeps
+# them open) cannot hold this function back once the child has exited. Returns ExitCode and the Seconds it ran.
 function Start-ReaLaunchProcess {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'None')]
     param([string]$FilePath, [string[]]$ArgumentList, [hashtable]$Environment)
@@ -3342,21 +3355,18 @@ function Start-ReaLaunchProcess {
     $psi.FileName = $FilePath
     $psi.Arguments = (@($ArgumentList | ForEach-Object { ConvertTo-ReaQuotedArgument $_ }) -join ' ')
     $psi.UseShellExecute = $false
-    $psi.RedirectStandardError = $true
     foreach ($name in $Environment.Keys) { $psi.EnvironmentVariables[$name] = [string]$Environment[$name] }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $seen = New-Object System.Text.StringBuilder
-    while ($null -ne ($line = $proc.StandardError.ReadLine())) {
-        [Console]::Error.WriteLine($line)
-        [void]$seen.AppendLine($line)
-    }
     $proc.WaitForExit()
-    return [pscustomobject]@{ ExitCode = $proc.ExitCode; Stderr = $seen.ToString() }
+    $watch.Stop()
+    return [pscustomobject]@{ ExitCode = $proc.ExitCode; Seconds = $watch.Elapsed.TotalSeconds }
 }
 
 # The last step; returns clavity-ls start's own exit code. -NoLaunch prints the command; a dry run logs what it
-# would do; otherwise clavity-ls start runs directly (Windows has Windows Terminal, which clavity-ls uses), and
-# when it exits 1 having said `terminal` on stderr the two-terminal flow is printed too.
+# would do; otherwise clavity-ls start runs directly (Windows has Windows Terminal, which clavity-ls uses) with all
+# stdio inherited, and when it exits 1 in under LaunchShortSeconds seconds the two-terminal flow is printed too, as a
+# hint (the exit code stays the child's).
 function Invoke-ReaStepLaunch {
     if ($script:Opt.CheckUpstream) { return $script:EX_OK }
     $folder = $script:Opt.Folder
@@ -3380,8 +3390,8 @@ function Invoke-ReaStepLaunch {
     $run = Start-ReaLaunchProcess -FilePath $exe -ArgumentList @('start', $folder, '--profile', $name) -Environment $childEnv
     $code = [int]$run.ExitCode
     Write-ReaLog INFO launch "launch exited $code"
-    if ($code -eq 1 -and ([string]$run.Stderr) -match '(?i)terminal') {
-        Write-ReaLaunchInstruction
+    if ($code -eq 1 -and [double]$run.Seconds -lt $script:LaunchShortSeconds) {
+        Write-ReaLaunchInstruction -Soft
     }
     return $code
 }

@@ -2742,9 +2742,22 @@ print_summary() {
   printf '  (to launch again, run this script again: it skips everything that is already in place)\n'
 }
 
-# launch_instructions: the two-terminal flow, for a machine where clavity-ls cannot open a terminal itself
+# launch_now: the clock of step_launch, in whole seconds (LAUNCH_CLOCK and LAUNCH_SHORT_SECS are test seams)
+launch_now() {
+  date +%s
+}
+
+LAUNCH_CLOCK=launch_now
+LAUNCH_SHORT_SECS=10
+
+# launch_instructions [soft]: the two-terminal flow, for a machine where clavity-ls cannot open a terminal itself;
+# soft is for a start that failed quickly, where the message above may or may not be about a terminal
 launch_instructions() {
-  printf 'Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.\n'
+  if [ "${1:-}" = soft ]; then
+    printf 'If the message above says clavity-ls could not open a terminal, use two terminals:\n'
+  else
+    printf 'Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.\n'
+  fi
   printf 'Terminal 1:\n'
   printf '  . "%s/env.sh"\n' "$TOOLS_DIR"
   printf '  clavity-ls agy "%s"\n' "$OPT_FOLDER"
@@ -2756,8 +2769,9 @@ launch_instructions() {
 
 # step_launch: always the last step, and it exits with clavity-ls start's own exit code. --no-launch prints the
 # command; macOS and a Linux without DISPLAY and WAYLAND_DISPLAY get the two-terminal flow (start would fail
-# there); otherwise clavity-ls start runs with the three variables in its environment only, and when it exits 1
-# having said `terminal` on stderr the two-terminal flow is printed too.
+# there); otherwise clavity-ls start runs with all stdio inherited and GHIDRA_INSTALL_DIR, JAVA_HOME and PATH in
+# its environment only, and when it exits 1 in under LAUNCH_SHORT_SECS seconds the two-terminal flow is printed
+# too, as a hint (the exit code stays the child's).
 step_launch() {
   if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
     return 0
@@ -2776,26 +2790,20 @@ step_launch() {
     launch_instructions
     exit "$EX_OK"
   fi
-  sl_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || die "$EX_STEP" launch "cannot create a temporary file"
-  register_tmp "$sl_err"
-  sl_rcf=$(mktemp "${TMPDIR:-/tmp}/rea-setup-rc.XXXXXX") || die "$EX_STEP" launch "cannot create a temporary file"
-  register_tmp "$sl_rcf"
   log INFO launch "running clavity-ls start \"$OPT_FOLDER\" --profile $OPT_PROFILE"
-  # stdout and stdin stay the console's; stderr is shown as it comes and kept to look for `terminal`
-  {
-    {
-      env "GHIDRA_INSTALL_DIR=$GHIDRA_DIR_SELECTED" "JAVA_HOME=$JAVA_HOME_SELECTED" "PATH=$BIN_DIR:$PATH" \
-        clavity-ls start "$OPT_FOLDER" --profile "$OPT_PROFILE" 2>&1 1>&3 3>&-
-      echo "$?" >"$sl_rcf"
-    } | tee "$sl_err" >&2
-  } 3>&1
-  sl_rc=$(cat "$sl_rcf")
-  case "$sl_rc" in
-    '' | *[!0-9]*) sl_rc=$EX_STEP ;;
-  esac
+  # No pipe, no copy and no substitution around the child: it has this script's stdin, stdout and stderr, so a
+  # terminal window it opens (which keeps them open) cannot hold this script back once the child has exited.
+  # Ctrl-C reaches the child too (same process group); this script waits for it and then reports its code
+  trap ':' INT
+  sl_t0=$("$LAUNCH_CLOCK")
+  env "GHIDRA_INSTALL_DIR=$GHIDRA_DIR_SELECTED" "JAVA_HOME=$JAVA_HOME_SELECTED" "PATH=$BIN_DIR:$PATH" \
+    clavity-ls start "$OPT_FOLDER" --profile "$OPT_PROFILE"
+  sl_rc=$?
+  sl_t1=$("$LAUNCH_CLOCK")
   log INFO launch "launch exited $sl_rc"
-  if [ "$sl_rc" -eq 1 ] && grep -qi terminal "$sl_err"; then
-    launch_instructions
+  # exit 1 within LAUNCH_SHORT_SECS is how start fails to open a terminal (stderr is not read: see above)
+  if [ "$sl_rc" -eq 1 ] && [ $((sl_t1 - sl_t0)) -lt "$LAUNCH_SHORT_SECS" ]; then
+    launch_instructions soft
   fi
   exit "$sl_rc"
 }

@@ -94,6 +94,31 @@ Describe 'the env file' {
         ConvertTo-ReaPsQuoted 'a b $x `y` "z"' | Should -BeExactly "'a b `$x ``y`` `"z`"'"
     }
 
+    It 'ConvertTo-ReaPsQuoted doubles every character PowerShell reads as a single quote: <name>' -ForEach @(
+        @{ name = 'ASCII apostrophe'; ch = [string][char]0x27 }
+        @{ name = 'left single quotation mark'; ch = [string][char]0x2018 }
+        @{ name = 'right single quotation mark'; ch = [string][char]0x2019 }
+        @{ name = 'single low-9 quotation mark'; ch = [string][char]0x201A }
+        @{ name = 'single high-reversed-9 quotation mark'; ch = [string][char]0x201B }
+    ) {
+        ConvertTo-ReaPsQuoted ('a' + $ch + 'b') | Should -BeExactly ([string][char]0x27 + 'a' + $ch + $ch + 'b' + [string][char]0x27)
+    }
+
+    It 'the file round-trips a path with every single-quote look-alike and shell metacharacters (dot-sourced in a child)' {
+        $q = ([string][char]0x2019) + ([string][char]0x2018) + ([string][char]0x201A) + ([string][char]0x201B) + "'"
+        $script:GhidraDirSelected = Join-Path $script:T ("John O${q}Brien `$x ``y`` `"z`"; a&b (c) %PATH%")
+        $script:JavaHomeSelected = Join-Path $script:T "jdk $q end"
+        $script:BinDir = Join-Path $script:T "bin $q dir"
+        Write-ReaEnvFile -ToolsDir $script:ToolsDir
+        $runner = Join-Path $script:T 'source2.ps1'
+        [System.IO.File]::WriteAllText($runner, ". `$args[0]`n`$env:GHIDRA_INSTALL_DIR`n`$env:JAVA_HOME`n(`$env:PATH -split [System.IO.Path]::PathSeparator)[0]`n", (New-Object System.Text.UTF8Encoding $true))
+        $got = @(& $script:Pwsh -NoProfile -File $runner (Join-Path $script:ToolsDir 'env.ps1'))
+        $got.Count | Should -Be 3
+        $got[0] | Should -BeExactly $script:GhidraDirSelected
+        $got[1] | Should -BeExactly $script:JavaHomeSelected
+        $got[2] | Should -BeExactly $script:BinDir
+    }
+
     It 'a dry run writes nothing' {
         $script:Opt.DryRun = $true
         Write-ReaEnvFile -ToolsDir $script:ToolsDir
@@ -405,7 +430,7 @@ Describe 'Invoke-ReaStepLaunch' {
         $script:Out = New-Object System.Collections.Generic.List[string]
         Mock Write-ReaOutput { $script:Out.Add($Text) }
         Mock Resolve-ReaExecutable { 'C:\bin\clavity-ls.exe' }
-        $script:Run = [pscustomobject]@{ ExitCode = 0; Stderr = '' }
+        $script:Run = [pscustomobject]@{ ExitCode = 0; Seconds = 1.0 }
         Mock Start-ReaLaunchProcess { $script:Called = @{ File = $FilePath; Args = $ArgumentList; Env = $Environment }; return $script:Run }
         $script:Called = $null
     }
@@ -430,27 +455,39 @@ Describe 'Invoke-ReaStepLaunch' {
     }
 
     It 'returns clavity-ls exit code unchanged and logs it' {
-        $script:Run = [pscustomobject]@{ ExitCode = 7; Stderr = '' }
+        $script:Run = [pscustomobject]@{ ExitCode = 7; Seconds = 1.0 }
         Invoke-ReaStepLaunch | Should -Be 7
         Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'launch exited 7'
         ($script:Out -join '|') | Should -Not -Match 'Terminal 1'
     }
 
-    It 'exit 1 with terminal on stderr keeps 1 and prints the two-terminal flow' {
-        $script:Run = [pscustomobject]@{ ExitCode = 1; Stderr = 'no terminal could be opened' }
+    It 'a quick exit 1 keeps 1 and prints the two-terminal flow with the soft wording' {
+        $script:Run = [pscustomobject]@{ ExitCode = 1; Seconds = 2.5 }
         Invoke-ReaStepLaunch | Should -Be 1
         $text = $script:Out -join "`n"
+        $script:Out[0] | Should -Match '^If the message above says clavity-ls could not open a terminal, use two terminals:'
         $text | Should -Match ([regex]::Escape("clavity-ls agy `"$($script:Opt.Folder)`""))
         $text | Should -Match ([regex]::Escape("clavity-ls start `"$($script:Opt.Folder)`" --attach --profile rea"))
         $text | Should -Match 'hint that clavity-ls agy prints omits --profile'
         @($script:Out | Where-Object { $_ -match [regex]::Escape((Join-Path $script:ToolsDir 'env.ps1')) }).Count | Should -Be 2
+        Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'launch exited 1'
     }
 
-    It 'exit 1 without terminal, and exit 2 with it, print no instructions' {
-        $script:Run = [pscustomobject]@{ ExitCode = 1; Stderr = 'something else failed' }
+    It 'exit 1 after the threshold (a real session that ended with 1) prints no instructions' {
+        $script:Run = [pscustomobject]@{ ExitCode = 1; Seconds = 3600 }
         Invoke-ReaStepLaunch | Should -Be 1
-        $script:Run = [pscustomobject]@{ ExitCode = 2; Stderr = 'terminal' }
+        $script:Out.Count | Should -Be 0
+        $script:LaunchShortSeconds = 5000
+        $script:Run = [pscustomobject]@{ ExitCode = 1; Seconds = 3600 }
+        try { Invoke-ReaStepLaunch | Should -Be 1 } finally { $script:LaunchShortSeconds = 10 }
+        ($script:Out -join "`n") | Should -Match 'Terminal 1'
+    }
+
+    It 'a quick exit 2 or 7 prints no instructions and keeps the code' {
+        $script:Run = [pscustomobject]@{ ExitCode = 2; Seconds = 1 }
         Invoke-ReaStepLaunch | Should -Be 2
+        $script:Run = [pscustomobject]@{ ExitCode = 7; Seconds = 1 }
+        Invoke-ReaStepLaunch | Should -Be 7
         $script:Out.Count | Should -Be 0
     }
 
@@ -493,6 +530,7 @@ Describe 'Start-ReaLaunchProcess with the clavity-ls stub' -Skip:$script:OnWindo
         $env:STUB_CL_LOG = $null
         $env:STUB_CL_EXIT = $null
         $env:STUB_CL_STDERR = $null
+        $env:STUB_CL_BG = $null
     }
 
     It 'runs the stub with the arguments and the environment, the child only' {
@@ -513,11 +551,29 @@ Describe 'Start-ReaLaunchProcess with the clavity-ls stub' -Skip:$script:OnWindo
         Invoke-ReaStepLaunch | Should -Be 7
     }
 
-    It 'an exit 1 with terminal on stderr prints the instructions and keeps 1' {
+    It 'a quick exit 1 prints the instructions and keeps 1' {
         $env:STUB_CL_EXIT = '1'
-        $env:STUB_CL_STDERR = 'no terminal could be opened'
         Invoke-ReaStepLaunch | Should -Be 1
         Should -Invoke Write-ReaOutput -ParameterFilter { $Text -match 'attach --profile rea' }
+    }
+
+    It 'a descendant that keeps the console open does not delay the return' {
+        $env:STUB_CL_BG = '4'
+        try {
+            $watch = [System.Diagnostics.Stopwatch]::StartNew()
+            Invoke-ReaStepLaunch | Should -Be 0
+            $watch.Stop()
+        } finally { $env:STUB_CL_BG = $null }
+        $watch.Elapsed.TotalSeconds | Should -BeLessThan 2
+    }
+
+    It 'the child has this process''s stdin, stdout and stderr (nothing is redirected)' -Skip:(-not (Test-Path '/proc/self/fd/0')) {
+        Invoke-ReaStepLaunch | Should -Be 0
+        $rec = [System.IO.File]::ReadAllText($script:Rec)
+        foreach ($n in 0, 1, 2) {
+            $mine = (Get-Item -LiteralPath "/proc/$PID/fd/$n").Target
+            $rec | Should -Match ([regex]::Escape("fd${n}: $mine") + '\r?\n')
+        }
     }
 }
 

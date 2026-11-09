@@ -3,7 +3,9 @@
 # Any other call is recorded when STUB_CL_LOG is set: one `arg: <value>` line per argument, then
 # `env GHIDRA_INSTALL_DIR=...`, `env JAVA_HOME=...`, `env CLAUDE_CONFIG_DIR=...` (a variable that is not set is
 # not listed) and `path-head: <first PATH entry>`. STUB_CL_STDERR is a line for stderr. The exit code is
-# STUB_CL_EXIT (default 0).
+# STUB_CL_EXIT (default 0). Also records `fd0:`, `fd1:` and `fd2:` (where the stub's stdin, stdout and stderr point, when
+# /proc says). STUB_CL_BG=N leaves `sleep N` running in the background with every descriptor inherited (what a terminal
+# window does); STUB_CL_SLEEP=N sleeps N seconds in the foreground before exiting; both are recorded as `started`.
 case "${1:-}" in
   --version | -V | -v)
     printf '%s\n' "${STUB_clavity_ls_VERSION:-1.0.0}"
@@ -11,6 +13,9 @@ case "${1:-}" in
     ;;
 esac
 if [ -n "${STUB_CL_LOG:-}" ]; then
+  fd0=$(readlink "/proc/$$/fd/0" 2>/dev/null || true)
+  fd1=$(readlink "/proc/$$/fd/1" 2>/dev/null || true)
+  fd2=$(readlink "/proc/$$/fd/2" 2>/dev/null || true)
   {
     for a in "$@"; do
       printf 'arg: %s\n' "$a"
@@ -22,7 +27,15 @@ if [ -n "${STUB_CL_LOG:-}" ]; then
       fi
     done
     printf 'path-head: %s\n' "${PATH%%:*}"
+    printf 'fd0: %s\nfd1: %s\nfd2: %s\n' "$fd0" "$fd1" "$fd2"
+    printf 'started\n'
   } >>"$STUB_CL_LOG"
+fi
+if [ -n "${STUB_CL_BG:-}" ]; then
+  sleep "$STUB_CL_BG" &
+fi
+if [ -n "${STUB_CL_SLEEP:-}" ]; then
+  sleep "$STUB_CL_SLEEP"
 fi
 if [ -n "${STUB_CL_STDERR:-}" ]; then
   printf '%s\n' "$STUB_CL_STDERR" >&2

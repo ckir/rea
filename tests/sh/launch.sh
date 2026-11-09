@@ -112,6 +112,28 @@ GHIDRA_DIR_SELECTED="$T/ghidra dir's x"
 ) >/dev/null 2>&1
 assert_eq 1 "$?" "env: no selected JDK is a step failure"
 
+# a path with a non-ASCII quote, a newline and every character a shell cares about round-trips exactly
+GHIDRA_DIR_SELECTED="$T/O’Brien's
+dir \$HOME \`x\` \"q\"; a&b (c) *"
+JAVA_HOME_SELECTED="$T/jdk ‘x’ ‚ ‛ \\ end"
+rm -f "$TOOLS_DIR/env.sh"
+write_env_files "$TOOLS_DIR"
+for env_sh in dash sh bash; do
+  command -v "$env_sh" >/dev/null 2>&1 || continue
+  got=$(
+    env -i PATH=/usr/bin:/bin "$env_sh" "$T/source.sh" "$TOOLS_DIR/env.sh"
+    echo x
+  )
+  assert_eq "$GHIDRA_DIR_SELECTED
+$JAVA_HOME_SELECTED
+$BIN_DIR
+/usr/bin:/bin
+x" "$got" "env: a non-ASCII quote, a newline and shell metacharacters round-trip under $env_sh"
+done
+GHIDRA_DIR_SELECTED="$T/ghidra dir's x"
+JAVA_HOME_SELECTED="$T/jdk d'ir"
+write_env_files "$TOOLS_DIR"
+
 # --- plan_needed_mb ---
 setv PLAN_ghidra reuse
 setv PLAN_jdk reuse
@@ -312,6 +334,9 @@ run_launch() {
     setv STUB_CL_EXIT "$5"
     setv STUB_CL_STDERR "$6"
     setv STUB_CL_LOG "$T/$1.rec"
+    if [ -n "${FAKE_STEP:-}" ]; then
+      setv LAUNCH_CLOCK fake_clock
+    fi
     setv LOG_FILE "$T/$1.log"
     export DISPLAY WAYLAND_DISPLAY STUB_CL_EXIT STUB_CL_STDERR STUB_CL_LOG LOG_FILE
     install_traps
@@ -363,14 +388,102 @@ assert_eq 7 "$(run_launch e7 :0 "" linux 7 "")" "launch: the script exits with c
 assert_match 'launch exited 7' "$(cat "$T/e7.log")" "launch: exit 7 is logged"
 assert_eq 0 "$(grep -c 'Terminal 1' "$T/e7.out")" "launch: exit 7 prints no instructions"
 
-assert_eq 1 "$(run_launch t1 :0 "" linux 1 "no terminal could be opened")" "launch: exit 1 with terminal on stderr keeps the code 1"
+# a clock for the "how long did it run" test: each call prints the stored time and advances it by FAKE_STEP
+FAKE_CLOCK_FILE="$T/fake clock"
+eval 'fake_clock() {
+  fc_n=$(cat "$FAKE_CLOCK_FILE")
+  echo "$fc_n"
+  echo $((fc_n + ${FAKE_STEP:-0})) >"$FAKE_CLOCK_FILE"
+}'
+echo 1000 >"$FAKE_CLOCK_FILE"
+export FAKE_CLOCK_FILE
+
+# a quick failure (exit 1 under 10 seconds): the instructions are informational, the code is kept
+assert_eq 1 "$(FAKE_STEP=2 run_launch t1 :0 "" linux 1 "no terminal could be opened")" "launch: a quick exit 1 keeps the code 1"
+assert_match '^If the message above says clavity-ls could not open a terminal, use two terminals:' "$(cat "$T/t1.out")" "launch: the soft wording starts the instructions"
 assert_match "clavity-ls start \"$OPT_FOLDER\" --attach --profile rea" "$(cat "$T/t1.out")" "launch: the fallback instructions are printed"
-assert_match 'no terminal could be opened' "$(cat "$T/t1.err")" "launch: the child's stderr reaches the console"
+assert_eq 2 "$(grep -cF ". \"$TOOLS_DIR/env.sh\"" "$T/t1.out")" "launch: the fallback sources env.sh in both terminals"
 assert_match 'launch exited 1' "$(cat "$T/t1.log")" "launch: exit 1 is logged"
-assert_eq 1 "$(run_launch t2 :0 "" linux 1 "something else failed")" "launch: exit 1 without terminal keeps the code 1"
-assert_eq 0 "$(grep -c 'Terminal 1' "$T/t2.out")" "launch: exit 1 without terminal prints no instructions"
-assert_eq 2 "$(run_launch t3 :0 "" linux 2 "terminal")" "launch: exit 2 keeps the code"
+assert_eq 1 "$(FAKE_STEP=2 run_launch t1b :0 "" linux 1 "")" "launch: a quick exit 1 prints them whatever stderr said"
+assert_match 'Terminal 1' "$(cat "$T/t1b.out")" "launch: ... even with nothing on stderr"
+# the same exit 1 after a long run (a real Claude session that ended with 1) prints nothing
+assert_eq 1 "$(FAKE_STEP=3600 run_launch t2 :0 "" linux 1 "no terminal could be opened")" "launch: exit 1 after a long run keeps the code 1"
+assert_eq 0 "$(grep -c 'Terminal 1' "$T/t2.out")" "launch: exit 1 after a long run prints no instructions"
+assert_match 'launch exited 1' "$(cat "$T/t2.log")" "launch: ... and is logged"
+assert_eq 2 "$(FAKE_STEP=2 run_launch t3 :0 "" linux 2 "terminal")" "launch: exit 2 keeps the code"
 assert_eq 0 "$(grep -c 'Terminal 1' "$T/t3.out")" "launch: only exit 1 prints the instructions"
+assert_eq 7 "$(FAKE_STEP=2 run_launch t4 :0 "" linux 7 "")" "launch: a quick exit 7 keeps the code"
+assert_match 'launch exited 7' "$(cat "$T/t4.log")" "launch: exit 7 is logged"
+assert_eq 0 "$(grep -c 'Terminal 1' "$T/t4.out")" "launch: a quick exit 7 prints no instructions"
+
+# stdin, stdout and stderr of the child are the script's own: no pipe, no copy
+if [ -r /proc/self/fd/0 ]; then
+  assert_eq 0 "$(run_launch fd :0 "" linux "" "")" "launch: fd test runs"
+  assert_eq "fd0: /dev/null" "$(grep '^fd0: ' "$T/fd.rec")" "launch: the child's stdin is the script's"
+  assert_eq "fd1: $T/fd.out" "$(grep '^fd1: ' "$T/fd.rec")" "launch: the child's stdout is the script's file"
+  assert_eq "fd2: $T/fd.err" "$(grep '^fd2: ' "$T/fd.rec")" "launch: the child's stderr is the script's file, not a pipe"
+fi
+
+# a descendant that keeps stderr open (a terminal window) must not hold the script back, and Ctrl-C reaches the
+# child while the script waits for it. launch-driver.sh is step_launch in a process of its own; drive.py starts it
+# in its own process group and reports the exit code and the seconds it took.
+cat >"$T/launch-driver.sh" <<'DRV'
+REA_SETUP_NO_MAIN=1
+. "$1/setup.sh"
+OS=linux
+LOG_FILE=$2
+install_traps
+step_launch
+DRV
+cat >"$T/drive.py" <<'PYEOF'
+import os
+import signal
+import subprocess
+import sys
+import time
+
+mode, driver, root, log, err, rec = sys.argv[1:7]
+env = dict(os.environ)
+start = time.time()
+with open(err, "wb") as e, open(os.devnull, "rb") as i:
+    p = subprocess.Popen(["sh", driver, root, log], stdin=i, stdout=subprocess.DEVNULL, stderr=e, env=env, start_new_session=True)
+    if mode == "int":
+        for _ in range(100):
+            if os.path.exists(rec) and "started" in open(rec).read():
+                break
+            time.sleep(0.05)
+        time.sleep(0.3)
+        os.killpg(p.pid, signal.SIGINT)
+    try:
+        rc = p.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        rc = -999
+print(rc, "%.2f" % (time.time() - start))
+PYEOF
+mkdir -p "$T/drv tmp"
+# drive MODE NAME ENV...: prints "rc seconds"
+drive() {
+  dr_mode=$1
+  dr_name=$2
+  shift 2
+  env PATH="$STUBBIN:$REAL_PATH" DISPLAY=:0 WAYLAND_DISPLAY= TMPDIR="$T/drv tmp" STUB_CL_LOG="$T/$dr_name.rec" TOOLS_DIR="$TOOLS_DIR" BIN_DIR="$BIN_DIR" \
+    GHIDRA_DIR_SELECTED="$GHIDRA_DIR_SELECTED" JAVA_HOME_SELECTED="$JAVA_HOME_SELECTED" OPT_FOLDER="$OPT_FOLDER" OPT_PROFILE=rea \
+    OPT_DRY_RUN=0 OPT_NO_LAUNCH=0 OPT_CHECK_UPSTREAM=0 "$@" \
+    python3 -I "$T/drive.py" "$dr_mode" "$T/launch-driver.sh" "$ROOT" "$T/$dr_name.log" "$T/$dr_name.err" "$T/$dr_name.rec"
+}
+got=$(drive run bg STUB_CL_BG=4 STUB_CL_EXIT=0)
+assert_eq 0 "${got% *}" "grandchild: the exit code comes through"
+assert_eq 1 "$(awk -v t="${got#* }" 'BEGIN { print (t < 2) ? 1 : 0 }')" "grandchild: a descendant holding stderr for 4 s does not delay the return (took ${got#* } s)"
+got=$(drive run bg7 STUB_CL_BG=4 STUB_CL_EXIT=7)
+assert_eq 7 "${got% *}" "grandchild: exit 7 comes through"
+got=$(drive int sig STUB_CL_SLEEP=20)
+assert_match '^(130|-2) ' "$got" "SIGINT: the script ends with the child's code (130)"
+assert_eq 1 "$(awk -v t="${got#* }" 'BEGIN { print (t < 5) ? 1 : 0 }')" "SIGINT: the child and the script both ended at once (took ${got#* } s)"
+assert_match 'launch exited 130' "$(cat "$T/sig.log")" "SIGINT: the exit is logged"
+assert_eq "" "$(listing "$T/drv tmp")" "SIGINT: the traps ran and no temporary file is left"
+got=$(drive run clean STUB_CL_EXIT=0)
+assert_eq "" "$(listing "$T/drv tmp")" "a normal launch leaves no temporary file"
 
 OPT_DRY_RUN=1
 assert_eq 0 "$(run_launch dry :0 "" linux "" "")" "launch: a dry run exits 0"

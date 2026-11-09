@@ -375,6 +375,23 @@ assert_match 'would reuse' "$(cat "$TMP/again.trace")" "idempotent: the plan say
 assert_eq 1 "$(grep -c 'Download: nothing for Ghidra and the JDK' "$TMP/again.trace")" "idempotent: the disclosures say there is nothing to download"
 scenario_end
 
+# --- launch: the real launch path, with the installed clavity-ls stub, not --no-launch ---
+scenario_start launch
+rm -f "$TMP/cl.rec"
+run_setup launch "DISPLAY=:0; WAYLAND_DISPLAY=; STUB_CL_LOG=\"$TMP/cl.rec\"; export DISPLAY WAYLAND_DISPLAY STUB_CL_LOG" --yes
+assert_eq 0 "$RC" "launch: exit 0 (the stub's code)"
+assert_eq "arg: start
+arg: $FOLDER
+arg: --profile
+arg: rea" "$(grep '^arg: ' "$TMP/cl.rec")" "launch: the stub saw start <folder> --profile rea"
+assert_eq "env GHIDRA_INSTALL_DIR=$TOOLS/ghidra_12.1.4_PUBLIC" "$(grep '^env GHIDRA_INSTALL_DIR=' "$TMP/cl.rec")" "launch: the child has GHIDRA_INSTALL_DIR"
+assert_eq "env JAVA_HOME=$TOOLS/jdk-21.0.13+9" "$(grep '^env JAVA_HOME=' "$TMP/cl.rec")" "launch: the child has JAVA_HOME"
+assert_eq "path-head: $BIN" "$(grep '^path-head: ' "$TMP/cl.rec")" "launch: the bin dir heads the child's PATH"
+assert_eq 0 "$(grep -c CLAUDE_CONFIG_DIR "$TMP/cl.rec")" "launch: no CLAUDE_CONFIG_DIR (--profile sets it)"
+assert_match 'launch exited 0' "$(cat "$(newest_log)")" "launch: the exit is logged"
+assert_eq "" "$(leftovers)" "launch: no temporary file is left"
+scenario_end
+
 # --- dry-run after the install: rea setup --dry-run runs, nothing is written, env.sh stays ---
 scenario_start dry-run-after
 printf 'stale\n' >"$TOOLS/env.sh"
