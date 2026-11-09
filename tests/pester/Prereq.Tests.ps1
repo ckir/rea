@@ -268,6 +268,34 @@ Describe 'Invoke-ReaStepPreflight' {
         Should -Invoke Test-ReaFixedNtfsVolume -Times 1 -Exactly
         Should -Invoke Remove-ReaOrphan -Times 2 -Exactly
     }
+    Context 'a folder that is the home directory' {
+        BeforeEach {
+            Mock Get-ReaPlatform { return @{ Os = 'windows'; Arch = 'x64' } }
+            $script:SavedHome = $env:USERPROFILE
+            $script:SavedFolder = $script:Opt.Folder
+            $env:USERPROFILE = Join-Path $script:T 'home dir'
+        }
+        AfterEach {
+            $env:USERPROFILE = $script:SavedHome
+            $script:Opt.Folder = $script:SavedFolder
+        }
+        It 'warns that agy runs with permissions skipped over the home directory, and continues' {
+            $script:Opt.Folder = $env:USERPROFILE
+            Get-Code { Invoke-ReaStepPreflight } | Should -Be 0
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN +\[preflight\].*home directory.*permissions skipped'
+        }
+        It 'warns for a trailing separator and a different case' {
+            $script:Opt.Folder = $env:USERPROFILE.ToUpperInvariant() + [System.IO.Path]::DirectorySeparatorChar
+            if ([System.IO.Path]::DirectorySeparatorChar -eq '/') { Set-ItResult -Skipped -Because 'paths are case-sensitive here'; return }
+            Get-Code { Invoke-ReaStepPreflight } | Should -Be 0
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'home directory'
+        }
+        It 'does not warn for a folder below the home directory' {
+            $script:Opt.Folder = Join-Path $env:USERPROFILE 'project'
+            Get-Code { Invoke-ReaStepPreflight } | Should -Be 0
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Not -Match 'home directory'
+        }
+    }
     It 'exits 3 on windows aarch64 with the platform hint' {
         Mock Get-ReaPlatform { return @{ Os = 'windows'; Arch = 'aarch64' } }
         Get-Code { Invoke-ReaStepPreflight } | Should -Be 3

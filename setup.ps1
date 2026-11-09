@@ -517,10 +517,14 @@ function Invoke-ReaSleepMillisecond {
 # downloaded files, and renaming a directory that holds an open handle fails with access denied until they let
 # go. Ten attempts with a pause that grows from 0.5 s to 2 s; the last failure is thrown.
 function Move-ReaItemRetry {
-    param([string]$Path, [string]$Destination, [switch]$Force, [int]$Attempts = 10)
+    param([string]$Path, [string]$Destination, [switch]$Force, [switch]$FileOnly, [int]$Attempts = 10)
     for ($i = 1; $i -le $Attempts; $i++) {
         try {
-            Move-Item -LiteralPath $Path -Destination $Destination -Force:$Force -ErrorAction Stop
+            if ($FileOnly) {
+                [System.IO.File]::Move($Path, $Destination)
+            } else {
+                Move-Item -LiteralPath $Path -Destination $Destination -Force:$Force -ErrorAction Stop
+            }
             return
         } catch {
             if ($i -ge $Attempts) { throw }
@@ -1148,6 +1152,8 @@ $script:LockHeld = New-Object System.Collections.Generic.List[string]
 $script:TarExe = ''
 # The longest extracted path allowed: the classic Windows MAX_PATH of 260 less room for the tool's own files.
 $script:MaxPathLength = 240
+# The longest entry of the pinned Ghidra archive, in characters below the extraction directory (measured)
+$script:GhidraLongestEntry = 149
 
 # The tools directory: -ToolsDir, else %LOCALAPPDATA%\rea-tools.
 function Get-ReaLocalAppData {
@@ -1893,6 +1899,12 @@ function Invoke-ReaStepPreflight {
     if (-not (Resolve-ReaExecutable -Name $tar)) {
         Stop-Rea -Code $script:EX_PREREQ -Step preflight -Message "$tar not found; it ships with Windows 10 build 17063 and later: update Windows, then re-run"
     }
+    $homeDir = Resolve-ReaFullPath ([string]$env:USERPROFILE)
+    $folderDir = Resolve-ReaFullPath ([string]$script:Opt.Folder)
+    if ($homeDir -and $folderDir -and
+        $homeDir.TrimEnd('\', '/').Equals($folderDir.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)) {
+        Write-ReaLog WARN preflight 'the folder is your home directory: agy will run with permissions skipped over all of it; pass -Folder <your project> to limit that'
+    }
     $script:ToolsDir = Get-ReaToolsDir
     $script:BinDir = Get-ReaBinDir
     Write-ReaLog DEBUG preflight ("tools dir: {0}; bin dir: {1}" -f (Get-ReaShortPath $script:ToolsDir), (Get-ReaShortPath $script:BinDir))
@@ -2046,7 +2058,7 @@ function Move-ReaIntoPlace {
     if (Test-Path -LiteralPath $Destination -PathType Leaf) {
         [System.IO.File]::Replace($Source, $Destination, [NullString]::Value, $true)
     } else {
-        [System.IO.File]::Move($Source, $Destination)
+        Move-ReaItemRetry -Path $Source -Destination $Destination -FileOnly
     }
 }
 
@@ -2605,6 +2617,13 @@ function Install-ReaGhidra {
         [System.IO.Directory]::CreateDirectory($tools) | Out-Null
     } catch {
         Stop-Rea -Code $script:EX_STEP -Step ghidra -Message "cannot create directory: $tools"
+    }
+    # The longest entry of the pinned archive is 149 characters below the extraction directory; refuse now, not
+    # after a 570 MB download
+    $extractRoot = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $tools "ghidra.work.tmp.$PID") 'x')).TrimEnd('/', '\')
+    if (($extractRoot.Length + 1 + $script:GhidraLongestEntry) -gt $script:MaxPathLength) {
+        Write-ReaLog ERROR archive "the longest path to extract would be $($extractRoot.Length + 1 + $script:GhidraLongestEntry) characters (limit $script:MaxPathLength): $extractRoot. Pass a shorter -ToolsDir, for example C:\rea"
+        Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message 'the tools directory is too long for the paths inside the Ghidra archive'
     }
     $work = New-ReaStaging -Dir $tools -Name 'ghidra.work'
     $stage = $null
@@ -3706,20 +3725,29 @@ function Format-ReaInvocation {
 }
 
 # The script body; returns the exit code.
-# FullPath made absolute against PowerShell's location, not the process directory (the two differ after Set-Location),
-# without touching the disk; '' stays ''. A provider-qualified path comes back as the plain provider path.
+# Path made absolute against PowerShell's location, not the process directory (the two differ after Set-Location),
+# without touching the disk; '' stays ''. A provider-qualified path comes back as the plain provider path; a path
+# that cannot be resolved (no such drive) comes back as $null.
 function Resolve-ReaFullPath {
     param([AllowEmptyString()][string]$Path)
     if (-not $Path) { return $Path }
-    return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    try {
+        return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    } catch {
+        # a drive that does not exist (an unplugged disk, a dropped mapping): the caller decides
+        return $null
+    }
 }
 
 function Invoke-Main {
     Initialize-ReaNetwork
-    # The paths are recorded in the profile and env.ps1 and handed to children: make them absolute now
-    foreach ($key in 'Folder', 'GhidraDir', 'JavaHome', 'ToolsDir', 'BinDir', 'LogDir') {
-        $script:Opt.$key = Resolve-ReaFullPath ([string]$script:Opt.$key)
+    # The log directory first: everything after it can be logged
+    $logDir = Resolve-ReaFullPath ([string]$script:Opt.LogDir)
+    if ($null -eq $logDir) {
+        Write-ReaWarning "cannot resolve -LogDir: $($script:Opt.LogDir)"
+        return $script:EX_USAGE
     }
+    $script:Opt.LogDir = $logDir
     $script:OptYes = $script:Opt.Yes
     $script:ConsoleLevel = 'INFO'
     if ($script:Opt.Quiet) { $script:ConsoleLevel = 'WARN' }
@@ -3730,6 +3758,17 @@ function Invoke-Main {
         Write-ReaLog DEBUG preflight "script version $script:PIN_SCRIPT_VERSION sha256 $(Get-ReaScriptHash)"
         Write-ReaLog DEBUG preflight ('PowerShell ' + $PSVersionTable.PSVersion.ToString())
         Write-ReaLog DEBUG preflight ('invoked: ' + (Format-ReaInvocation $script:Bound))
+        # The paths are recorded in the profile and env.ps1 and handed to children: make them absolute now. JavaHome
+        # and GhidraDir are resolved only when given as parameters; a value from the environment is checked (and
+        # ignored with a WARN when invalid) by the selection steps, which read the environment themselves.
+        foreach ($key in 'Folder', 'GhidraDir', 'JavaHome', 'ToolsDir', 'BinDir') {
+            if (($key -eq 'GhidraDir' -or $key -eq 'JavaHome') -and -not $script:Bound.ContainsKey($key)) { continue }
+            $full = Resolve-ReaFullPath ([string]$script:Opt.$key)
+            if ($null -eq $full) {
+                Stop-Rea -Code $script:EX_USAGE -Step args -Message "cannot resolve -${key}: $($script:Opt.$key)"
+            }
+            $script:Opt.$key = $full
+        }
         Write-ReaConfig
         if ($script:Opt.InstallHopper) {
             Stop-Rea -Code $script:EX_USAGE -Step args -Message '-InstallHopper is not available on Windows'
@@ -3764,6 +3803,7 @@ function Invoke-Main {
     }
 }
 
-if ($env:REA_SETUP_NO_MAIN -ne '1') {
+# Dot-sourcing (the tests) with REA_SETUP_NO_MAIN=1 skips main; a stale variable cannot silence a real run
+if ($env:REA_SETUP_NO_MAIN -ne '1' -or $MyInvocation.InvocationName -ne '.') {
     exit (Invoke-Main)
 }

@@ -363,6 +363,55 @@ Describe 'Invoke-Main' {
         }
     }
 
+    It 'does not abort on a JAVA_HOME or GHIDRA_INSTALL_DIR from the environment that cannot be resolved (a missing drive)' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
+        $savedJ = $env:JAVA_HOME
+        $savedG = $env:GHIDRA_INSTALL_DIR
+        try {
+            $env:JAVA_HOME = 'Nope:\jdk'
+            $env:GHIDRA_INSTALL_DIR = 'Nope:\ghidra'
+            $r = Invoke-Setup -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
+            $r.Output | Should -Not -Match 'GetUnresolvedProviderPathFromPSPath'
+            $r.Output | Should -Match 'platform:'
+        } finally {
+            $env:JAVA_HOME = $savedJ
+            $env:GHIDRA_INSTALL_DIR = $savedG
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'exits 2 with a message, not a raw exception, for a flag path that cannot be resolved' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $r = Invoke-Setup -ScriptArgs @('-ToolsDir', 'Nope:\tools', '-Yes', '-LogDir', $dir)
+            $r.Code | Should -Be 2
+            $r.Output | Should -Match 'cannot resolve -ToolsDir'
+            $r.Output | Should -Not -Match 'GetUnresolvedProviderPathFromPSPath'
+        } finally {
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'a stale REA_SETUP_NO_MAIN in the environment does not turn a real run into a silent no-op' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
+        $saved = $env:REA_SETUP_NO_MAIN
+        try {
+            $env:REA_SETUP_NO_MAIN = '1'
+            $out = & $script:Pwsh -NoProfile -File $script:SetupPath -InstallHopper -Yes -LogDir $dir 2>&1 | Out-String
+            $LASTEXITCODE | Should -Be 2
+            $out | Should -Match 'not available on Windows'
+        } finally {
+            $env:REA_SETUP_NO_MAIN = $saved
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Resolve-ReaFullPath returns null for a path it cannot resolve and the full path otherwise' {
+        Resolve-ReaFullPath 'Nope:\x' | Should -BeNullOrEmpty
+        Resolve-ReaFullPath '' | Should -Be ''
+        Resolve-ReaFullPath 'rel/x' | Should -Be (Join-Path (Get-Location).ProviderPath 'rel/x')
+    }
+
     It 'rejects an invalid profile name with code 2' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         try {
@@ -482,8 +531,9 @@ Describe 'Convert-ReaHomeText with the home directory in JSON and forward-slash 
 }
 
 Describe 'Get-ReaScriptHash' {
-    It 'is a 64-digit hash when the script is a file, and n/a otherwise' {
-        $h = Get-ReaScriptHash
-        $h | Should -Match '^([0-9a-f]{64}|n/a)$'
+    It 'is the SHA-256 of the script file, never n/a' {
+        # dot-sourced, the function still sees the script file, so the exact value is known
+        $want = (Get-FileHash -LiteralPath $script:SetupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Get-ReaScriptHash | Should -Be $want
     }
 }

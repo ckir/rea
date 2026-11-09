@@ -85,6 +85,9 @@ Describe 'ghidra' {
         $script:GhidraDirSelected = ''
         $script:GhidraOfficial = $false
         $script:Served = @{}
+        # the scratch directory here is long; the pre-download length check has its own test below
+        $script:SavedMaxPath = $script:MaxPathLength
+        $script:MaxPathLength = 100000
         $script:SavedSha = $script:PIN_GHIDRA_SHA256
         $script:SavedBytes = $script:PIN_GHIDRA_ZIP_BYTES
         $script:SavedBound = $script:Bound
@@ -100,6 +103,7 @@ Describe 'ghidra' {
         }
     }
     AfterEach {
+        $script:MaxPathLength = $script:SavedMaxPath
         $script:PIN_GHIDRA_SHA256 = $script:SavedSha
         $script:PIN_GHIDRA_ZIP_BYTES = $script:SavedBytes
         $script:Bound = $script:SavedBound
@@ -241,6 +245,14 @@ Describe 'ghidra' {
             $log | Should -Match "will install Ghidra 12\.1\.4 from https://github\.com/.*\.zip \($($script:ZipSize) bytes\) into"
             $log | Should -Match 'installed Ghidra 12\.1\.4'
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
+        }
+        It 'refuses a tools directory that makes the longest path too long before anything is downloaded' {
+            Initialize-Serve
+            $script:MaxPathLength = 240
+            $script:ToolsDir = Join-Path $script:Case ('d' * 120)
+            Get-Code { Install-ReaGhidra } | Should -Be 5
+            Should -Invoke Invoke-ReaHttpGet -Times 0 -Exactly
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'shorter -ToolsDir'
         }
         It 'goes through Select-ReaGhidra and Invoke-ReaStepGhidra, and a second run reuses the install' {
             Initialize-Serve

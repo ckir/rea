@@ -803,6 +803,20 @@ Describe 'Move-ReaItemRetry' {
         $script:Naps[0] | Should -BeGreaterOrEqual 500
         ($script:Naps | Measure-Object -Maximum).Maximum | Should -BeLessOrEqual 2000
     }
+    It 'with -FileOnly retries a file move that keeps failing and throws the last failure' {
+        $missing = Join-Path (Join-Path $script:T 'no such dir for mv') 'file.bin'
+        $f = Join-Path $script:T ('mv file ' + [guid]::NewGuid().ToString('N'))
+        Set-Content -LiteralPath $f -Value x
+        { Move-ReaItemRetry -Path $f -Destination $missing -FileOnly -Attempts 3 } | Should -Throw
+        $script:Naps.Count | Should -Be 2
+    }
+    It 'Move-ReaIntoPlace moves a new file through the retrying helper' {
+        Mock Move-ReaItemRetry { }
+        $f = Join-Path $script:T ('mv into ' + [guid]::NewGuid().ToString('N'))
+        Set-Content -LiteralPath $f -Value x
+        Move-ReaIntoPlace -Source $f -Destination ($f + '.dest')
+        Should -Invoke Move-ReaItemRetry -Times 1 -Exactly -ParameterFilter { $FileOnly }
+    }
     It 'throws the last failure after the attempts are used up' {
         $script:Failures = 99
         { Move-ReaItemRetry -Path $script:Src -Destination $script:Dst -Attempts 4 } | Should -Throw '*denied*'
