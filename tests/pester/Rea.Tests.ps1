@@ -527,8 +527,23 @@ Describe 'Get-ReaStderrTail' {
         $text = 'q' * 1000
         Get-ReaStderrTail -Text $text | Should -Be $text
     }
+    It 'trims like the shell tail: whitespace-only last line, trailing CR, both ends' {
+        Get-ReaStderrTail -Text (('z' * 5000) + "`n   ") | Should -Be ('...' + ('z' * 1000))
+        Get-ReaStderrTail -Text (('z' * 5000) + "`r") | Should -Be ('...' + ('z' * 1000))
+        Get-ReaStderrTail -Text (('z' * 5000) + "`n  tail words  ") | Should -Be 'tail words'
+        Get-ReaStderrTail -Text "   hello   `r" | Should -Be 'hello'
+    }
     It 'redacts before cutting' {
         $t = Get-ReaStderrTail -Text ("first`nANTHROPIC_API_KEY=sk-secret-123`n" + ('y' * 983))
         $t | Should -Not -Match 'sk-secret'
+    }
+}
+
+Describe 'Hide-ReaSecret with characters that are not valid text' {
+    It 'redacts the whole value when a lone surrogate sits in it (documents that .NET is not affected)' {
+        $bad = [string][char]0xD800
+        Hide-ReaSecret ('Authorization: Bearer ab' + $bad + 'SECRETPART') | Should -Be 'Authorization: <redacted>'
+        Hide-ReaSecret ('{"token":"ab' + $bad + 'SECRETPART"}') | Should -Be '{"token":"<redacted>"}'
+        Hide-ReaSecret ('KEY = ' + $bad + 'SECRETPART tail') | Should -Be 'KEY = <redacted> tail'
     }
 }

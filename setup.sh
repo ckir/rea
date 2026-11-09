@@ -111,6 +111,19 @@ die() {
   exit "$d_code"
 }
 
+# trim_ws_end TEXT / trim_ws TEXT: TEXT without its trailing (and leading) whitespace, CR and newlines included
+trim_ws_end() {
+  tw_s=$1
+  tw_t=${tw_s##*[![:space:]]}
+  printf '%s\n' "${tw_s%"$tw_t"}"
+}
+
+trim_ws() {
+  tw_s=$(trim_ws_end "$1")
+  tw_l=${tw_s%%[![:space:]]*}
+  printf '%s\n' "${tw_s#"$tw_l"}"
+}
+
 # run_cmd STEP cmd...: logs the argument list, exit code and duration; stdout goes to the file named by
 # RUN_STDOUT, stderr to the log (bounded to 4000 characters on failure) and its last 1000 bytes to
 # RUN_STDERR_TAIL (redacted, cut at a line boundary). RUN_STDOUT is registered for cleanup. Returns the command's exit code.
@@ -133,15 +146,15 @@ run_cmd() {
   log DEBUG "$rc_step" "exit $rc after ${rc_secs}s"
   # the tail is cut from the redacted end of stderr, so a secret name sliced by the cut cannot leak its value
   rc_win=$(tail -c 20000 "$rc_err")
-  rc_win=$(redact "$rc_win")
-  RUN_STDERR_TAIL=$rc_win
+  rc_win=$(trim_ws_end "$(redact "$rc_win")")
+  RUN_STDERR_TAIL=$(trim_ws "$rc_win")
   rc_size=$(printf '%s' "$rc_win" | wc -c | tr -d ' ')
   if [ "$rc_size" -gt 1000 ]; then
     # the last 1000 bytes without their partial first line; one long line has no boundary: its last 1000 bytes
     rc_win=$(printf '%s' "$rc_win" | tail -c 1000)
     rc_rest=""
     case "$rc_win" in
-      *"$rc_nl"*) rc_rest=${rc_win#*"$rc_nl"} ;;
+      *"$rc_nl"*) rc_rest=$(trim_ws "${rc_win#*"$rc_nl"}") ;;
     esac
     if [ -n "$rc_rest" ]; then
       RUN_STDERR_TAIL=$rc_rest
@@ -212,9 +225,11 @@ log_open() {
   fi
 }
 
-# redact TEXT: hides secrets in a log message, line by line (POSIX ERE; names are matched case-insensitively
+# redact TEXT: hides secrets in a log message, line by line (POSIX ERE, sed under LC_ALL=C so that an invalid
+# multibyte sequence cannot stop a match and leave the rest of the line in clear; names are matched case-insensitively
 # with explicit letter classes, since there is no portable I flag). In this order:
-#   URL userinfo and query; NAME=value (quoted values consumed whole); "NAME": value in JSON form (strings with
+#   URL userinfo and query; AUTHORIZATION=value to the end of the line; NAME = value (optional spaces around the
+#   equals sign, quoted values consumed whole); "NAME": value in JSON form (strings with
 #   escaped quotes, numbers, true, false, null); NAME: value to the end of the line (headers). NAME contains
 #   TOKEN, KEY, SECRET or PASSWORD, and for the JSON and colon forms also AUTHORIZATION. setup.ps1 Hide-ReaSecret
 #   does the same; tests/fixtures/redact-corpus.txt pins both. A JSON value that is an object or an array is
@@ -226,10 +241,11 @@ redact() {
   rd_auth='[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
   rd_all="$rd_names|$rd_auth"
   rd_key="\"[A-Za-z0-9_.-]*($rd_all)[A-Za-z0-9_.-]*\"[ ]*:[ ]*"
-  printf '%s\n' "$1" | sed -E \
+  printf '%s\n' "$1" | LC_ALL=C sed -E \
     -e 's#(https?://)[^/@ ]*@#\1#g' \
     -e 's#(https?://[^ ?]*)\?[^ ]*#\1#g' \
-    -e "s/([A-Za-z0-9_]*($rd_names)[A-Za-z0-9_]*)=(\"[^\"]*\"[^ ]*|${rd_q}[^${rd_q}]*${rd_q}[^ ]*|[^ ]*)/\\1=<redacted>/g" \
+    -e "s/([A-Za-z0-9_-]*($rd_auth)[A-Za-z0-9_-]*[ ]*=[ ]*).*/\\1<redacted>/" \
+    -e "s/([A-Za-z0-9_]*($rd_names)[A-Za-z0-9_]*[ ]*=[ ]*)(\"[^\"]*\"[^ ]*|${rd_q}[^${rd_q}]*${rd_q}[^ ]*|[^ ]*)/\\1<redacted>/g" \
     -e "s/($rd_key)\"([^\"$rd_bs]|$rd_bs.)*\"?/\\1\"<redacted>\"/g" \
     -e "s/($rd_key)[A-Za-z0-9_.+-]+/\\1<redacted>/g" \
     -e "s/([A-Za-z0-9_-]*($rd_all)[A-Za-z0-9_-]*[ ]*:)[ ]*.*/\\1 <redacted>/"

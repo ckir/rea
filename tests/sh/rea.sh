@@ -419,6 +419,77 @@ for rd_unit in KEY TOKEN_ http:// 'a=' '"a' 'a:'; do
   rd_t1=$(date +%s)
   assert_eq 1 "$([ $((rd_t1 - rd_t0)) -lt 5 ] && echo 1 || echo 0)" "redact: 200000 characters of [$rd_unit] take under 5 s"
 done
+# invalid UTF-8 bytes must not stop the redaction (GNU sed's . stops at one in a UTF-8 locale): every sed in
+# redact runs under LC_ALL=C
+for rd_loc in C.UTF-8 en_US.UTF-8; do
+  if ! locale -a 2>/dev/null | grep -qix "$rd_loc\|$(printf '%s' "$rd_loc" | sed 's/UTF-8/utf8/')"; then
+    echo "skip: locale $rd_loc is not installed: invalid-byte redaction tests under it skipped"
+    continue
+  fi
+  rd_bad1=$(printf 'Authorization: Bearer ab\377SECRETPART')
+  rd_bad2=$(printf '{"token":"ab\377SECRETPART"}')
+  rd_bad3=$(printf 'KEY=abc\377')
+  rd_bad4=$(printf 'x-api-key: \377SECRETPART')
+  rd_bad5=$(printf 'KEY = \377SECRETPART tail')
+  rd_got=$( (
+    LC_ALL=$rd_loc
+    export LC_ALL
+    redact "$rd_bad1"
+  ))
+  assert_eq "Authorization: <redacted>" "$rd_got" "redact [$rd_loc]: an invalid byte before the rest of a header"
+  rd_got=$( (
+    LC_ALL=$rd_loc
+    export LC_ALL
+    redact "$rd_bad2"
+  ))
+  assert_eq '{"token":"<redacted>"}' "$rd_got" "redact [$rd_loc]: an invalid byte in the middle of a JSON string"
+  rd_got=$( (
+    LC_ALL=$rd_loc
+    export LC_ALL
+    redact "$rd_bad3"
+  ))
+  assert_eq "KEY=<redacted>" "$rd_got" "redact [$rd_loc]: an invalid byte at the end"
+  rd_got=$( (
+    LC_ALL=$rd_loc
+    export LC_ALL
+    redact "$rd_bad4"
+  ))
+  assert_eq "x-api-key: <redacted>" "$rd_got" "redact [$rd_loc]: an invalid byte right after a colon"
+  rd_got=$( (
+    LC_ALL=$rd_loc
+    export LC_ALL
+    redact "$rd_bad5"
+  ))
+  assert_eq "KEY = <redacted> tail" "$rd_got" "redact [$rd_loc]: an invalid byte in a spaced-equals value"
+  rd_got=$( (
+    LC_ALL=$rd_loc
+    export LC_ALL
+    redact 'KEY=héllo wörld'
+  ))
+  assert_eq "KEY=<redacted> wörld" "$rd_got" "redact [$rd_loc]: valid multibyte input still redacts byte-wise"
+done
+rd_got=$( (
+  LC_ALL=C
+  export LC_ALL
+  redact "$(printf 'Authorization: Bearer ab\377SECRETPART')"
+))
+assert_eq "Authorization: <redacted>" "$rd_got" "redact [C]: an invalid byte before the rest of a header"
+
+# the tail trims like the PowerShell one: a trailing CR, trailing and leading whitespace
+node -e 'process.stdout.write("z".repeat(5000)+"\n   ")' >"$T/tw1.txt"
+node -e 'process.stdout.write("z".repeat(5000)+"\r")' >"$T/tw2.txt"
+node -e 'process.stdout.write("z".repeat(5000)+"\n  tail words  ")' >"$T/tw3.txt"
+printf '   hello   \r' >"$T/tw4.txt"
+Z1000=$(node -e 'process.stdout.write("z".repeat(1000))')
+for tw in 1 2 3 4; do
+  RS_PRE="STUB_NPX_EXIT_2=3; STUB_NPX_STDERR_2=\"\$(cat '$T/tw$tw.txt')\"; export STUB_NPX_EXIT_2 STUB_NPX_STDERR_2"
+  run_rea "tw$tw" step_rea_setup || :
+done
+assert_eq "...$Z1000" "$(sed -n 's/.*rea setup exited 3: //p' "$T/tw1.log" | head -n 1)" "tail: a long line then whitespace-only line gives the marked window"
+assert_eq "...$Z1000" "$(sed -n 's/.*rea setup exited 3: //p' "$T/tw2.log" | head -n 1 | tr -d '\r')" "tail: a long line and a trailing CR gives the marked window"
+assert_eq 0 "$(grep -c "$(printf '\r')" "$T/tw2.log" | sed 's/^[1-9].*/1/')" "tail: no CR survives in the tail"
+assert_match 'rea setup exited 3: tail words$' "$(logtext tw3)" "tail: the line after the long one is trimmed at both ends"
+assert_match 'rea setup exited 3: hello$' "$(logtext tw4)" "tail: a short stderr is trimmed at both ends and loses its CR"
 # the tail fallback: no usable line boundary gives the last 1000 characters marked with ...
 node -e 'process.stdout.write("z".repeat(5000))' >"$T/long1.txt"
 RS_PRE="STUB_NPX_EXIT_2=3; STUB_NPX_STDERR_2=\"\$(cat '$T/long1.txt')\"; export STUB_NPX_EXIT_2 STUB_NPX_STDERR_2"

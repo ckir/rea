@@ -37,3 +37,17 @@ https://example.com/p?token=1&x=2 done	https://example.com/p done
 https://token:abc@host/x	https://host/x
 see http://a?b?c and http://d?e	see http://a and http://d
 x?y http://c?d	x?y http://c
+key = abc	key = <redacted>
+TOKEN =abc	TOKEN =<redacted>
+password= abc	password= <redacted>
+secret = "a b" rest	secret = <redacted> rest
+my_key = 'a b' rest	my_key = <redacted> rest
+a = b	a = b
+x = y KEY = z	x = y KEY = <redacted>
+AUTHORIZATION=Bearer abc	AUTHORIZATION=<redacted>
+authorization=Bearer abc def	authorization=<redacted>
+proxy-authorization = Basic Zm9v	proxy-authorization = <redacted>
+KEY=héllo wörld	KEY=<redacted> wörld
+{"token":"pässwörd"}	{"token":"<redacted>"}
+Authorization: Bearer ünï	Authorization: <redacted>
+naïve token: sécret	naïve token: <redacted>
