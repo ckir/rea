@@ -61,18 +61,27 @@ jobs:
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
           tool: just@1.58.0
-      - name: Install Pester 5.9.0 where no 5.x is present
+      # Pester 5.9.0 for pwsh, the shell `just test` runs it in; the 5.1 step below installs its own copy, because
+      # Windows PowerShell does not search pwsh's CurrentUser module path.
+      - name: Install Pester 5.9.0 for pwsh
         shell: pwsh
-        run: |
-          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
-            Install-Module Pester -RequiredVersion 5.9.0 -Force -Scope CurrentUser
-          }
+        run: Install-Module Pester -RequiredVersion 5.9.0 -Force -SkipPublisherCheck -Scope CurrentUser
+      # tests/sh run under POSIX shells only. Git Bash on windows-latest reports a MINGW uname, which setup.sh maps
+      # to the "windows" platform, so most of that suite would test a path nobody supports (setup.ps1 is the
+      # Windows script). Windows therefore runs the Pester suite alone.
       - name: Unit tests
+        if: runner.os != 'Windows'
         run: just test
+      - name: Unit tests (Pester only, see above)
+        if: runner.os == 'Windows'
+        run: just test-pester
       - name: Integration tests (loopback fake release server)
         if: runner.os == 'Linux'
         run: just test-integration
       - name: Pester under Windows PowerShell 5.1
         if: runner.os == 'Windows'
-        shell: cmd
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Import-Module Pester -MinimumVersion 5.0; Invoke-Pester -Path tests/pester -CI"
+        shell: powershell
+        run: |
+          Install-Module Pester -RequiredVersion 5.9.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 5.9.0
+          Invoke-Pester -Path tests/pester -CI

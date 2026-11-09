@@ -1,0 +1,6 @@
+# Line endings are part of the tests: the shell scripts, the fixtures whose hashes and byte sizes are pinned and
+# the PowerShell sources must come out of a Windows checkout (core.autocrlf=true) exactly as committed. The
+# PowerShell sources are pure ASCII, so Windows PowerShell 5.1 reads them the same with LF. The .cmd stubs are the
+# one exception: cmd.exe wants CRLF.
+* text=auto eol=lf
+*.cmd text eol=crlf

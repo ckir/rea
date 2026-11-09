@@ -28,7 +28,7 @@ suites dominate):
 | `just suppressions` | every lint suppression carries a reason; the count stays within the committed baseline |
 | `just drift` | the pins in `setup.sh` and `setup.ps1` are identical and each obeys its rule (`PIN_SCRIPT_VERSION` is `X.Y.Z`) |
 | `just tools-doc-check` | the `## Tools` table below matches the JSON |
-| `just test` | shell tests under dash, bash and `/bin/sh`, then Pester |
+| `just test` | `just test-sh` (shell tests under dash, bash and `/bin/sh`), then `just test-pester`. CI runs only `test-pester` on Windows: Git Bash reports a MINGW uname, which `setup.sh` maps to the unsupported `windows` platform |
 
 The `pre-push` hook and CI call the same recipes, so there is exactly one list. `just test-integration`
 (a local fake release server, Linux; plus `tests/integration/run-win.ps1`) is not part of `check`; CI runs it
@@ -48,7 +48,7 @@ on Ubuntu.
 
 `.github/workflows/canary.yml` runs weekly (and on demand) `sh setup.sh --check-upstream --yes` on Linux and
 macOS and `setup.ps1 -CheckUpstream -Yes` on Windows. It downloads no archive and writes nothing but its own log; it prints
-one ok or FAIL line per expectation (latest releases, asset names, URLs, the embedded Ghidra hash) and exits 5
+one ok or FAIL line per expectation (latest releases, asset names, URLs, the embedded Ghidra archive size) and exits 5
 when one breaks.
 
 When it fails because of Ghidra (`rea` accepts only the 12.1.x line, so a newer 12.1.y may be fine and a 12.2

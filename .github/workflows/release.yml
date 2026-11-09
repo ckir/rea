@@ -14,13 +14,15 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  gates:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Tag matches the script versions
         env:
           TAG: ${{ github.ref_name }}
@@ -55,6 +57,19 @@ jobs:
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force; Install-Module Pester -RequiredVersion 5.9.0 -Force
       - name: Gates
         run: just check
+
+  # The only job that can write: it runs no project code, only sha256sum and gh (spec section 12b, least privilege
+  # per job). The checkout keeps no credentials; gh gets the token from the environment.
+  publish:
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Checksums
         run: sha256sum setup.sh setup.ps1 > SHA256SUMS
       - name: Publish the release

@@ -276,7 +276,9 @@ Prompt (my call): after the disclosures and the plan, one question, `Proceed? [y
 other prompts exist; anything ambiguous is a flag, not a question.
 
 macOS quarantine (O7): the script never strips `com.apple.quarantine` or any other protection attribute by
-itself. If a downloaded binary is blocked, it prints the documented manual step and exits 4.
+itself. Whether macOS blocks a curl-downloaded binary is unmeasured (O7); a special message and exit 4 for a
+blocked binary are NOT implemented until the macOS handoff measures it. Until then a blocked binary surfaces
+as an ordinary step failure and the README tells the user.
 
 Distribution (O11): friends get the scripts from a GitHub release, with a `.sha256` file beside them, and the
 README shows how to verify before running. That checksum sits in the same release as the script, so it detects

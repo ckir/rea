@@ -71,8 +71,14 @@ license-check:
     addlicense -check -f header.txt -ignore '.clavity/**' -ignore 'docs/**' -ignore 'tests/fixtures/**' -ignore 'scripts/suppressions.baseline' -ignore 'scripts/ci-tools.lock' -ignore 'testResults.xml' .
 
 # Unit tests: shell tests under dash and bash, then Pester (zero test files is a failure)
-test:
+test: test-sh test-pester
+
+# The shell tests, under each of dash, bash and /bin/sh that exists
+test-sh:
     sh tests/sh/run.sh
+
+# The Pester tests (zero test files is a failure)
+test-pester:
     pwsh -NoProfile -Command "if (@(Get-ChildItem -Path tests/pester -Filter *.Tests.ps1 -File).Count -eq 0) { exit 1 }; Import-Module Pester -MinimumVersion 5.0; Invoke-Pester -Path tests/pester -CI"
 
 # Integration tests against a local fake release server (not part of check)

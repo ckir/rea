@@ -49,32 +49,41 @@ curl -LO https://github.com/ckir/rea/releases/latest/download/setup.sh
 curl -LO https://github.com/ckir/rea/releases/latest/download/setup.ps1
 curl -LO https://github.com/ckir/rea/releases/latest/download/SHA256SUMS
 grep ' setup.sh$' SHA256SUMS | shasum -a 256 -c -
-sh setup.sh
+sh setup.sh --folder ~/path/to/your/project
 ```
 
 The verify line must print `setup.sh: OK`. (`shasum` ships with macOS and with Linux's perl; stock macOS has
 no `sha256sum`.)
+
+Name the project folder: `clavity-ls start` runs agy there with permissions skipped, so agy can read and change
+everything under it. Without `--folder` it is the current directory, so either `cd` into your project first or
+pass `--folder`; never run it from your home directory.
 
 ### Windows
 
 In Windows PowerShell:
 
 ```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 Invoke-WebRequest https://github.com/ckir/rea/releases/latest/download/setup.ps1 -OutFile setup.ps1
 Invoke-WebRequest https://github.com/ckir/rea/releases/latest/download/SHA256SUMS -OutFile SHA256SUMS
 (Get-FileHash setup.ps1).Hash
 Select-String ' setup.ps1$' SHA256SUMS
 (Get-FileHash setup.ps1).Hash -eq ((Select-String ' setup.ps1$' SHA256SUMS).Line.Split(' ')[0])
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Folder C:\path\to\your\project
 ```
 
 The hash printed by `Get-FileHash` (upper case) must equal the one on the `SHA256SUMS` line (lower case);
 compare them by eye, or use the one-liner, which prints `True` when they match (PowerShell's `-eq` ignores
 case). Do that before the last command. The last command is the one documented way to run the script: a stock
-Windows 11 execution policy of `Restricted` refuses `.\setup.ps1` outright, and a downloaded file also carries
-the Mark of the Web. `-ExecutionPolicy Bypass` applies to that one process only. If you prefer to keep your
-policy, run `Unblock-File .\setup.ps1` and then start it the way your policy allows. Neither way needs
-administrator rights.
+Windows 11 execution policy of `Restricted` refuses `.\setup.ps1` outright, and a file saved from a browser
+also carries the Mark of the Web (one fetched with `Invoke-WebRequest` does not). `-ExecutionPolicy Bypass`
+applies to that one process only. If you prefer to keep your policy, run `Unblock-File .\setup.ps1` and then
+start it the way your policy allows. Neither way needs administrator rights.
+
+Name the project folder with `-Folder`: `clavity-ls start` runs agy there with permissions skipped. Without it
+the folder is the current directory, which in a fresh PowerShell window is your home directory; do not run it
+from there.
 
 ## Options
 
