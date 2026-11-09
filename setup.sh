@@ -1502,6 +1502,199 @@ step_prereq() {
   return 0
 }
 
+# --- step tools-bin ---
+
+# bin_exe_name NAME: the file name of a managed tool in BIN_DIR (.exe on Windows)
+bin_exe_name() {
+  if [ "${OS:-}" = windows ]; then
+    printf '%s.exe\n' "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# resolve_agent_profile OS ARCH: sets AP_TAG, AP_VERSION, AP_ASSET, AP_URL and AP_SIDECAR_URL for the latest
+# aiprofiles release; returns 1 (before any network request) for a platform with no build, and dies on a
+# release that cannot be resolved
+resolve_agent_profile() {
+  case "$1 $2" in
+    "linux x64") AP_ASSET=agent-profile-x86_64-unknown-linux-gnu.tar.gz ;;
+    "mac x64") AP_ASSET=agent-profile-x86_64-apple-darwin.tar.gz ;;
+    "mac aarch64") AP_ASSET=agent-profile-aarch64-apple-darwin.tar.gz ;;
+    "windows x64") AP_ASSET=agent-profile-x86_64-pc-windows-msvc.zip ;;
+    *) return 1 ;;
+  esac
+  AP_TAG=$(github_latest_tag "$PIN_AGENT_PROFILE_REPO") ||
+    die "$EX_STEP" tools-bin "cannot determine the latest release of $PIN_AGENT_PROFILE_REPO"
+  AP_VERSION=$(semver_from_output "$AP_TAG")
+  [ -n "$AP_VERSION" ] || die "$EX_VERIFY" tools-bin "release tag of $PIN_AGENT_PROFILE_REPO has no X.Y.Z version: $AP_TAG"
+  AP_URL="https://github.com/$PIN_AGENT_PROFILE_REPO/releases/latest/download/$AP_ASSET"
+  AP_SIDECAR_URL="$AP_URL.sha256"
+  log DEBUG tools-bin "agent-profile latest: tag $AP_TAG, asset $AP_ASSET"
+  return 0
+}
+
+# resolve_clavity_ls OS ARCH: sets CL_TAG, CL_VERSION, CL_ASSET, CL_URL and CL_SIDECAR_URL for the latest
+# clavity release, the asset being the one tar.gz for this platform among the release's assets (read from the
+# API, else from the release page); returns 1 for a platform with no build; dies EX_VERIFY unless exactly one
+# asset matches
+resolve_clavity_ls() {
+  case "$1 $2" in
+    "linux x64") rcl_rid=linux-x64 ;;
+    "mac aarch64") rcl_rid=osx-arm64 ;;
+    "mac x64") rcl_rid=osx-x64 ;;
+    "windows x64") rcl_rid=win-x64 ;;
+    *) return 1 ;;
+  esac
+  CL_TAG=$(github_latest_tag "$PIN_CLAVITY_REPO") ||
+    die "$EX_STEP" tools-bin "cannot determine the latest release of $PIN_CLAVITY_REPO"
+  if ! rcl_names=$(github_release_assets "$PIN_CLAVITY_REPO"); then
+    log WARN tools-bin "the GitHub API did not answer; reading the release page of $CL_TAG instead"
+    rcl_names=$(github_release_assets_scrape "$PIN_CLAVITY_REPO" "$CL_TAG") ||
+      die "$EX_STEP" tools-bin "cannot list the assets of $PIN_CLAVITY_REPO $CL_TAG"
+  fi
+  rcl_match=$(printf '%s\n' "$rcl_names" | grep -E "^clavity-ls-$rcl_rid-[0-9]+\\.[0-9]+\\.[0-9]+\\.tar\\.gz\$")
+  rcl_count=$(printf '%s\n' "$rcl_match" | grep -c .)
+  if [ "$rcl_count" -ne 1 ]; then
+    die "$EX_VERIFY" tools-bin "expected exactly one clavity-ls asset for $rcl_rid in $CL_TAG, found $rcl_count"
+  fi
+  CL_ASSET=$rcl_match
+  CL_VERSION=$(semver_from_output "$CL_ASSET")
+  CL_URL="https://github.com/$PIN_CLAVITY_REPO/releases/download/$CL_TAG/$CL_ASSET"
+  CL_SIDECAR_URL="$CL_URL.sha256"
+  log DEBUG tools-bin "clavity-ls latest: tag $CL_TAG, asset $CL_ASSET"
+  return 0
+}
+
+# install_single_binary NAME URL SIDECAR_URL EXPECTED_FILE DEST_PATH: downloads URL, checks it against the
+# SHA-256 in the sidecar, refuses an unsafe archive, extracts it into a staging directory beside DEST_PATH,
+# requires that the one entry is the regular file EXPECTED_FILE, and renames it over DEST_PATH. Returns 0 when
+# installed and 2 when the move failed on Windows (a running program holds DEST_PATH): the installed copy is
+# kept and the staged one removed. Every other failure dies, EX_VERIFY for anything the download, the checksum
+# or the archive got wrong.
+install_single_binary() {
+  isb_name=$1
+  isb_url=$2
+  isb_sidecar_url=$3
+  isb_expected=$4
+  isb_dest=$5
+  isb_dir=$(dirname -- "$isb_dest")
+  mkdir -p -- "$isb_dir" || die "$EX_STEP" tools-bin "cannot create directory: $isb_dir"
+  isb_stage=$(staging_new "$isb_dir" "$isb_name") || die "$EX_STEP" tools-bin "cannot create a staging directory in $isb_dir"
+  register_tmp "$isb_stage"
+  isb_final=$(resolve_redirects "$isb_sidecar_url") || die "$EX_VERIFY" tools-bin "cannot resolve the checksum of $isb_name: $isb_sidecar_url"
+  http_get "$isb_final" "$isb_stage/sidecar" || die "$EX_VERIFY" tools-bin "cannot download the checksum of $isb_name: $isb_sidecar_url"
+  isb_hash=$(sidecar_sha256 "$isb_stage/sidecar") || die "$EX_VERIFY" tools-bin "the checksum file of $isb_name holds no SHA-256: $isb_sidecar_url"
+  isb_archive="$isb_stage/${isb_url##*/}"
+  download_verified "$isb_url" "$isb_archive" "$isb_hash" || die "$EX_VERIFY" tools-bin "cannot download and verify $isb_name from $isb_url"
+  archive_check_safe "$isb_archive" || die "$EX_VERIFY" tools-bin "the archive of $isb_name is not safe to extract"
+  archive_extract "$isb_archive" "$isb_stage/x" || die "$EX_VERIFY" tools-bin "cannot extract the archive of $isb_name"
+  isb_count=0
+  isb_found=""
+  for isb_e in "$isb_stage"/x/* "$isb_stage"/x/.[!.]* "$isb_stage"/x/..?*; do
+    if [ -e "$isb_e" ] || [ -L "$isb_e" ]; then
+      isb_count=$((isb_count + 1))
+      isb_found=$isb_e
+    fi
+  done
+  if [ "$isb_count" -ne 1 ] || [ "${isb_found##*/}" != "$isb_expected" ] || [ -L "$isb_found" ] || [ ! -f "$isb_found" ]; then
+    die "$EX_VERIFY" tools-bin "the archive of $isb_name must hold exactly one file, $isb_expected (found $isb_count entries)"
+  fi
+  chmod +x -- "$isb_found" || die "$EX_STEP" tools-bin "cannot make $isb_expected executable"
+  if mv -f -- "$isb_found" "$isb_dest"; then
+    rm -rf -- "$isb_stage"
+    return 0
+  fi
+  if [ "${OS:-}" = windows ] && [ -e "$isb_dest" ]; then
+    log WARN tools-bin "close running sessions to update $isb_name"
+    rm -rf -- "$isb_stage"
+    return 2
+  fi
+  die "$EX_STEP" tools-bin "cannot move $isb_expected into place: $isb_dest"
+}
+
+# installed_version NAME: prints the X.Y.Z that BIN_DIR's copy of NAME reports for --version, or nothing at
+# all (status 0 either way) when that file is absent, not executable, exits non-zero or prints no X.Y.Z.
+# PATH is not consulted.
+installed_version() {
+  iv_bin="$BIN_DIR/$(bin_exe_name "$1")"
+  if [ ! -f "$iv_bin" ] || [ ! -x "$iv_bin" ]; then
+    return 0
+  fi
+  iv_out=$("$iv_bin" --version 2>/dev/null) || return 0
+  semver_from_output "$iv_out"
+  return 0
+}
+
+# tools_bin_one NAME LATEST URL SIDECAR_URL: decides install, update or skip for one tool and carries it out
+# (a dry or read-only run only reports); appends the outcome to TOOLS_BIN_SUMMARY
+tools_bin_one() {
+  tbo_name=$1
+  tbo_latest=$2
+  tbo_exe=$(bin_exe_name "$tbo_name")
+  tbo_dest="$BIN_DIR/$tbo_exe"
+  tbo_have=$(installed_version "$tbo_name")
+  if [ -z "$tbo_have" ]; then
+    tbo_decision=install
+    log DEBUG tools-bin "no $tbo_name in $(abbrev_home "$BIN_DIR")"
+  elif [ "$(semver_compare "$tbo_have" "$tbo_latest")" = -1 ]; then
+    tbo_decision=update
+  else
+    tbo_decision="skip (already latest)"
+  fi
+  log INFO tools-bin "$tbo_name: $tbo_decision (installed: ${tbo_have:-none}, latest: $tbo_latest)"
+  tbo_path=$(command -v "$tbo_name" 2>/dev/null) || tbo_path=""
+  if [ -n "$tbo_path" ] && [ "$tbo_path" != "$tbo_dest" ]; then
+    log WARN tools-bin "another $tbo_name at $tbo_path precedes the one this script manages"
+  fi
+  tbo_result=$tbo_decision
+  case "$tbo_decision" in
+    install | update)
+      if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+        log INFO tools-bin "$tbo_name: read-only run, nothing installed"
+        tbo_result="$tbo_decision (not done: read-only run)"
+      else
+        tbo_rc=0
+        install_single_binary "$tbo_name" "$3" "$4" "$tbo_exe" "$tbo_dest" || tbo_rc=$?
+        if [ "$tbo_rc" -eq 2 ]; then
+          tbo_result="kept ${tbo_have:-none} (in use)"
+        else
+          log INFO tools-bin "$tbo_name $tbo_latest installed in $(abbrev_home "$BIN_DIR")"
+        fi
+      fi
+      ;;
+  esac
+  TOOLS_BIN_SUMMARY="${TOOLS_BIN_SUMMARY}${TOOLS_BIN_SUMMARY:+$NL}$tbo_name $tbo_latest: $tbo_result"
+}
+
+# step_tools_bin: agent-profile then clavity-ls, each installed or updated to the latest release in BIN_DIR.
+# Takes the lock on TOOLS_DIR (kept until tools_lock_release) and puts BIN_DIR first on PATH. Sets
+# SUMMARY_tools_bin.
+step_tools_bin() {
+  TOOLS_BIN_SUMMARY=""
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log DEBUG tools-bin "read-only run: no lock taken"
+  else
+    lock_acquire "$TOOLS_DIR"
+    mkdir -p -- "$BIN_DIR" || die "$EX_STEP" tools-bin "cannot create directory: $BIN_DIR"
+  fi
+  resolve_agent_profile "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no agent-profile build for $OS $ARCH"
+  tools_bin_one agent-profile "$AP_VERSION" "$AP_URL" "$AP_SIDECAR_URL"
+  resolve_clavity_ls "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no clavity-ls build for $OS $ARCH"
+  tools_bin_one clavity-ls "$CL_VERSION" "$CL_URL" "$CL_SIDECAR_URL"
+  PATH="$BIN_DIR:$PATH"
+  export PATH
+  summary_set tools_bin "$TOOLS_BIN_SUMMARY"
+  log INFO tools-bin "ok"
+  return 0
+}
+
+# tools_lock_release: lets go of the lock step_tools_bin took on TOOLS_DIR. It belongs after the last step that
+# writes to the tools directory, so main calls it where the steps end and the step that follows moves the call.
+tools_lock_release() {
+  lock_release "$TOOLS_DIR"
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -1529,6 +1722,8 @@ main() {
   log_config
   step_preflight
   step_prereq
+  step_tools_bin
+  tools_lock_release
 }
 
 if [ "${REA_SETUP_NO_MAIN:-}" != 1 ]; then

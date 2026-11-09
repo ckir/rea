@@ -1805,6 +1805,266 @@ function Invoke-ReaStepPrereq {
     }
 }
 
+# --- step tools-bin ---
+
+# Runs a managed tool for its version: Path in, an object with ExitCode and Stdout out. A test replaces it to
+# run a stub on a host that cannot execute a .exe.
+$script:VersionRunner = $null
+
+# The file name of a managed tool in the bin directory.
+function Get-ReaBinExeName {
+    param([string]$Name)
+    return ($Name + '.exe')
+}
+
+# Resolves the latest aiprofiles release for Os and Arch ('windows'/'x64', 'linux'/'x64', 'mac'/'x64',
+# 'mac'/'aarch64'): an object with Tag, Version, Asset, Url and SidecarUrl. Returns nothing, before any network
+# request, for a platform with no build; stops on a release that cannot be resolved.
+function Resolve-ReaAgentProfile {
+    param([string]$Os, [string]$Arch)
+    switch ("$Os $Arch") {
+        'linux x64' { $asset = 'agent-profile-x86_64-unknown-linux-gnu.tar.gz' }
+        'mac x64' { $asset = 'agent-profile-x86_64-apple-darwin.tar.gz' }
+        'mac aarch64' { $asset = 'agent-profile-aarch64-apple-darwin.tar.gz' }
+        'windows x64' { $asset = 'agent-profile-x86_64-pc-windows-msvc.zip' }
+        default { return }
+    }
+    $tag = Get-ReaGitHubLatestTag -Repo $script:PIN_AGENT_PROFILE_REPO
+    if (-not $tag) {
+        Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot determine the latest release of $script:PIN_AGENT_PROFILE_REPO"
+    }
+    $version = Get-ReaSemver -Text $tag
+    if (-not $version) {
+        Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "release tag of $script:PIN_AGENT_PROFILE_REPO has no X.Y.Z version: $tag"
+    }
+    $url = "https://github.com/$script:PIN_AGENT_PROFILE_REPO/releases/latest/download/$asset"
+    Write-ReaLog DEBUG tools-bin "agent-profile latest: tag $tag, asset $asset"
+    return [pscustomobject]@{ Tag = $tag; Version = $version; Asset = $asset; Url = $url; SidecarUrl = ($url + '.sha256') }
+}
+
+# Resolves the latest clavity release for Os and Arch: an object with Tag, Version, Asset, Url and SidecarUrl.
+# The asset is the one tar.gz for the platform among the release's assets (from the API, else from the release
+# page); anything but exactly one match stops with exit 5. Returns nothing for a platform with no build.
+function Resolve-ReaClavityRelease {
+    param([string]$Os, [string]$Arch)
+    switch ("$Os $Arch") {
+        'linux x64' { $rid = 'linux-x64' }
+        'mac aarch64' { $rid = 'osx-arm64' }
+        'mac x64' { $rid = 'osx-x64' }
+        'windows x64' { $rid = 'win-x64' }
+        default { return }
+    }
+    $tag = Get-ReaGitHubLatestTag -Repo $script:PIN_CLAVITY_REPO
+    if (-not $tag) {
+        Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot determine the latest release of $script:PIN_CLAVITY_REPO"
+    }
+    $names = @(Get-ReaGitHubReleaseAsset -Repo $script:PIN_CLAVITY_REPO)
+    if ($names.Count -eq 0) {
+        Write-ReaLog WARN tools-bin "the GitHub API did not answer; reading the release page of $tag instead"
+        $names = @(Get-ReaGitHubReleaseAssetsScrape -Repo $script:PIN_CLAVITY_REPO -Tag $tag)
+    }
+    $pattern = '^clavity-ls-' + [regex]::Escape($rid) + '-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz\z'
+    $matched = @($names | Where-Object { $_ -cmatch $pattern })
+    if ($matched.Count -ne 1) {
+        Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "expected exactly one clavity-ls asset for $rid in $tag, found $($matched.Count)"
+    }
+    $asset = [string]$matched[0]
+    $url = "https://github.com/$script:PIN_CLAVITY_REPO/releases/download/$tag/$asset"
+    Write-ReaLog DEBUG tools-bin "clavity-ls latest: tag $tag, asset $asset"
+    return [pscustomobject]@{ Tag = $tag; Version = (Get-ReaSemver -Text $asset); Asset = $asset; Url = $url; SidecarUrl = ($url + '.sha256') }
+}
+
+# True when Ex or one of its inner exceptions says a file is held open or may not be replaced.
+function Test-ReaInUseError {
+    param([System.Exception]$Ex)
+    $e = $Ex
+    while ($null -ne $e) {
+        if ($e -is [System.IO.IOException] -or $e -is [System.UnauthorizedAccessException]) { return $true }
+        $e = $e.InnerException
+    }
+    return $false
+}
+
+# The name Resolve-ReaClavityLs is an alias: the analyzer's singular-noun rule rejects the plural-looking 'Ls'.
+Set-Alias -Name Resolve-ReaClavityLs -Value Resolve-ReaClavityRelease
+
+# Puts Source at Destination: File.Replace when Destination exists (it leaves Destination as it was when it
+# fails), a move otherwise. One function so a test can make the move fail.
+function Move-ReaIntoPlace {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param([string]$Source, [string]$Destination)
+    if (-not $PSCmdlet.ShouldProcess($Destination, 'replace')) { return }
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        [System.IO.File]::Replace($Source, $Destination, [NullString]::Value, $true)
+    } else {
+        [System.IO.File]::Move($Source, $Destination)
+    }
+}
+
+# Downloads Url, checks it against the SHA-256 in the sidecar, refuses an unsafe archive, extracts it into a
+# staging directory beside DestPath, requires the one entry to be the regular file ExpectedFile and puts it at
+# DestPath. Returns 'installed', or 'kept' when a running program holds DestPath (the installed copy stays, the
+# staged one is removed). Any other failure stops: exit 5 for what the download, the checksum or the archive got
+# wrong.
+function Install-ReaSingleBinary {
+    param([string]$Name, [string]$Url, [string]$SidecarUrl, [string]$ExpectedFile, [string]$DestPath)
+    $dir = Split-Path -Parent $DestPath
+    try {
+        [System.IO.Directory]::CreateDirectory($dir) | Out-Null
+    } catch {
+        Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot create directory: $dir"
+    }
+    $stage = New-ReaStaging -Dir $dir -Name $Name
+    try {
+        $side = Join-Path $stage 'sidecar'
+        $resolved = Resolve-ReaRedirect -Url $SidecarUrl
+        if ($resolved.Code -ne 0) {
+            Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "cannot resolve the checksum of ${Name}: $SidecarUrl"
+        }
+        if (-not (Invoke-ReaHttpGet -Url $resolved.Url -Destination $side)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "cannot download the checksum of ${Name}: $SidecarUrl"
+        }
+        $hash = Get-ReaSidecarSha256 -Path $side
+        if (-not $hash) {
+            Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "the checksum file of $Name holds no SHA-256: $SidecarUrl"
+        }
+        $archive = Join-Path $stage ($Url.Substring($Url.LastIndexOf('/') + 1))
+        if (-not (Get-ReaDownload -Url $Url -Destination $archive -Sha256 $hash)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "cannot download and verify $Name from $Url"
+        }
+        if (-not (Test-ReaArchiveSafe -Path $archive)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "the archive of $Name is not safe to extract"
+        }
+        $extract = Join-Path $stage 'x'
+        if (-not (Expand-ReaArchive -Path $archive -Destination $extract)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "cannot extract the archive of $Name"
+        }
+        $items = @(Get-ChildItem -LiteralPath $extract -Force)
+        $ok = ($items.Count -eq 1)
+        if ($ok) {
+            $item = $items[0]
+            $isLink = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            $ok = ($item.Name -ceq $ExpectedFile) -and (-not $item.PSIsContainer) -and (-not $isLink)
+        }
+        if (-not $ok) {
+            Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "the archive of $Name must hold exactly one file, $ExpectedFile (found $($items.Count) entries)"
+        }
+        $staged = $items[0].FullName
+        try {
+            Move-ReaIntoPlace -Source $staged -Destination $DestPath
+        } catch {
+            if ((Test-ReaInUseError $_.Exception) -and (Test-Path -LiteralPath $DestPath -PathType Leaf)) {
+                Write-ReaLog WARN tools-bin "close running sessions to update $Name"
+                return 'kept'
+            }
+            Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot move $ExpectedFile into place: $DestPath"
+        }
+        return 'installed'
+    } finally {
+        Clear-ReaTempFile -Path $stage
+    }
+}
+
+# The X.Y.Z that the copy of Name in the bin directory reports for --version, or '' when that file is absent,
+# not an application, exits non-zero or prints no X.Y.Z. PATH is not consulted.
+function Get-ReaInstalledVersion {
+    param([string]$Name)
+    $path = Join-Path $script:BinDir (Get-ReaBinExeName $Name)
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+    $app = Get-Command -Name ([WildcardPattern]::Escape($path)) -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $app) { return '' }
+    try {
+        if ($script:VersionRunner) {
+            $r = & $script:VersionRunner $path
+        } else {
+            $r = Invoke-ReaCommand -Step tools-bin -FilePath $path -ArgumentList @('--version')
+        }
+    } catch {
+        return ''
+    }
+    if ($null -eq $r -or $r.ExitCode -ne 0) { return '' }
+    $v = Get-ReaSemver -Text ([string]$r.Stdout)
+    if (-not $v) { return '' }
+    return [string]$v
+}
+
+# Decides install, update or skip for one tool and carries it out (a dry or read-only run only reports); returns
+# the summary line.
+function Install-ReaTool {
+    param([string]$Name, [string]$Latest, [string]$Url, [string]$SidecarUrl)
+    $exe = Get-ReaBinExeName $Name
+    $dest = Join-Path $script:BinDir $exe
+    $have = Get-ReaInstalledVersion -Name $Name
+    if (-not $have) {
+        $decision = 'install'
+        Write-ReaLog DEBUG tools-bin ("no $Name in " + (Get-ReaShortPath $script:BinDir))
+    } elseif ((Compare-ReaSemver $have $Latest) -eq -1) {
+        $decision = 'update'
+    } else {
+        $decision = 'skip (already latest)'
+    }
+    $shown = $have
+    if (-not $shown) { $shown = 'none' }
+    Write-ReaLog INFO tools-bin "${Name}: $decision (installed: $shown, latest: $Latest)"
+    $other = Resolve-ReaExecutable -Name $Name
+    if ($other -and -not [string]::Equals($other, $dest, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-ReaLog WARN tools-bin "another $Name at $other precedes the one this script manages"
+    }
+    $result = $decision
+    if ($decision -eq 'install' -or $decision -eq 'update') {
+        if ($script:Opt.DryRun -or $script:Opt.CheckUpstream) {
+            Write-ReaLog INFO tools-bin "${Name}: read-only run, nothing installed"
+            $result = "$decision (not done: read-only run)"
+        } else {
+            $done = Install-ReaSingleBinary -Name $Name -Url $Url -SidecarUrl $SidecarUrl -ExpectedFile $exe -DestPath $dest
+            if ($done -eq 'kept') {
+                $result = "kept $shown (in use)"
+            } else {
+                Write-ReaLog INFO tools-bin "$Name $Latest installed in $(Get-ReaShortPath $script:BinDir)"
+            }
+        }
+    }
+    return "$Name ${Latest}: $result"
+}
+
+# agent-profile then clavity-ls, each installed or updated to the latest release in the bin directory. Takes
+# the lock on the tools directory (kept until Unlock-ReaToolsDir) and puts the bin directory first on PATH.
+function Invoke-ReaStepToolsBin {
+    $readOnly = ($script:Opt.DryRun -or $script:Opt.CheckUpstream)
+    if ($readOnly) {
+        Write-ReaLog DEBUG tools-bin 'read-only run: no lock taken'
+    } else {
+        Lock-ReaDir -Dir $script:ToolsDir
+        try {
+            [System.IO.Directory]::CreateDirectory($script:BinDir) | Out-Null
+        } catch {
+            Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot create directory: $script:BinDir"
+        }
+    }
+    $platform = Get-ReaPlatform
+    $lines = New-Object System.Collections.Generic.List[string]
+    $ap = Resolve-ReaAgentProfile -Os $platform.Os -Arch $platform.Arch
+    if (-not $ap) {
+        Stop-Rea -Code $script:EX_PLATFORM -Step tools-bin -Message "no agent-profile build for $($platform.Os) $($platform.Arch)"
+    }
+    $lines.Add((Install-ReaTool -Name 'agent-profile' -Latest $ap.Version -Url $ap.Url -SidecarUrl $ap.SidecarUrl))
+    $cl = Resolve-ReaClavityRelease -Os $platform.Os -Arch $platform.Arch
+    if (-not $cl) {
+        Stop-Rea -Code $script:EX_PLATFORM -Step tools-bin -Message "no clavity-ls build for $($platform.Os) $($platform.Arch)"
+    }
+    $lines.Add((Install-ReaTool -Name 'clavity-ls' -Latest $cl.Version -Url $cl.Url -SidecarUrl $cl.SidecarUrl))
+    $env:PATH = $script:BinDir + [System.IO.Path]::PathSeparator + $env:PATH
+    $script:Summary['tools_bin'] = ($lines -join [Environment]::NewLine)
+    Write-ReaLog INFO tools-bin 'ok'
+}
+
+# Lets go of the lock Invoke-ReaStepToolsBin took on the tools directory. It belongs after the last step that
+# writes to the tools directory, so Invoke-Main calls it where the steps end and the step that follows moves the
+# call.
+function Unlock-ReaToolsDir {
+    Unlock-ReaDir -Dir $script:ToolsDir
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -1853,6 +2113,8 @@ function Invoke-Main {
         }
         Invoke-ReaStepPreflight
         Invoke-ReaStepPrereq
+        Invoke-ReaStepToolsBin
+        Unlock-ReaToolsDir
         return $script:EX_OK
     } catch {
         $code = $_.Exception.Data['ReaCode']

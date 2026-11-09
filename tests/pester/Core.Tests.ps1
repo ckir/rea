@@ -372,7 +372,7 @@ Describe 'Invoke-Main' {
         }
     }
 
-    It 'runs preflight then prereq and writes one log file (steps mocked, same on every OS)' {
+    It 'runs preflight, prereq and tools-bin and writes one log file (steps mocked, same on every OS)' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         $savedLogDir = $script:Opt.LogDir
         $savedLog = $script:LogFile
@@ -381,8 +381,10 @@ Describe 'Invoke-Main' {
             $script:Calls = New-Object System.Collections.Generic.List[string]
             Mock Invoke-ReaStepPreflight { $script:Calls.Add('preflight') }
             Mock Invoke-ReaStepPrereq { $script:Calls.Add('prereq') }
+            Mock Invoke-ReaStepToolsBin { $script:Calls.Add('tools-bin') }
+            Mock Unlock-ReaToolsDir { $script:Calls.Add('unlock') }
             Invoke-Main | Should -Be 0
-            ($script:Calls -join ',') | Should -Be 'preflight,prereq'
+            ($script:Calls -join ',') | Should -Be 'preflight,prereq,tools-bin,unlock'
             @(Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').Count | Should -Be 1
         } finally {
             $script:Opt.LogDir = $savedLogDir
