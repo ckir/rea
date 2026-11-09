@@ -19,6 +19,9 @@ The scenario maps a path to a list of responses, consumed in order, one per GET:
   {"status": 200, "head_status": 405}               (HEAD answers 405; GET answers 200)
   {"status": 200, "body_file": "f", "hang_after": N} (GET sends N body bytes of the promised length, then stalls
                                                        for 30 seconds)
+  {"status": 200, "body_file": "f", "content_length": N} (the Content-Length header says N instead of the body
+                                                       size, so a HEAD can report a large file without
+                                                       one; use it only for paths that are never fetched)
 A HEAD request is answered from the next unconsumed response without consuming or counting it, so a
 resolve step does not use up the responses meant for the download. A path whose list is exhausted, or
 that is not in the scenario, answers 410.
@@ -74,7 +77,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header(name, value)
         if "location" in spec:
             self.send_header("Location", spec["location"].replace("{base}", State.base))
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(spec.get("content_length", len(body))))
         self.send_header("Connection", "close")
         self.end_headers()
         if head:

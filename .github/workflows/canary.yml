@@ -1,0 +1,41 @@
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+# Weekly drift check: do the pins in setup.sh and setup.ps1 still match what the upstream releases publish?
+# --check-upstream fetches no archive and writes nothing; it prints one ok or FAIL line per expectation and
+# exits 5 when one fails. Every runner uses the Node that its image ships: the prerequisite check of both
+# scripts needs Node at the supported floor (it exits 4 below it), so a run that fails there means the image's
+# Node is too old, not that upstream drifted. No actions/setup-node is pinned in ci.yml to reuse here.
+
+name: Canary
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-upstream:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check upstream (POSIX)
+        if: runner.os != 'Windows'
+        run: sh setup.sh --check-upstream --yes
+      - name: Check upstream (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -CheckUpstream -Yes

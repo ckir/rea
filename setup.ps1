@@ -654,14 +654,14 @@ function Test-ReaTransientError {
 }
 
 # One HEAD (Method HEAD) or one-byte ranged GET (Method RANGE) without following redirects. Returns Status (0
-# when there was no HTTP answer), Location and Error. A non-2xx answer arrives as a WebException carrying the
+# when there was no HTTP answer), Location, ContentLength (-1 when unknown), ContentRange and Error. A non-2xx answer arrives as a WebException carrying the
 # response, so it is read from there.
 function Send-ReaHeadRequest {
     param(
         [string]$Url,
         [ValidateSet('HEAD', 'RANGE')][string]$Method = 'HEAD'
     )
-    $result = [pscustomobject]@{ Status = 0; Location = $null; Error = '' }
+    $result = [pscustomobject]@{ Status = 0; Location = $null; Error = ''; ContentLength = [int64]-1; ContentRange = $null }
     $resp = $null
     try {
         if ($Method -eq 'RANGE') {
@@ -681,6 +681,8 @@ function Send-ReaHeadRequest {
         }
         $result.Status = [int]$resp.StatusCode
         $result.Location = $resp.Headers['Location']
+        $result.ContentLength = [int64]$resp.ContentLength
+        $result.ContentRange = $resp.Headers['Content-Range']
     } catch {
         $result.Error = $_.Exception.Message
     } finally {
@@ -3396,6 +3398,193 @@ function Invoke-ReaStepLaunch {
     return $code
 }
 
+# --- step check-upstream ---
+
+# The SHA-256 held by the sidecar file at Url (redirects resolved, the small file fetched into a temporary file
+# that is removed); $null when it cannot be fetched or holds no 64-hex token.
+function Get-ReaUpstreamSidecar {
+    param([string]$Url)
+    $resolved = Resolve-ReaRedirect -Url $Url
+    if ($resolved.Code -ne 0) { return $null }
+    $tmp = [System.IO.Path]::GetTempFileName()
+    Register-ReaTempFile $tmp
+    try {
+        if (-not (Invoke-ReaHttpGet -Url $resolved.Url -Destination $tmp)) { return $null }
+        return (Get-ReaSidecarSha256 -Path $tmp)
+    } finally {
+        Clear-ReaTempFile -Path $tmp
+    }
+}
+
+# The size in bytes of the file at Url without fetching it: the Content-Length of a HEAD or, when the HEAD is
+# refused (403, 405), the total of the Content-Range of a one-byte GET. 5xx and a failed connection are retried
+# like Invoke-ReaHttpGet does. $null when no size can be read.
+function Get-ReaContentLength {
+    param([string]$Url)
+    $waits = @($script:RetryWaits)
+    for ($attempt = 1; $attempt -le $waits.Count; $attempt++) {
+        $r = Send-ReaHeadRequest -Url $Url -Method 'HEAD'
+        if ($r.Status -eq 403 -or $r.Status -eq 405) {
+            $r = Send-ReaHeadRequest -Url $Url -Method 'RANGE'
+        }
+        Write-ReaLog DEBUG check-upstream "size of $Url -> $($r.Status)"
+        if ($r.Status -eq 200 -and $r.ContentLength -ge 0) { return [int64]$r.ContentLength }
+        if ($r.Status -eq 206 -and $r.ContentRange -match '/([0-9]+)\s*$') { return [int64]$Matches[1] }
+        $transient = ($r.Status -eq 0 -or ($r.Status -ge 500 -and $r.Status -le 599))
+        if (-not $transient -or $attempt -ge $waits.Count) { return $null }
+        Invoke-ReaSleep -Seconds ([int]$waits[$attempt - 1])
+    }
+    return $null
+}
+
+# The Ghidra version the latest rea-agents release says it supports, read from SUPPORTED_GHIDRA_VERSION in the
+# source of its tag. Stops with exit 5 when that is not PIN_GHIDRA_VERSION, or when the registry answer, the file
+# or the constant is missing. Prints the ok line and returns ReaVersion and Ghidra.
+function Get-ReaRuntimeSupportedGhidra {
+    $npm = 'https://registry.npmjs.org/rea-agents/latest'
+    $tmp = [System.IO.Path]::GetTempFileName()
+    Register-ReaTempFile $tmp
+    try {
+        if (-not (Invoke-ReaHttpGet -Url $npm -Destination $tmp)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "cannot read the latest rea-agents release from $npm"
+        }
+        $version = ''
+        try {
+            $version = [string]([System.IO.File]::ReadAllText($tmp) | ConvertFrom-Json).version
+        } catch {
+            $version = ''
+        }
+        if ($version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+\z') {
+            Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "no X.Y.Z version in the answer of $npm"
+        }
+        $src = "https://raw.githubusercontent.com/morluto/rea/rea-agents-$version/src/ghidra/GhidraReleasePolicy.ts"
+        if (-not (Invoke-ReaHttpGet -Url $src -Destination $tmp)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "cannot read $src"
+        }
+        $m = [regex]::Match([System.IO.File]::ReadAllText($tmp), 'SUPPORTED_GHIDRA_VERSION\s*=\s*"([0-9.]+)"')
+        if (-not $m.Success) {
+            Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "no SUPPORTED_GHIDRA_VERSION constant in $src"
+        }
+        $ghidra = $m.Groups[1].Value
+        if ($ghidra -cne $script:PIN_GHIDRA_VERSION) {
+            Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "rea $version now supports Ghidra $ghidra; update PIN_GHIDRA_*"
+        }
+        Write-ReaOutput "ok rea_supported_ghidra: rea-agents $version supports Ghidra $ghidra"
+        return [pscustomobject]@{ ReaVersion = $version; Ghidra = $ghidra }
+    } finally {
+        Clear-ReaTempFile -Path $tmp
+    }
+}
+
+# The latest aiprofiles release has the asset for this host and a 64-hex sidecar.
+function Test-ReaUpstreamAgentProfile {
+    param($Platform)
+    $ap = Resolve-ReaAgentProfile -Os $Platform.Os -Arch $Platform.Arch
+    if (-not $ap) {
+        Stop-Rea -Code $script:EX_PLATFORM -Step check-upstream -Message "no agent-profile build for $($Platform.Os) $($Platform.Arch)"
+    }
+    if ((Resolve-ReaRedirect -Url $ap.Url).Code -ne 0) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "the agent-profile asset is missing: $($ap.Url)"
+    }
+    $hash = Get-ReaUpstreamSidecar -Url $ap.SidecarUrl
+    if (-not $hash) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "no SHA-256 in the sidecar $($ap.SidecarUrl)"
+    }
+    Write-ReaOutput "ok agent-profile: $($ap.Tag) $($ap.Asset) sha256 $hash"
+}
+
+# The latest clavity release has exactly one asset for this host and a 64-hex sidecar.
+function Test-ReaUpstreamClavity {
+    param($Platform)
+    $cl = Resolve-ReaClavityRelease -Os $Platform.Os -Arch $Platform.Arch
+    if (-not $cl) {
+        Stop-Rea -Code $script:EX_PLATFORM -Step check-upstream -Message "no clavity-ls build for $($Platform.Os) $($Platform.Arch)"
+    }
+    $hash = Get-ReaUpstreamSidecar -Url $cl.SidecarUrl
+    if (-not $hash) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "no SHA-256 in the sidecar $($cl.SidecarUrl)"
+    }
+    Write-ReaOutput "ok clavity-ls: $($cl.Tag) $($cl.Asset) sha256 $hash"
+}
+
+# The Adoptium API answers a Temurin 21 release for this host and its .sha256.txt sidecar equals the checksum of
+# the API.
+function Test-ReaUpstreamAdoptium {
+    param($Platform)
+    $r = Resolve-ReaAdoptium -Os $Platform.Os -Arch $Platform.Arch
+    if ($r.Code -eq 2) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "the Adoptium API did not answer for $($Platform.Os) $($Platform.Arch)"
+    }
+    if ($r.Code -ne 0) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "the Adoptium answer for $($Platform.Os) $($Platform.Arch) failed validation"
+    }
+    $jdk = $r.Jdk
+    $sidecar = $jdk.SidecarUrl
+    if (-not $sidecar) { $sidecar = $jdk.Url + '.sha256.txt' }
+    $hash = Get-ReaUpstreamSidecar -Url $sidecar
+    if (-not $hash) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "no SHA-256 in the sidecar $sidecar"
+    }
+    if ($hash -cne $jdk.Sha256) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "the sidecar $sidecar says $hash but the Adoptium API says $($jdk.Sha256)"
+    }
+    Write-ReaOutput "ok adoptium: $($jdk.Release) sha256 $hash"
+}
+
+# PIN_GHIDRA_URL redirects to an allow-listed host and the file there has PIN_GHIDRA_ZIP_BYTES bytes.
+function Test-ReaUpstreamGhidra {
+    $resolved = Resolve-ReaRedirect -Url $script:PIN_GHIDRA_URL
+    if ($resolved.Code -ne 0) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "cannot resolve PIN_GHIDRA_URL $script:PIN_GHIDRA_URL"
+    }
+    $length = Get-ReaContentLength -Url $resolved.Url
+    if ($null -eq $length) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "cannot read the size of $($resolved.Url)"
+    }
+    if ($length -ne [int64]$script:PIN_GHIDRA_ZIP_BYTES) {
+        Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "Ghidra $script:PIN_GHIDRA_VERSION is $length bytes upstream but PIN_GHIDRA_ZIP_BYTES is $script:PIN_GHIDRA_ZIP_BYTES; update PIN_GHIDRA_*"
+    }
+    Write-ReaOutput "ok ghidra: $length bytes at $(Get-ReaUrlHost $resolved.Url)"
+}
+
+# Checks that what the pins assume still holds upstream: one ok or FAIL line per expectation, all of them even
+# after a failure. Returns the exit status of the first failing one, 0 when all hold. Fetches no archive and
+# writes nothing.
+function Test-ReaUpstream {
+    $platform = Get-ReaPlatform
+    $first = 0
+    foreach ($name in 'agent-profile', 'clavity-ls', 'adoptium', 'ghidra', 'rea_supported_ghidra') {
+        try {
+            switch ($name) {
+                'agent-profile' { Test-ReaUpstreamAgentProfile -Platform $platform }
+                'clavity-ls' { Test-ReaUpstreamClavity -Platform $platform }
+                'adoptium' { Test-ReaUpstreamAdoptium -Platform $platform }
+                'ghidra' { Test-ReaUpstreamGhidra }
+                default { $null = Get-ReaRuntimeSupportedGhidra }
+            }
+        } catch {
+            $code = $_.Exception.Data['ReaCode']
+            if ($null -eq $code) {
+                $code = $script:EX_STEP
+                Write-ReaLog ERROR check-upstream ('unexpected error: ' + $_.Exception.Message)
+            }
+            Write-ReaOutput "FAIL $name"
+            if ($first -eq 0) { $first = [int]$code }
+        }
+    }
+    return $first
+}
+
+# Replaces the install steps with -CheckUpstream: stops with the status of the first failing expectation.
+function Invoke-ReaStepCheckUpstream {
+    $code = Test-ReaUpstream
+    if ($code -ne 0) {
+        Stop-Rea -Code $code -Step check-upstream -Message 'upstream no longer matches the pins in this script'
+    }
+    $script:Summary['check_upstream'] = 'ok'
+    Write-ReaLog INFO check-upstream 'ok'
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -3444,6 +3633,10 @@ function Invoke-Main {
         }
         Invoke-ReaStepPreflight
         Invoke-ReaStepPrereq
+        if ($script:Opt.CheckUpstream) {
+            Invoke-ReaStepCheckUpstream
+            return $script:EX_OK
+        }
         Invoke-ReaPlanToolsBin
         Invoke-ReaPlanJdk
         Invoke-ReaPlanGhidra

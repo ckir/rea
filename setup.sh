@@ -2808,6 +2808,168 @@ step_launch() {
   exit "$sl_rc"
 }
 
+# --- step check-upstream ---
+
+# cu_sidecar URL: prints the SHA-256 held by the sidecar file at URL (redirects resolved, the small file
+# fetched into a temporary file that is removed); fails when it cannot be fetched or holds no 64-hex token
+cu_sidecar() {
+  cs_final=$(resolve_redirects "$1") || return 1
+  cs_tmp=$(mktemp "${TMPDIR:-/tmp}/rea-setup-sc.XXXXXX") || return 1
+  register_tmp "$cs_tmp"
+  cs_hash=""
+  if http_get "$cs_final" "$cs_tmp"; then
+    cs_hash=$(sidecar_sha256 "$cs_tmp") || cs_hash=""
+  fi
+  rm -f "$cs_tmp"
+  [ -n "$cs_hash" ] || return 1
+  printf '%s\n' "$cs_hash"
+}
+
+# cu_headers URL [CURL_ARG...]: the response headers of one request, lower-cased, CR removed. -I is a HEAD; a
+# ranged GET passes -r 0-0 -D - -o /dev/null instead. --max-filesize makes curl refuse a body it was told is
+# large, so a server that ignores the range still sends nothing.
+cu_headers() {
+  ch_url=$1
+  shift
+  "$CURL" -sS --proto "$(net_proto)" --tlsv1.2 --connect-timeout 20 --max-time 60 "$@" "$ch_url" 2>/dev/null |
+    tr -d '\r' | tr '[:upper:]' '[:lower:]'
+}
+
+# cu_content_length URL: prints the size in bytes of the file at URL without fetching it: the Content-Length of
+# a HEAD or, when the HEAD is refused (403, 405), the total of the Content-Range of a one-byte GET; 5xx and a
+# failed connection are retried like http_get does. Fails when no size can be read.
+cu_content_length() {
+  cc_url=$1
+  cc_try=0
+  for cc_w in $RETRY_WAITS; do
+    cc_try=$((cc_try + 1))
+    cc_hdr=$(cu_headers "$cc_url" -I) || cc_hdr=""
+    cc_code=$(printf '%s\n' "$cc_hdr" | sed -n '1s/^http[^ ]* \([0-9][0-9]*\).*/\1/p')
+    case "$cc_code" in
+      403 | 405)
+        cc_hdr=$(cu_headers "$cc_url" -r 0-0 -D - -o /dev/null --max-filesize 1000) || cc_hdr=""
+        cc_code=$(printf '%s\n' "$cc_hdr" | sed -n '1s/^http[^ ]* \([0-9][0-9]*\).*/\1/p')
+        ;;
+    esac
+    log DEBUG check-upstream "size of $cc_url -> ${cc_code:-000}"
+    case "$cc_code" in
+      200)
+        printf '%s\n' "$cc_hdr" | sed -n 's/^content-length:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | tail -n 1
+        return 0
+        ;;
+      206)
+        printf '%s\n' "$cc_hdr" | sed -n 's/^content-range:[[:space:]]*bytes[[:space:]]*[0-9]*-[0-9]*\/\([0-9][0-9]*\).*/\1/p' | tail -n 1
+        return 0
+        ;;
+      5?? | '') ;;
+      *) return 1 ;;
+    esac
+    [ "$cc_try" -lt "$(printf '%s\n' "$RETRY_WAITS" | wc -w | tr -d ' ')" ] || return 1
+    "$SLEEP" "$cc_w"
+  done
+  return 1
+}
+
+# rea_supported_ghidra: the Ghidra version the latest rea-agents release says it supports, read from
+# SUPPORTED_GHIDRA_VERSION in the source of its tag; dies EX_VERIFY when that is not PIN_GHIDRA_VERSION, or when
+# the registry answer, the file or the constant is missing. Prints the ok line.
+rea_supported_ghidra() {
+  rg_tmp=$(mktemp "${TMPDIR:-/tmp}/rea-setup-rea.XXXXXX") || die "$EX_STEP" check-upstream "cannot create a temporary file"
+  register_tmp "$rg_tmp"
+  rg_npm=https://registry.npmjs.org/rea-agents/latest
+  http_get "$rg_npm" "$rg_tmp" || die "$EX_VERIFY" check-upstream "cannot read the latest rea-agents release from $rg_npm"
+  rg_ver=$(json_query "$rg_tmp" 'd.version' 2>/dev/null) || rg_ver=""
+  if ! printf '%s\n' "$rg_ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    die "$EX_VERIFY" check-upstream "no X.Y.Z version in the answer of $rg_npm"
+  fi
+  rg_src="https://raw.githubusercontent.com/morluto/rea/rea-agents-$rg_ver/src/ghidra/GhidraReleasePolicy.ts"
+  http_get "$rg_src" "$rg_tmp" || die "$EX_VERIFY" check-upstream "cannot read $rg_src"
+  rg_ghidra=$(sed -n -E 's/.*SUPPORTED_GHIDRA_VERSION[[:space:]]*=[[:space:]]*"([0-9.]+)".*/\1/p' "$rg_tmp" | head -n 1)
+  rm -f "$rg_tmp"
+  [ -n "$rg_ghidra" ] || die "$EX_VERIFY" check-upstream "no SUPPORTED_GHIDRA_VERSION constant in $rg_src"
+  if [ "$rg_ghidra" != "$PIN_GHIDRA_VERSION" ]; then
+    die "$EX_VERIFY" check-upstream "rea $rg_ver now supports Ghidra $rg_ghidra; update PIN_GHIDRA_*"
+  fi
+  printf 'ok rea_supported_ghidra: rea-agents %s supports Ghidra %s\n' "$rg_ver" "$rg_ghidra"
+}
+
+# cu_agent_profile: the latest aiprofiles release has the asset for this host and a 64-hex sidecar
+cu_agent_profile() {
+  resolve_agent_profile "$OS" "$ARCH" || die "$EX_PLATFORM" check-upstream "no agent-profile build for $OS $ARCH"
+  resolve_redirects "$AP_URL" >/dev/null || die "$EX_VERIFY" check-upstream "the agent-profile asset is missing: $AP_URL"
+  cu_hash=$(cu_sidecar "$AP_SIDECAR_URL") || die "$EX_VERIFY" check-upstream "no SHA-256 in the sidecar $AP_SIDECAR_URL"
+  printf 'ok agent-profile: %s %s sha256 %s\n' "$AP_TAG" "$AP_ASSET" "$cu_hash"
+}
+
+# cu_clavity_ls: the latest clavity release has exactly one asset for this host and a 64-hex sidecar
+cu_clavity_ls() {
+  resolve_clavity_ls "$OS" "$ARCH" || die "$EX_PLATFORM" check-upstream "no clavity-ls build for $OS $ARCH"
+  cu_hash=$(cu_sidecar "$CL_SIDECAR_URL") || die "$EX_VERIFY" check-upstream "no SHA-256 in the sidecar $CL_SIDECAR_URL"
+  printf 'ok clavity-ls: %s %s sha256 %s\n' "$CL_TAG" "$CL_ASSET" "$cu_hash"
+}
+
+# cu_adoptium: the Adoptium API answers a Temurin 21 release for this host and its .sha256.txt sidecar equals
+# the checksum of the API
+cu_adoptium() {
+  cu_rc=0
+  adoptium_resolve "$OS" "$ARCH" || cu_rc=$?
+  case "$cu_rc" in
+    0) ;;
+    2) die "$EX_VERIFY" check-upstream "the Adoptium API did not answer for $OS $ARCH" ;;
+    *) die "$EX_VERIFY" check-upstream "the Adoptium answer for $OS $ARCH failed validation" ;;
+  esac
+  cu_sc=${JDK_SIDECAR_URL:-$JDK_URL.sha256.txt}
+  cu_hash=$(cu_sidecar "$cu_sc") || die "$EX_VERIFY" check-upstream "no SHA-256 in the sidecar $cu_sc"
+  if [ "$cu_hash" != "$JDK_SHA256" ]; then
+    die "$EX_VERIFY" check-upstream "the sidecar $cu_sc says $cu_hash but the Adoptium API says $JDK_SHA256"
+  fi
+  printf 'ok adoptium: %s sha256 %s\n' "$JDK_RELEASE" "$cu_hash"
+}
+
+# cu_ghidra: PIN_GHIDRA_URL redirects to an allow-listed host and the file there has PIN_GHIDRA_ZIP_BYTES bytes
+cu_ghidra() {
+  cu_final=$(resolve_redirects "$PIN_GHIDRA_URL") || die "$EX_VERIFY" check-upstream "cannot resolve PIN_GHIDRA_URL $PIN_GHIDRA_URL"
+  cu_len=$(cu_content_length "$cu_final") || die "$EX_VERIFY" check-upstream "cannot read the size of $cu_final"
+  if [ "$cu_len" != "$PIN_GHIDRA_ZIP_BYTES" ]; then
+    die "$EX_VERIFY" check-upstream "Ghidra $PIN_GHIDRA_VERSION is $cu_len bytes upstream but PIN_GHIDRA_ZIP_BYTES is $PIN_GHIDRA_ZIP_BYTES; update PIN_GHIDRA_*"
+  fi
+  printf 'ok ghidra: %s bytes at %s\n' "$cu_len" "$(url_host "$cu_final")"
+}
+
+# cu_run NAME FUNCTION: runs one expectation in a subshell (die exits only that), printing FAIL NAME when it
+# fails; the first failing status is kept in CU_FIRST
+cu_run() {
+  cr_rc=0
+  (
+    install_traps
+    "$2"
+  ) || cr_rc=$?
+  if [ "$cr_rc" -ne 0 ]; then
+    printf 'FAIL %s\n' "$1"
+    if [ "$CU_FIRST" -eq 0 ]; then
+      CU_FIRST=$cr_rc
+    fi
+  fi
+}
+
+# step_check_upstream: replaces the install steps with --check-upstream. Checks that what the pins assume still
+# holds upstream, one `ok` or `FAIL` line per expectation on stdout, all of them even after a failure; exits
+# with the status of the first failing one. Fetches no archive and writes nothing but the log.
+step_check_upstream() {
+  CU_FIRST=0
+  cu_run agent-profile cu_agent_profile
+  cu_run clavity-ls cu_clavity_ls
+  cu_run adoptium cu_adoptium
+  cu_run ghidra cu_ghidra
+  cu_run rea_supported_ghidra rea_supported_ghidra
+  if [ "$CU_FIRST" -ne 0 ]; then
+    die "$CU_FIRST" check-upstream "upstream no longer matches the pins in this script"
+  fi
+  summary_set check_upstream ok
+  log INFO check-upstream "ok"
+  return 0
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -2835,6 +2997,10 @@ main() {
   log_config
   step_preflight
   step_prereq
+  if [ "$OPT_CHECK_UPSTREAM" -eq 1 ]; then
+    step_check_upstream
+    exit "$EX_OK"
+  fi
   tools_bin_plan
   jdk_plan
   ghidra_plan
