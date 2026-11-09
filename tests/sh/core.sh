@@ -39,6 +39,34 @@ assert_eq "mac aarch64" "$(
 )" "platform mac arm"
 assert_status 1 "linux arm64 unsupported" sh -c '. ./setup.sh; UNAME_S=Linux UNAME_M=aarch64 platform_detect'
 
+# Review fixes: redaction is case-insensitive and handles quoted values
+assert_eq "api_key=<redacted> x" "$(redact 'api_key=abc x')" "redact lowercase name"
+assert_eq "password=<redacted>" "$(redact 'password=hunter2')" "redact lowercase password"
+assert_eq "Github_Token=<redacted>" "$(redact 'Github_Token=x')" "redact mixed case"
+assert_eq "PASSWORD=<redacted> next" "$(redact 'PASSWORD="a b c" next')" "redact double-quoted value"
+assert_eq "my_secret=<redacted> next" "$(redact "my_secret='a b c' next")" "redact single-quoted value"
+assert_eq "AUTHORIZATION: <redacted>" "$(redact 'AUTHORIZATION: Bearer abc')" "redact AUTHORIZATION"
+assert_eq "authorization: <redacted>" "$(redact 'authorization: Bearer abc')" "redact authorization"
+assert_eq "plain=value" "$(redact 'plain=value')" "redact leaves others"
+
+# Review fixes: log() abbreviates the home directory in console and file
+t_log=$(mktemp)
+t_con=$(HOME=/home/u CONSOLE_LEVEL=INFO LOG_FILE="$t_log" log INFO x "see /home/u/x and ~/y" 2>&1)
+assert_match 'see ~/x and ~/y$' "$t_con" "console abbreviates home"
+assert_match 'see ~/x and ~/y$' "$(cat "$t_log")" "file abbreviates home"
+t_con=$(HOME=/home/u CONSOLE_LEVEL=INFO LOG_FILE=/dev/null log INFO x "near /home/ux and /home/u" 2>&1)
+assert_match 'near /home/ux and ~$' "$t_con" "home boundary respected"
+rm -f "$t_log"
+
+# Review fixes: minor
+assert_eq "/etc/passwd" "$(HOME='' abbrev_home /etc/passwd)" "empty HOME does nothing"
+assert_eq "0" "$(semver_compare 24.22.1-rc 24.22.1)" "semver suffix"
+assert_eq "-1" "$(semver_compare 22 22.0.1)" "semver missing parts"
+assert_status 0 "node 24.22.1-rc ok" node_version_ok v24.22.1-rc
+assert_status 1 "node v22 too old" node_version_ok v22
+assert_status 0 "node 27 ok" node_version_ok v27.0.0
+assert_eq "warning: cannot write the log file; continuing without one" "$(LOG_FILE=/nonexistent-dir/x.log CONSOLE_LEVEL=ERROR log INFO x hi 2>&1)" "unwritable log: only the script warning shows"
+
 # An inherited UNAME_S must not spoof detection in a real run.
 t_tmp=$(mktemp -d)
 t_out=$(UNAME_S=Darwin UNAME_M=arm64 REA_SETUP_NO_MAIN=0 sh "$ROOT/setup.sh" --dry-run --yes --log-dir "$t_tmp" 2>&1)

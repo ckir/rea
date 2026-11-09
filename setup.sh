@@ -87,8 +87,8 @@ log_format() {
 
 # log LEVEL STEP MSG: the file always gets the line; stderr gets it when LEVEL >= CONSOLE_LEVEL
 log() {
-  l_line=$(log_format "$1" "$2" "$(redact "$3")")
-  if ! printf '%s\n' "$l_line" >>"$LOG_FILE" 2>/dev/null; then
+  l_line=$(log_format "$1" "$2" "$(abbrev_text "$(redact "$3")")")
+  if ! { printf '%s\n' "$l_line" >>"$LOG_FILE"; } 2>/dev/null; then
     LOG_FILE=/dev/null
     printf 'warning: cannot write the log file; continuing without one\n' >&2
   fi
@@ -116,7 +116,10 @@ run_cmd() {
   rc_step=$1
   shift
   RUN_STDOUT=$(mktemp "${TMPDIR:-/tmp}/rea-setup-out.XXXXXX") || return 1
-  rc_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || return 1
+  rc_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || {
+    rm -f "$RUN_STDOUT"
+    return 1
+  }
   log DEBUG "$rc_step" "run: $*"
   rc_start=$(date +%s)
   rc=0
@@ -154,22 +157,43 @@ log_open() {
   fi
 }
 
-# redact TEXT: hides secrets in a log message
+# redact TEXT: hides secrets in a log message. Names are matched case-insensitively with explicit letter
+# classes (portable: no GNU sed I flag); quoted values are consumed whole.
 redact() {
+  rd_q="'"
+  rd_names='[Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]'
+  rd_auth='[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
   printf '%s\n' "$1" | sed -E \
-    -e 's/([A-Za-z0-9_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_]*)=[^ ]*/\1=<redacted>/g' \
-    -e 's/([Aa]uthorization:)[^"]*/\1 <redacted>/g' \
+    -e "s/([A-Za-z0-9_]*($rd_names)[A-Za-z0-9_]*)=(\"[^\"]*\"|${rd_q}[^${rd_q}]*${rd_q}|[^ ]*)/\\1=<redacted>/g" \
+    -e "s/($rd_auth:)[^\"]*/\\1 <redacted>/g" \
     -e 's#(https?://)[^/@ ]*@#\1#g' \
     -e 's#(https?://[^ ?]*)\?[^ ]*#\1#g'
 }
 
-# abbrev_home PATH: prints PATH with the home directory as ~
+# abbrev_home PATH: prints PATH with the home directory as ~ (nothing when HOME is empty or /)
 abbrev_home() {
-  case "$1" in
-    "$HOME") printf '%s\n' "~" ;;
-    "$HOME"/*) printf '~%s\n' "${1#"$HOME"}" ;;
-    *) printf '%s\n' "$1" ;;
+  case "${HOME:-}" in
+    '' | /) printf '%s\n' "$1" ;;
+    *)
+      case "$1" in
+        "$HOME") printf '%s\n' "~" ;;
+        "$HOME"/*) printf '~%s\n' "${1#"$HOME"}" ;;
+        *) printf '%s\n' "$1" ;;
+      esac
+      ;;
   esac
+}
+
+# abbrev_text TEXT: replaces the home directory inside free text with ~ (whole path components only)
+abbrev_text() {
+  case "${HOME:-}" in
+    '' | /)
+      printf '%s\n' "$1"
+      return 0
+      ;;
+  esac
+  at_home=$(printf '%s' "$HOME" | sed -e 's/[][\\.*^$+?(){}|#]/\\&/g')
+  printf '%s\n' "$1" | sed -E -e "s#(^|[^A-Za-z0-9._/-])${at_home}(/|[^A-Za-z0-9._-]|\$)#\\1~\\2#g"
 }
 
 # --- arguments ---
@@ -272,20 +296,34 @@ semver_from_output() {
   printf '%s\n' "$1" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
 }
 
-# semver_compare A B: prints -1, 0 or 1
+# semver_part VERSION N: the Nth (1-3) numeric component's leading digits; a missing one counts as 0
+semver_part() {
+  sp_rest=$1
+  sp_i=1
+  while [ "$sp_i" -lt "$2" ]; do
+    case "$sp_rest" in
+      *.*) sp_rest=${sp_rest#*.} ;;
+      *) sp_rest="" ;;
+    esac
+    sp_i=$((sp_i + 1))
+  done
+  sp_part=${sp_rest%%.*}
+  sp_part=${sp_part%%[!0-9]*}
+  echo "${sp_part:-0}"
+}
+
+# semver_compare A B: prints -1, 0 or 1, comparing the leading numeric X.Y.Z only
 semver_compare() {
-  sc_a=$1
-  sc_b=$2
   sc_i=0
   while [ "$sc_i" -lt 3 ]; do
     sc_i=$((sc_i + 1))
-    sc_x=$(printf '%s' "$sc_a" | cut -d. -f"$sc_i")
-    sc_y=$(printf '%s' "$sc_b" | cut -d. -f"$sc_i")
-    if [ "${sc_x:-0}" -lt "${sc_y:-0}" ]; then
+    sc_x=$(semver_part "$1" "$sc_i")
+    sc_y=$(semver_part "$2" "$sc_i")
+    if [ "$sc_x" -lt "$sc_y" ]; then
       echo -1
       return 0
     fi
-    if [ "${sc_x:-0}" -gt "${sc_y:-0}" ]; then
+    if [ "$sc_x" -gt "$sc_y" ]; then
       echo 1
       return 0
     fi
@@ -297,6 +335,7 @@ semver_compare() {
 node_version_ok() {
   nv=${1#v}
   nv_major=${nv%%.*}
+  nv_major=${nv_major%%[!0-9]*}
   case "$nv_major" in
     22) nv_floor=22.23.4 ;;
     24) nv_floor=24.22.1 ;;
