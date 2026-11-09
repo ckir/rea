@@ -957,6 +957,637 @@ function Resolve-ReaAdoptium {
     }
 }
 
+# --- files, locks, archives and staging ---
+
+# Test seams: how many polls a lock waits (2 s each, so 60 is 120 s), the pause per poll, and the tar program
+# ('tar.exe' is the bsdtar that ships with Windows 10; elsewhere plain 'tar').
+$script:LockPolls = 60
+$script:LockPollSeconds = 2
+$script:LockHeld = New-Object System.Collections.Generic.List[string]
+$script:TarExe = ''
+
+# The tools directory: -ToolsDir, else %LOCALAPPDATA%\rea-tools.
+function Get-ReaLocalAppData {
+    $base = $env:LOCALAPPDATA
+    if (-not $base) { $base = [Environment]::GetFolderPath('LocalApplicationData') }
+    return $base
+}
+
+function Get-ReaToolsDir {
+    if ($script:Opt.ToolsDir) { return $script:Opt.ToolsDir }
+    return (Join-Path (Get-ReaLocalAppData) 'rea-tools')
+}
+
+# The launcher directory: -BinDir, else %LOCALAPPDATA%\rea-tools\bin.
+function Get-ReaBinDir {
+    if ($script:Opt.BinDir) { return $script:Opt.BinDir }
+    return (Join-Path (Join-Path (Get-ReaLocalAppData) 'rea-tools') 'bin')
+}
+
+function Test-ReaWindowsHost {
+    return ([System.IO.Path]::DirectorySeparatorChar -eq '\')
+}
+
+# The volume that holds Path: DriveType, DriveFormat and AvailableFreeSpace. A UNC path has no drive letter, so
+# it is reported as a network volume without a size. One function so a test can stand in for any kind of volume.
+function Get-ReaDriveInfo {
+    param([string]$Path)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    if ($root.StartsWith('\\')) {
+        return [pscustomobject]@{ DriveType = 'Network'; DriveFormat = ''; AvailableFreeSpace = [int64]0 }
+    }
+    return (New-Object System.IO.DriveInfo $root)
+}
+
+# Free megabytes on the volume holding Path; a path that does not exist yet uses its nearest existing parent.
+function Get-ReaFreeMb {
+    param([string]$Path)
+    $probe = [System.IO.Path]::GetFullPath($Path)
+    while (-not (Test-Path -LiteralPath $probe -PathType Container)) {
+        $parent = Split-Path -Parent $probe
+        if (-not $parent -or $parent -eq $probe) { break }
+        $probe = $parent
+    }
+    $info = Get-ReaDriveInfo -Path $probe
+    return [int64][math]::Floor($info.AvailableFreeSpace / 1MB)
+}
+
+# True on a fixed NTFS volume; anything else (network, ReFS, FAT, removable, unreadable) stops with exit code 1.
+function Test-ReaFixedNtfsVolume {
+    param([string]$Path)
+    $type = ''
+    $format = ''
+    try {
+        $info = Get-ReaDriveInfo -Path $Path
+        $type = [string]$info.DriveType
+        $format = [string]$info.DriveFormat
+    } catch {
+        $type = 'unreadable'
+    }
+    if ($type -ne 'Fixed' -or $format -ne 'NTFS') {
+        Stop-Rea -Code $script:EX_STEP -Step disk -Message "the install location must be on a fixed NTFS volume; $Path is $type $format"
+    }
+    return $true
+}
+
+# True when Path's modification time is more than Minutes minutes ago.
+function Test-ReaOlderThan {
+    param([string]$Path, [int]$Minutes)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $false }
+    return ($item.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddMinutes(-$Minutes))
+}
+
+# True when a process with that id exists.
+function Test-ReaProcessAlive {
+    param([int64]$ProcessId)
+    if ($ProcessId -le 0 -or $ProcessId -gt [int]::MaxValue) { return $false }
+    return ($null -ne (Get-Process -Id ([int]$ProcessId) -ErrorAction SilentlyContinue))
+}
+
+# The pid recorded in LockDir\owner, or $null.
+function Get-ReaLockOwner {
+    param([string]$LockDir)
+    $file = Join-Path $LockDir 'owner'
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    try {
+        $first = [System.IO.File]::ReadAllLines($file) | Select-Object -First 1
+    } catch {
+        return $null
+    }
+    $m = [regex]::Match([string]$first, '^pid=([0-9]+)')
+    if ($m.Success) { return [string]$m.Groups[1].Value }
+    return $null
+}
+
+# Takes Dir\.lock (creating a directory is atomic) and records pid and start time in Dir\.lock\owner. A lock
+# whose owner is dead (or that has no owner and is over a minute old) is moved aside to .lock.stale.<pid> and
+# dropped, with a WARN, but only while its owner file still names the pid judged dead. A live owner is waited for,
+# 2 s per poll, up to $script:LockPolls polls, then the step fails. Taking a lock this process holds is a no-op.
+# The lock is registered for Clear-ReaTempFile, so Invoke-Main's finally releases it.
+function Lock-ReaDir {
+    param([string]$Dir)
+    if ($script:LockHeld.Contains($Dir)) { return }
+    try {
+        [System.IO.Directory]::CreateDirectory($Dir) | Out-Null
+    } catch {
+        Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot create directory: $Dir"
+    }
+    $lock = Join-Path $Dir '.lock'
+    $polls = 0
+    while ($true) {
+        $made = $false
+        try {
+            New-Item -ItemType Directory -Path $lock -ErrorAction Stop | Out-Null
+            $made = $true
+        } catch {
+            $made = $false
+        }
+        if ($made) {
+            $started = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            try {
+                [System.IO.File]::WriteAllText((Join-Path $lock 'owner'), "pid=$PID started=$started" + [Environment]::NewLine)
+            } catch {
+                Write-ReaLog -Level DEBUG -Step tools-bin -Message "cannot write the lock owner file: $lock"
+            }
+            Register-ReaTempFile $lock
+            $script:LockHeld.Add($Dir)
+            return
+        }
+        if (-not (Test-Path -LiteralPath $lock -PathType Container)) {
+            Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot create lock: $lock"
+        }
+        $owner = Get-ReaLockOwner -LockDir $lock
+        $stale = $false
+        if ($null -ne $owner) {
+            if (-not (Test-ReaProcessAlive -ProcessId ([int64]$owner))) { $stale = $true }
+        } elseif (Test-ReaOlderThan -Path $lock -Minutes 1) {
+            $stale = $true
+        }
+        if ($stale) {
+            # Move the lock aside (atomic) only while its owner is still the one judged dead; a failed move
+            # means another process took it over first, so fall through to normal polling. The live name is
+            # never deleted. Directory.Move fails when the target exists, where Move-Item would nest inside it.
+            $aside = Join-Path $Dir ".lock.stale.$PID"
+            Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+            $moved = $false
+            if ([string](Get-ReaLockOwner -LockDir $lock) -eq [string]$owner) {
+                try {
+                    [System.IO.Directory]::Move($lock, $aside)
+                    $moved = $true
+                } catch {
+                    $moved = $false
+                }
+            }
+            if ($moved) {
+                if ([string](Get-ReaLockOwner -LockDir $aside) -eq [string]$owner) {
+                    $who = 'unknown'
+                    if ($null -ne $owner) { $who = $owner }
+                    Write-ReaLog -Level WARN -Step tools-bin -Message "stale lock from pid $who taken over: $lock"
+                    Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+                } elseif (-not (Test-Path -LiteralPath $lock)) {
+                    # We moved a lock that changed owner between the check and the move: put it back.
+                    try {
+                        [System.IO.Directory]::Move($aside, $lock)
+                    } catch {
+                        Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                } else {
+                    Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                continue
+            }
+        }
+        $polls++
+        if ($polls -ge $script:LockPolls) {
+            $who = 'unknown'
+            if ($null -ne $owner) { $who = $owner }
+            Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "lock held by pid ${who}: $lock"
+        }
+        Invoke-ReaSleep -Seconds $script:LockPollSeconds
+    }
+}
+
+# Removes Dir\.lock when this process holds it; otherwise does nothing.
+function Unlock-ReaDir {
+    param([string]$Dir)
+    if (-not $script:LockHeld.Contains($Dir)) { return }
+    Clear-ReaTempFile -Path (Join-Path $Dir '.lock')
+    $null = $script:LockHeld.Remove($Dir)
+}
+
+# Removes Dir\*.tmp.<pid> and Dir\*.old.<pid> whose process is gone or whose modification time is over 24 hours
+# old (also the POSIX script's leftovers); logs each. A suffix that is not a plain number is left alone.
+function Remove-ReaOrphan {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param([string]$Dir)
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return }
+    $items = @(Get-ChildItem -LiteralPath $Dir -Force | Where-Object { $_.Name -like '*.tmp.*' -or $_.Name -like '*.old.*' })
+    foreach ($item in $items) {
+        $suffix = $item.Name.Substring($item.Name.LastIndexOf('.') + 1)
+        if ($suffix -notmatch '^[0-9]+$') { continue }
+        $why = $null
+        $procId = [int64]0
+        if (-not [int64]::TryParse($suffix, [ref]$procId)) { continue }
+        if (-not (Test-ReaProcessAlive -ProcessId $procId)) {
+            $why = "pid $suffix is not running"
+        } elseif (Test-ReaOlderThan -Path $item.FullName -Minutes 1440) {
+            $why = 'older than 24 hours'
+        }
+        if ($null -eq $why) { continue }
+        if ($PSCmdlet.ShouldProcess($item.FullName, 'remove orphan')) {
+            Write-ReaLog -Level INFO -Step cleanup -Message "removing orphan ($why): $($item.FullName)"
+            try {
+                Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-ReaLog -Level WARN -Step cleanup -Message "could not remove orphan: $($item.FullName)"
+            }
+        }
+    }
+}
+
+# True when Path is Root or below it. Both must already be full paths. The comparison includes a trailing
+# separator, so C:\dest-evil is not inside C:\dest; Windows passes -IgnoreCase.
+function Test-ReaPathInside {
+    param(
+        [string]$Path,
+        [string]$Root,
+        [char]$Separator = [System.IO.Path]::DirectorySeparatorChar,
+        [switch]$IgnoreCase
+    )
+    $cmp = [System.StringComparison]::Ordinal
+    if ($IgnoreCase) { $cmp = [System.StringComparison]::OrdinalIgnoreCase }
+    $r = $Root.TrimEnd($Separator) + $Separator
+    $p = $Path.TrimEnd($Separator) + $Separator
+    return $p.StartsWith($r, $cmp)
+}
+
+# The tar program for this host.
+function Get-ReaTarExe {
+    if ($script:TarExe) { return $script:TarExe }
+    if (Test-ReaWindowsHost) { return 'tar.exe' }
+    return 'tar'
+}
+
+# The text after the first Count whitespace-separated fields of Line, leading blanks removed.
+function Skip-ReaField {
+    param([string]$Line, [int]$Count)
+    $rest = $Line
+    for ($i = 0; $i -lt $Count; $i++) {
+        $rest = [regex]::Replace($rest, '^\s*\S+', '')
+    }
+    return $rest.TrimStart()
+}
+
+# Parses `tar -tv` output (GNU or bsdtar) into entries with Mode, Type (f, d, l, h), Path and Target. Returns
+# nothing when any line cannot be parsed or the listing is empty, so a name holding a newline cannot slip through.
+function ConvertFrom-ReaTarListing {
+    param([AllowEmptyString()][string]$Text)
+    $lines = @($Text -split "`n")
+    if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines = @($lines | Select-Object -First ($lines.Count - 1)) }
+    if ($lines.Count -eq 0) { return }
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($raw in $lines) {
+        $line = $raw.TrimEnd("`r")
+        $head = [regex]::Match($line, '^([-dlhcbps][-rwxsStTlL.+@]+)\s')
+        if (-not $head.Success) { return }
+        $mode = $head.Groups[1].Value
+        $fields = @($line.Trim() -split '\s+')
+        if ($fields.Count -gt 3 -and $fields[3] -match '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+            $rest = Skip-ReaField -Line $line -Count 5
+        } else {
+            $rest = Skip-ReaField -Line $line -Count 8
+        }
+        $type = $mode.Substring(0, 1)
+        if ($type -eq '-') { $type = 'f' }
+        $target = ''
+        if ($type -eq 'h' -or $type -eq 'l') {
+            $sep = ' -> '
+            if ($type -eq 'h' -and $rest.Contains(' link to ')) { $sep = ' link to ' }
+            $parts = @($rest -split [regex]::Escape($sep))
+            if ($parts.Count -ne 2) { return }
+            $rest = $parts[0]
+            $target = $parts[1]
+        }
+        $entries.Add([pscustomobject]@{ Mode = $mode; Type = $type; Path = $rest; Target = $target })
+    }
+    return $entries.ToArray()
+}
+
+# The entries of a zip. The type comes from the name (a trailing / or \ is a directory) and the Unix mode kept
+# in the high half of the external attributes (a symlink's target is the entry's content). Returns nothing when
+# the zip cannot be read.
+function Get-ReaZipEntry {
+    param([string]$Path)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = $null
+    try {
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        $entries = New-Object System.Collections.Generic.List[object]
+        foreach ($e in $zip.Entries) {
+            $name = $e.FullName
+            $unix = ([int64]$e.ExternalAttributes -shr 16) -band 0xFFFF
+            $target = ''
+            if ($name.EndsWith('/') -or $name.EndsWith('\')) {
+                $type = 'd'
+            } elseif (($unix -band 0xF000) -eq 0xA000) {
+                $type = 'l'
+                $stream = $e.Open()
+                try {
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $buffer = New-Object 'char[]' 4096
+                    $n = $reader.Read($buffer, 0, 4096)
+                    $target = -join $buffer[0..([math]::Max($n, 1) - 1)]
+                    if ($n -le 0) { $target = '' }
+                } finally {
+                    $stream.Dispose()
+                }
+            } else {
+                $type = 'f'
+            }
+            $entries.Add([pscustomobject]@{ Mode = [Convert]::ToString($unix, 8); Type = $type; Path = $name; Target = $target })
+        }
+        return $entries.ToArray()
+    } catch {
+        Write-ReaLog -Level DEBUG -Step archive -Message ('cannot read ' + $Path + ': ' + $_.Exception.Message)
+        return
+    } finally {
+        if ($null -ne $zip) { $zip.Dispose() }
+    }
+}
+
+# The entries of a .zip (OpenRead) or tar.gz (tar -tvzf): Mode, Type (f, d, l, h), Path, Target. Returns nothing
+# when the archive is missing, cannot be listed or a record cannot be parsed. An archive with no entries gives
+# nothing as well.
+function Get-ReaArchiveEntry {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    if ($Path -match '\.zip$') {
+        return (Get-ReaZipEntry -Path $Path)
+    }
+    $r = Invoke-ReaCommand -Step archive -FilePath (Get-ReaTarExe) -ArgumentList @('-tvzf', $Path)
+    if ($r.ExitCode -ne 0) { return }
+    return (ConvertFrom-ReaTarListing -Text $r.Stdout)
+}
+
+# The path with / separators, every component canonical (no empty or . parts).
+function ConvertTo-ReaArchiveCanon {
+    param([string]$Path)
+    $parts = @(($Path -replace '\\', '/') -split '/' | Where-Object { $_ -ne '' -and $_ -ne '.' })
+    return ($parts -join '/')
+}
+
+# True when a link target, resolved from the link's directory Dir, leaves the archive root. A .. after a normal
+# component is refused outright, since it cannot be resolved without the filesystem.
+function Test-ReaLinkEscape {
+    param([string]$Dir, [string]$Target)
+    $t = $Target -replace '\\', '/'
+    if ($t.StartsWith('/') -or $t -match '^[A-Za-z]:') { return $true }
+    $depth = @(($Dir -replace '\\', '/') -split '/' | Where-Object { $_ -ne '' -and $_ -ne '.' }).Count
+    $seen = $false
+    foreach ($c in ($t -split '/')) {
+        if ($c -eq '' -or $c -eq '.') { continue }
+        if ($c -eq '..') {
+            if ($seen) { return $true }
+            $depth--
+            if ($depth -lt 0) { return $true }
+        } else {
+            $seen = $true
+        }
+    }
+    return $false
+}
+
+# True when every entry stays inside the archive root: no absolute path (leading / or \, a drive letter, UNC), no
+# .. component (a backslash is a separator), no path below a symlink made earlier or later in the same archive,
+# no link whose target leaves the root. Fails closed on an empty list. Logs the first offending entry.
+function Test-ReaArchiveEntry {
+    param([object[]]$Entries)
+    $list = @($Entries | Where-Object { $null -ne $_ })
+    if ($list.Count -eq 0) { return $false }
+    $sym = @{}
+    foreach ($e in $list) {
+        if ($e.Type -eq 'l') { $sym[(ConvertTo-ReaArchiveCanon $e.Path)] = $true }
+    }
+    foreach ($e in $list) {
+        $p = ([string]$e.Path) -replace '\\', '/'
+        $why = ''
+        if ($p -eq '') {
+            $why = 'empty path'
+        } elseif ($p.StartsWith('/') -or $p -match '^[A-Za-z]:') {
+            $why = 'absolute path'
+        } elseif (@($p -split '/') -contains '..') {
+            $why = 'parent-directory component'
+        } elseif (@($p -split '/' | Where-Object { $_ -match '^[A-Za-z]:' }).Count -gt 0) {
+            $why = 'drive letter'
+        } elseif ($e.Type -eq 'l') {
+            $dir = ''
+            if ($p -match '/[^/]*/?$') { $dir = [regex]::Replace($p, '/[^/]*/?$', '') }
+            if (Test-ReaLinkEscape -Dir $dir -Target ([string]$e.Target)) { $why = 'symlink target leaves the archive: ' + $e.Target }
+        } elseif ($e.Type -eq 'h') {
+            if (Test-ReaLinkEscape -Dir '' -Target ([string]$e.Target)) { $why = 'hardlink target leaves the archive: ' + $e.Target }
+        }
+        if ($why -eq '') {
+            $parts = @((ConvertTo-ReaArchiveCanon $p) -split '/')
+            $prefix = ''
+            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                if ($prefix -eq '') { $prefix = $parts[$i] } else { $prefix = $prefix + '/' + $parts[$i] }
+                if ($sym.ContainsKey($prefix)) { $why = "path below a symlink ($prefix)"; break }
+            }
+        }
+        if ($why -ne '') {
+            Write-ReaLog -Level ERROR -Step archive -Message ("unsafe archive entry: {0} ({1})" -f $e.Path, $why)
+            return $false
+        }
+    }
+    return $true
+}
+
+# True when the archive can be listed, holds at least one entry and every entry is safe. Unreadable, empty,
+# missing and non-archive files are all unsafe.
+function Test-ReaArchiveSafe {
+    param([string]$Path)
+    $entries = @(Get-ReaArchiveEntry -Path $Path)
+    if ($entries.Count -eq 0) {
+        Write-ReaLog -Level ERROR -Step archive -Message "cannot list archive: $Path"
+        return $false
+    }
+    return (Test-ReaArchiveEntry -Entries $entries)
+}
+
+# PRECONDITION: the caller has run Test-ReaArchiveSafe on this same, already verified file. A zip is extracted
+# entry by entry: a directory entry is created, never extracted; for a file the parent directory is created
+# first and ExtractToFile is told not to overwrite, after the resolved target is checked to be inside the
+# destination again. A tar.gz is extracted with tar -xzf -C. Returns $true on success.
+function Expand-ReaArchive {
+    param([string]$Path, [string]$Destination)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
+    } catch {
+        return $false
+    }
+    if ($Path -notmatch '\.zip$') {
+        $r = Invoke-ReaCommand -Step archive -FilePath (Get-ReaTarExe) -ArgumentList @('-xzf', $Path, '-C', $Destination, '--no-same-owner')
+        return ($r.ExitCode -eq 0)
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $root = [System.IO.Path]::GetFullPath($Destination)
+    $ignoreCase = Test-ReaWindowsHost
+    $zip = $null
+    try {
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        foreach ($e in $zip.Entries) {
+            $name = $e.FullName
+            $isDir = ($name.EndsWith('/') -or $name.EndsWith('\'))
+            $rel = ($name -replace '\\', '/').Replace('/', [string]$sep)
+            # Combine, unlike Join-Path, drops the destination for a rooted name, so such an entry resolves
+            # outside it and is refused below; a drive letter is refused outright (on Linux it is only a name).
+            $target = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($root, $rel))
+            if ($name -match '^[A-Za-z]:' -or -not (Test-ReaPathInside -Path $target -Root $root -Separator $sep -IgnoreCase:$ignoreCase)) {
+                Write-ReaLog -Level ERROR -Step archive -Message "archive entry resolves outside the destination: $name"
+                return $false
+            }
+            if ($isDir) {
+                [System.IO.Directory]::CreateDirectory($target) | Out-Null
+                continue
+            }
+            [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($target)) | Out-Null
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $false)
+        }
+        return $true
+    } catch {
+        Write-ReaLog -Level ERROR -Step archive -Message ('cannot extract ' + $Path + ': ' + $_.Exception.Message)
+        return $false
+    } finally {
+        if ($null -ne $zip) { $zip.Dispose() }
+    }
+}
+
+# Creates Dir\Name.tmp.<pid> (replacing a leftover of that name), registers it for Clear-ReaTempFile and
+# returns its path.
+function New-ReaStaging {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param([string]$Dir, [string]$Name)
+    $path = Join-Path $Dir "$Name.tmp.$PID"
+    if (-not $PSCmdlet.ShouldProcess($path, 'create staging directory')) { return }
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    [System.IO.Directory]::CreateDirectory($path) | Out-Null
+    Register-ReaTempFile $path
+    return $path
+}
+
+# Marks Staging complete (.install-complete, written inside it: UTC timestamp and script version), moves an
+# existing Final aside to Final.old.<pid>, renames Staging in and deletes the old one (a failed delete only
+# warns). A failure of the second move puts the old install back. Returns $true when Final is the new install.
+function Complete-ReaInstall {
+    param([string]$Staging, [string]$Final)
+    $old = "$Final.old.$PID"
+    try {
+        $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $text = "$stamp $script:PIN_SCRIPT_VERSION" + [Environment]::NewLine
+        [System.IO.File]::WriteAllText((Join-Path $Staging '.install-complete'), $text)
+    } catch {
+        Write-ReaLog -Level ERROR -Step install -Message "cannot mark the install complete: $Staging"
+        return $false
+    }
+    Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue
+    $hadFinal = Test-Path -LiteralPath $Final
+    if ($hadFinal) {
+        try {
+            Move-Item -LiteralPath $Final -Destination $old -ErrorAction Stop
+        } catch {
+            Write-ReaLog -Level ERROR -Step install -Message "cannot move the previous install aside: $Final"
+            return $false
+        }
+    }
+    try {
+        Move-Item -LiteralPath $Staging -Destination $Final -ErrorAction Stop
+    } catch {
+        Write-ReaLog -Level ERROR -Step install -Message "cannot move the new install into place: $Final"
+        if ($hadFinal) {
+            try {
+                Move-Item -LiteralPath $old -Destination $Final -ErrorAction Stop
+            } catch {
+                Write-ReaLog -Level ERROR -Step install -Message "cannot restore the previous install from: $old"
+            }
+        }
+        return $false
+    }
+    Clear-ReaTempFile -Path $Staging
+    if ($hadFinal) {
+        try {
+            Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-ReaLog -Level WARN -Step install -Message "could not remove the previous install: $old"
+        }
+    }
+    return $true
+}
+
+# True when Dir\.install-complete and every listed file under Dir exist.
+function Test-ReaInstallValid {
+    param([string]$Dir, [string[]]$File = @())
+    if (-not (Test-Path -LiteralPath (Join-Path $Dir '.install-complete') -PathType Leaf)) { return $false }
+    foreach ($f in $File) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Dir $f))) { return $false }
+    }
+    return $true
+}
+
+# The build number after the + in a JDK release name (0 when absent).
+function Get-ReaJdkBuild {
+    param([string]$Name)
+    $m = [regex]::Match($Name, '\+([0-9]+)')
+    if ($m.Success) { return [int64]$m.Groups[1].Value }
+    return [int64]0
+}
+
+# True when directory name A (jdk-21.0.13+9) is a newer release than B: the X.Y.Z first, then the build number.
+function Test-ReaJdkNewer {
+    param([string]$A, [string]$B)
+    $va = ($A -replace '^jdk-', '') -replace '\+.*$', ''
+    $vb = ($B -replace '^jdk-', '') -replace '\+.*$', ''
+    $c = Compare-ReaSemver $va $vb
+    if ($c -ne 0) { return ($c -gt 0) }
+    return ((Get-ReaJdkBuild $A) -gt (Get-ReaJdkBuild $B))
+}
+
+# Keeps the two newest jdk-<digit>* directories under ToolsDir that hold .install-complete or a release file
+# (nothing else is ever touched) and whichever one holds JAVA_HOME or an -InUse path; removes the rest (a failed
+# removal only warns). Staging and .old directories are ignored.
+function Remove-ReaOldJdk {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param([string]$ToolsDir, [string[]]$InUse = @())
+    if (-not (Test-Path -LiteralPath $ToolsDir -PathType Container)) { return }
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $cmp = [System.StringComparison]::Ordinal
+    if (Test-ReaWindowsHost) { $cmp = [System.StringComparison]::OrdinalIgnoreCase }
+    $homes = @($InUse) + @($env:JAVA_HOME) | Where-Object { $_ }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($d in @(Get-ChildItem -LiteralPath $ToolsDir -Directory -Force | Where-Object { $_.Name -like 'jdk-[0-9]*' })) {
+        if ($d.Name -like '*.tmp.*' -or $d.Name -like '*.old.*') { continue }
+        $marked = (Test-Path -LiteralPath (Join-Path $d.FullName '.install-complete') -PathType Leaf) -or
+            (Test-Path -LiteralPath (Join-Path $d.FullName 'release') -PathType Leaf) -or
+            (Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $d.FullName 'Contents') 'Home') 'release') -PathType Leaf)
+        if ($marked) { $names.Add($d.Name) }
+    }
+    foreach ($n in $names) {
+        $newer = 0
+        foreach ($m in $names) {
+            if ($m -ne $n -and (Test-ReaJdkNewer -A $m -B $n)) { $newer++ }
+        }
+        if ($newer -lt 2) { continue }
+        $full = Join-Path $ToolsDir $n
+        $keep = $false
+        foreach ($h in $homes) {
+            $hp = $h.TrimEnd('/', '\') + $sep
+            if ($hp.StartsWith($full + $sep, $cmp)) { $keep = $true }
+        }
+        if ($keep) {
+            Write-ReaLog -Level INFO -Step jdk -Message "keeping the JDK in use: $full"
+            continue
+        }
+        if ($PSCmdlet.ShouldProcess($full, 'remove old JDK')) {
+            Write-ReaLog -Level INFO -Step jdk -Message "removing old JDK: $full"
+            try {
+                Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-ReaLog -Level WARN -Step jdk -Message "could not remove: $full"
+            }
+        }
+    }
+}
+
+# The brief names these with a plural noun (or, for Ntfs, a name ending in s), which PSUseSingularNouns rejects; the
+# singular function is the real one.
+Set-Alias -Name Get-ReaArchiveEntries -Value Get-ReaArchiveEntry
+Set-Alias -Name Remove-ReaOrphans -Value Remove-ReaOrphan
+Set-Alias -Name Remove-ReaOldJdks -Value Remove-ReaOldJdk
+Set-Alias -Name Test-ReaFixedNtfs -Value Test-ReaFixedNtfsVolume
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
