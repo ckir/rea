@@ -1,0 +1,202 @@
+{
+  "schema": "agent-profile/doctor/1",
+  "tool_version": "0.1.1",
+  "agent": "claude",
+  "profile": "t1",
+  "repository": null,
+  "result": "ok",
+  "counts": {
+    "pass": 6,
+    "info": 9,
+    "warn": 0,
+    "fail": 0,
+    "skip": 0
+  },
+  "checks": [
+    {
+      "id": "platform",
+      "agent": null,
+      "subject": null,
+      "status": "info",
+      "message": "linux x86_64, agent-profile 0.1.1",
+      "data": {
+        "arch": "x86_64",
+        "os": "linux"
+      }
+    },
+    {
+      "id": "app_root",
+      "agent": null,
+      "subject": "/home/u/.local/share/agent-profile",
+      "status": "pass",
+      "message": "application root /home/u/.local/share/agent-profile is a directory",
+      "data": {
+        "exists": true,
+        "path": "/home/u/.local/share/agent-profile"
+      }
+    },
+    {
+      "id": "app_root_writable",
+      "agent": null,
+      "subject": "/home/u/.local/share/agent-profile",
+      "status": "pass",
+      "message": "/home/u/.local/share/agent-profile has a write permission bit (only permission bits were read, never ACLs or ownership)",
+      "data": {
+        "exists": true,
+        "path": "/home/u/.local/share/agent-profile"
+      }
+    },
+    {
+      "id": "config",
+      "agent": null,
+      "subject": "/home/u/.local/share/agent-profile/config.toml",
+      "status": "info",
+      "message": "no configuration at /home/u/.local/share/agent-profile/config.toml; defaults apply",
+      "data": {
+        "exists": false,
+        "path": "/home/u/.local/share/agent-profile/config.toml"
+      }
+    },
+    {
+      "id": "profiles_dir",
+      "agent": null,
+      "subject": "/home/u/.local/share/agent-profile/profiles",
+      "status": "pass",
+      "message": "profiles directory /home/u/.local/share/agent-profile/profiles lists 1 profile(s), 0 entr(ies) ignored",
+      "data": {
+        "exists": true,
+        "ignored": 0,
+        "path": "/home/u/.local/share/agent-profile/profiles",
+        "profiles": 1
+      }
+    },
+    {
+      "id": "default_profile",
+      "agent": null,
+      "subject": null,
+      "status": "info",
+      "message": "no global default profile is set",
+      "data": null
+    },
+    {
+      "id": "repository",
+      "agent": null,
+      "subject": "/home/u/work",
+      "status": "info",
+      "message": "/home/u/work is not in a repository",
+      "data": null
+    },
+    {
+      "id": "executable",
+      "agent": "claude",
+      "subject": "/home/u/.local/bin/claude",
+      "status": "pass",
+      "message": "found /home/u/.local/bin/claude (on PATH)",
+      "data": {
+        "origin": "path",
+        "path": "/home/u/.local/bin/claude",
+        "state": "found"
+      }
+    },
+    {
+      "id": "support",
+      "agent": "claude",
+      "subject": null,
+      "status": "info",
+      "message": "claude is proven against upstream version 2.1.310 verified 2026-10-25; mechanism claude-config-dir-v1; the installed version is not probed",
+      "data": {
+        "capabilities": [
+          {
+            "basis": "cited: user settings live in the config directory; project .claude/settings*.json and .mcp.json still layer on top",
+            "capability": "config",
+            "state": "supported"
+          },
+          {
+            "basis": "measured: credential environment variables override it; the per-directory .credentials.json and macOS Keychain entry are cited, not measured",
+            "capability": "credentials",
+            "state": "conditional"
+          },
+          {
+            "basis": "cited: history and project state moving with the directory is community-sourced only",
+            "capability": "state",
+            "state": "not_guaranteed"
+          }
+        ],
+        "evidence": {
+          "notes": "CLAUDE_CONFIG_DIR relocates .credentials.json and keys the macOS Keychain entry per directory; ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_CODE_OAUTH_REFRESH_TOKEN, ANTHROPIC_PROFILE, CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX and CLAUDE_CODE_USE_FOUNDRY override it (binary strings measured)",
+          "source_url": "https://code.claude.com/docs/en/authentication",
+          "upstream_version": "2.1.310",
+          "verified_at": "2026-10-25"
+        },
+        "installed_version": null,
+        "mechanism": {
+          "description": "environment variable CLAUDE_CONFIG_DIR",
+          "id": "claude-config-dir-v1"
+        },
+        "support": "proven",
+        "version_probe": "not_run"
+      }
+    },
+    {
+      "id": "resolution",
+      "agent": "claude",
+      "subject": "t1",
+      "status": "info",
+      "message": "profile `t1` resolves for claude (explicit)",
+      "data": null
+    },
+    {
+      "id": "profile",
+      "agent": "claude",
+      "subject": "t1",
+      "status": "pass",
+      "message": "profile `t1` exists for claude",
+      "data": {
+        "existing": null,
+        "state": "materialized"
+      }
+    },
+    {
+      "id": "profile_path",
+      "agent": "claude",
+      "subject": "/home/u/.local/share/agent-profile/profiles/t1/claude",
+      "status": "pass",
+      "message": "/home/u/.local/share/agent-profile/profiles/t1/claude is a directory",
+      "data": {
+        "exists": true,
+        "kind": "dir",
+        "mode": "700",
+        "path": "/home/u/.local/share/agent-profile/profiles/t1/claude"
+      }
+    },
+    {
+      "id": "launch_environment",
+      "agent": "claude",
+      "subject": "CLAUDE_CONFIG_DIR",
+      "status": "info",
+      "message": "sets CLAUDE_CONFIG_DIR to /home/u/.local/share/agent-profile/profiles/t1/claude",
+      "data": {
+        "already_set": false,
+        "kind": "env",
+        "name": "CLAUDE_CONFIG_DIR",
+        "value": "/home/u/.local/share/agent-profile/profiles/t1/claude"
+      }
+    },
+    {
+      "id": "capability",
+      "agent": "claude",
+      "subject": "credentials",
+      "status": "info",
+      "message": "credentials isolation is conditional: measured: credential environment variables override it; the per-directory .credentials.json and macOS Keychain entry are cited, not measured",
+      "data": null
+    },
+    {
+      "id": "capability",
+      "agent": "claude",
+      "subject": "state",
+      "status": "info",
+      "message": "state isolation is not guaranteed: cited: history and project state moving with the directory is community-sourced only",
+      "data": null
+    }
+  ]
+}
