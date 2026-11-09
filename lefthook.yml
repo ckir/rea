@@ -33,6 +33,8 @@ pre-push:
       run: just psanalyze
     suppressions:
       run: just suppressions
+    drift:
+      run: just drift
     tools-doc-check:
       run: just tools-doc-check
     test:

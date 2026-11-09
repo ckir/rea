@@ -54,6 +54,10 @@ tools-doc-check:
 suppressions:
     sh scripts/check-suppressions.sh
 
+# The pins in setup.sh and setup.ps1 are identical and each obeys its own rule
+drift:
+    sh scripts/check-drift.sh && sh scripts/tests/check-drift.sh
+
 # Every workflow `uses:` is pinned to a commit SHA
 action-pins:
     sh scripts/check-action-pins.sh && sh scripts/tests/check-action-pins.sh
@@ -76,4 +80,4 @@ test-integration:
     sh tests/integration/run.sh
 
 # The local gate, cheapest first
-check: tools-check typos license-check line-citations action-pins actionlint fmt-check shellcheck psanalyze suppressions tools-doc-check test
+check: tools-check typos license-check line-citations action-pins actionlint fmt-check shellcheck psanalyze suppressions drift tools-doc-check test
