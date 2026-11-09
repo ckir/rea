@@ -185,6 +185,13 @@ Describe 'setup.ps1 network layer' {
                 ConvertFrom-ReaAdoptium -Path $f | Should -BeNullOrEmpty -Because $name
             }
         }
+        It 'takes the first element of a two-element array' {
+            $text = [System.IO.File]::ReadAllText((Join-Path $script:Fix 'adoptium-linux-x64.json')).Trim()
+            $second = $text.Replace('jdk-21.0.13+9"', 'jdk-99.0.0+1"')
+            $f = Join-Path $script:Tmp 'two.json'
+            [System.IO.File]::WriteAllText($f, '[' + $text.Substring(1, $text.Length - 2) + ',' + $second.Substring(1, $second.Length - 2) + ']')
+            (ConvertFrom-ReaAdoptium -Path $f).Release | Should -Be 'jdk-21.0.13+9'
+        }
         It 'refuses an empty list and a non-JSON file' {
             $f = Join-Path $script:Tmp 'empty.json'
             [System.IO.File]::WriteAllText($f, "[]`n")
@@ -233,6 +240,16 @@ Describe 'setup.ps1 network layer' {
             Get-ReaRetryAfter '99999999999999999999' | Should -BeNullOrEmpty
             Get-ReaRetryAfter '1000000' | Should -BeNullOrEmpty
             Get-ReaRetryAfter '999999' | Should -Be 999999
+        }
+    }
+
+    Describe 'Get-ReaRootMessage' {
+        It 'unwraps an AggregateException to its inner message' {
+            $inner = New-Object System.IO.IOException 'the real cause'
+            Get-ReaRootMessage (New-Object System.AggregateException $inner) | Should -Be 'the real cause'
+        }
+        It 'returns the message of a plain exception' {
+            Get-ReaRootMessage (New-Object System.InvalidOperationException 'plain') | Should -Be 'plain'
         }
     }
 
@@ -696,7 +713,18 @@ Describe 'setup.ps1 network layer' {
         }
         It 'fails when the assets API fails' {
             [void]$script:Plan.Add(@{ Status = 404 })
-            Get-ReaGitHubReleaseAssets -Repo 'ckir/clavity' | Should -BeNullOrEmpty
+            @(Get-ReaGitHubReleaseAssets -Repo 'ckir/clavity').Count | Should -Be 0
+        }
+        It 'returns nothing, not a null element, when the scrape fails' {
+            [void]$script:Plan.Add(@{ Status = 404 })
+            @(Get-ReaGitHubReleaseAssetsScrape -Repo 'ckir/clavity' -Tag 'clavity-v31').Count | Should -Be 0
+        }
+        It 'returns nothing when the API answer is not JSON' {
+            $f = Join-Path $script:Tmp 'notjson-assets.json'
+            [System.IO.File]::WriteAllText($f, 'not json')
+            $script:Body = $f
+            [void]$script:Plan.Add(@{ Status = 200 })
+            @(Get-ReaGitHubReleaseAssets -Repo 'ckir/clavity').Count | Should -Be 0
         }
         It 'scrapes this repository and tag only' {
             $html = Join-Path $script:Tmp 'expanded.html'

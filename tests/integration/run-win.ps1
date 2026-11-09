@@ -64,16 +64,27 @@ function Get-Count {
     }
 }
 
+# Probes candidates with --version and needs a real exit code 0, so the Windows Store python.exe stub (which
+# prints a hint and exits non-zero) is skipped. Each candidate is a program and its leading arguments.
 $python = $null
-foreach ($name in 'python3', 'python') {
-    $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($cmd) {
+$pythonLead = @()
+foreach ($candidate in @(@('python3'), @('python'), @('py', '-3'))) {
+    $cmd = Get-Command $candidate[0] -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $cmd) { continue }
+    $lead = @($candidate | Select-Object -Skip 1)
+    try {
+        $probe = Invoke-ReaCommand -Step 'python' -FilePath $cmd.Source -ArgumentList ($lead + '--version')
+    } catch {
+        continue
+    }
+    if ($probe.ExitCode -eq 0) {
         $python = $cmd.Source
+        $pythonLead = $lead
         break
     }
 }
 if (-not $python) {
-    [Console]::Error.WriteLine('run-win.ps1: python3 is required')
+    [Console]::Error.WriteLine('run-win.ps1: a working python3 is required')
     exit 1
 }
 
@@ -105,7 +116,7 @@ try {
     foreach ($i in 0..5) { $scenario["/f$i"] = @(@{ status = 302; location = '{base}/f' + ($i + 1) }) }
     [System.IO.File]::WriteAllText((Join-Path $tmp 'scenario.json'), ($scenario | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding $false))
 
-    $serverArgs = @('-I', (ConvertTo-ReaQuotedArgument (Join-Path $root 'tests/integration/fake_release_server.py')), '0', (ConvertTo-ReaQuotedArgument (Join-Path $tmp 'scenario.json')))
+    $serverArgs = $pythonLead + @('-I', (ConvertTo-ReaQuotedArgument (Join-Path $root 'tests/integration/fake_release_server.py')), '0', (ConvertTo-ReaQuotedArgument (Join-Path $tmp 'scenario.json')))
     $server = Start-Process -FilePath $python -ArgumentList $serverArgs -PassThru -NoNewWindow `
         -RedirectStandardOutput (Join-Path $tmp 'server.out') -RedirectStandardError (Join-Path $tmp 'server.err')
     $port = $null

@@ -460,7 +460,8 @@ function Clear-ReaTempFile {
 
 # The brief names three of these functions with a plural noun, which PSScriptAnalyzer's PSUseSingularNouns
 # rejects (and a suppression is not allowed), so each is defined with a singular noun and the plural name is an
-# alias for it. Inside this file the singular names are used; both work for a caller.
+# alias for it. Inside this file the singular names are used; both work for a caller. A test that mocks one of
+# them must Mock the singular name: the code calls that, and a mock of the alias would not be seen.
 Set-Alias -Name Clear-ReaTempFiles -Value Clear-ReaTempFile
 Set-Alias -Name Resolve-ReaRedirects -Value Resolve-ReaRedirect
 Set-Alias -Name Get-ReaGitHubReleaseAssets -Value Get-ReaGitHubReleaseAsset
@@ -516,7 +517,24 @@ function New-ReaWebRequest {
     $req.Timeout = 60000
     $req.ReadWriteTimeout = $script:ReadWriteTimeoutMs
     $req.KeepAlive = $false
+    # A corporate proxy may answer 407 and expect the signed-in user's credentials.
+    if ($null -ne $req.Proxy) {
+        try {
+            $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+        } catch {
+            Write-ReaLog DEBUG net ('proxy credentials not set: ' + $_.Exception.Message)
+        }
+    }
     return $req
+}
+
+# The message of the real cause: an AggregateException (from Task.Wait) is replaced by its first inner exception.
+function Get-ReaRootMessage {
+    param($Exception)
+    while ($Exception -is [System.AggregateException] -and $null -ne $Exception.InnerException) {
+        $Exception = $Exception.InnerException
+    }
+    return $Exception.Message
 }
 
 # True for a failure worth another attempt: connection, name-resolution, timeout and broken-transfer errors. A
@@ -653,7 +671,7 @@ function Send-ReaHttpAttempt {
         $result.Status = $status
     } catch {
         $result.Status = 0
-        $result.Error = $_.Exception.Message
+        $result.Error = (Get-ReaRootMessage $_.Exception)
         $result.Retryable = Test-ReaTransientError $_.Exception
     } finally {
         if ($null -ne $file) { $file.Dispose() }
@@ -783,7 +801,9 @@ function Get-ReaSidecarSha256 {
 }
 
 # Resolves the redirects, downloads to Destination.tmp.<pid>, checks the digest (case-insensitive) and only then
-# moves the file to Destination. $true on success; on any failure, or an interruption, nothing is left behind.
+# moves the file to Destination. $true on success. A failure, an exception or Ctrl-C leaves nothing behind (the
+# finally block removes the temporary); a killed process or a power loss can leave Destination.tmp.<pid>, which
+# the orphan cleanup in the later setup steps removes.
 function Get-ReaDownload {
     param(
         [string]$Url,
@@ -827,32 +847,32 @@ function Get-ReaGitHubLatestTag {
     return $null
 }
 
-# The asset names of the latest release of Repo, from the API; nothing on failure (wrap the call in @()).
+# The asset names of the latest release of Repo, from the API; nothing at all on failure (a plain return), so @(...).Count is 0; an empty release gives the same.
 function Get-ReaGitHubReleaseAsset {
     param([string]$Repo)
     $tmp = [System.IO.Path]::GetTempFileName()
     Register-ReaTempFile $tmp
     try {
-        if (-not (Invoke-ReaHttpGet -Url "https://api.github.com/repos/$Repo/releases/latest" -Destination $tmp)) { return $null }
+        if (-not (Invoke-ReaHttpGet -Url "https://api.github.com/repos/$Repo/releases/latest" -Destination $tmp)) { return }
         $d = [System.IO.File]::ReadAllText($tmp) | ConvertFrom-Json
         $names = @($d.assets | ForEach-Object { [string]$_.name })
         return $names
     } catch {
         Write-ReaLog ERROR net ('cannot read the release: ' + $_.Exception.Message)
-        return $null
+        return
     } finally {
         Clear-ReaTempFile -Path $tmp
     }
 }
 
 # The asset names of a release, from the HTML of its expanded_assets page; the fallback for when the API is
-# rate-limited. Nothing on failure (wrap the call in @()).
+# rate-limited. Nothing at all on failure (a plain return), so @(...).Count is 0; an empty page gives the same.
 function Get-ReaGitHubReleaseAssetsScrape {
     param([string]$Repo, [string]$Tag)
     $tmp = [System.IO.Path]::GetTempFileName()
     Register-ReaTempFile $tmp
     try {
-        if (-not (Invoke-ReaHttpGet -Url "https://github.com/$Repo/releases/expanded_assets/$Tag" -Destination $tmp)) { return $null }
+        if (-not (Invoke-ReaHttpGet -Url "https://github.com/$Repo/releases/expanded_assets/$Tag" -Destination $tmp)) { return }
         $html = [System.IO.File]::ReadAllText($tmp)
         $needle = "/$Repo/releases/download/$Tag/"
         $names = @([regex]::Matches($html, '/[^"<> ]+/releases/download/[^"<> ]+') |
@@ -878,7 +898,10 @@ function Test-ReaJdkRelease {
 function ConvertFrom-ReaAdoptium {
     param([string]$Path)
     try {
-        $first = @([System.IO.File]::ReadAllText($Path) | ConvertFrom-Json)[0]
+        # Windows PowerShell 5.1 hands a top-level JSON array over as one object, PowerShell 7 unrolls it.
+        $parsed = [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json
+        $first = $parsed
+        if ($parsed -is [array]) { $first = $parsed[0] }
         $pkg = $first.binary.package
         $jdk = [pscustomobject]@{
             Release    = [string]$first.release_name
