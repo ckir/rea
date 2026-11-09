@@ -81,6 +81,20 @@ assert_eq "$PWD/tools" "$(abs_path ./tools)" "leading ./ dropped"
 assert_eq "$PWD" "$(abs_path .)" "dot is the current directory"
 assert_eq "/opt/x" "$(abs_path /opt/x)" "absolute path unchanged"
 assert_eq "" "$(abs_path '')" "empty stays empty"
+assert_eq "$PWD" "$(abs_path ./)" "./ is the current directory"
+assert_eq "$PWD" "$(abs_path .//)" ".// is the current directory"
+assert_eq "$PWD" "$(abs_path ././)" "././ is the current directory"
+assert_eq "$PWD/tools" "$(abs_path .//tools)" ".//tools"
+assert_eq "$PWD/tools" "$(abs_path tools/)" "trailing slash dropped"
+assert_eq "$PWD/tools" "$(abs_path tools//)" "trailing slashes dropped"
+assert_eq "$PWD/a/../b" "$(abs_path a/../b)" "dot-dot kept (symlinks decide), made absolute"
+assert_eq "/opt/x" "$(abs_path /opt/x/)" "absolute path loses its trailing slash"
+assert_eq "/" "$(abs_path /)" "root stays root"
+for dot in ./ .//; do
+  parse_args --folder "$dot" --tools-dir "$dot"
+  assert_eq "$PWD" "$OPT_FOLDER" "--folder $dot is the current directory"
+  assert_eq "$PWD" "$OPT_TOOLS_DIR" "--tools-dir $dot is the current directory"
+done
 parse_args --tools-dir tools --bin-dir ../bin --ghidra-dir gh --java-home ./jh --folder proj
 assert_eq "$PWD/tools" "$OPT_TOOLS_DIR" "--tools-dir absolute"
 assert_eq "$PWD/../bin" "$OPT_BIN_DIR" "--bin-dir absolute"
@@ -93,6 +107,11 @@ assert_eq "" "$OPT_TOOLS_DIR" "unset tools dir stays empty"
 # --- main: seams are not reachable from the environment, the log path is the first console line, the hash is real ---
 sm=$(ARCHIVE_TAR=x ARCHIVE_ZIP_TOOL=y LOCK_POLLS=1 sh -c '. ./setup.sh; usage() { echo "T=${ARCHIVE_TAR-unset} Z=${ARCHIVE_ZIP_TOOL-unset} L=${LOCK_POLLS-unset} N=${REA_SETUP_NO_MAIN-unset}"; }; main --help' 2>&1)
 assert_eq "T=unset Z=unset L=unset N=unset" "$sm" "main unsets the test seams"
+# a leftover REA_SETUP_NO_MAIN in the caller's environment must not turn a real run into a silent no-op
+bogus_rc=0
+bogus_out=$(REA_SETUP_NO_MAIN=1 sh "$ROOT/setup.sh" --bogus 2>&1) || bogus_rc=$?
+assert_eq 2 "$bogus_rc" "setup.sh --bogus exits 2 even with REA_SETUP_NO_MAIN=1 in the environment"
+assert_match "unknown option: --bogus" "$bogus_out" "the usage error is printed"
 ld=$(mktemp -d "${TMPDIR:-/tmp}/rea-core-main.XXXXXX")
 first=$(env -u REA_SETUP_NO_MAIN HOME="$ld" sh "$ROOT/setup.sh" --log-dir "$ld/logs" --dry-run --yes 2>&1 | head -n 1)
 assert_match "^[^ ]+ INFO +\\[preflight\\] log file: ~/logs/setup-[0-9TZ]+-[0-9]+\\.log" "$first" "first console line names the log"

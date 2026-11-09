@@ -19,7 +19,7 @@ mkdir -p "$T" || exit 1
 trap 'rm -rf "$T"; rmdir "$ROOT/tests/.tmp" 2>/dev/null' EXIT
 
 # sys_tools: the coreutils the steps run; linked into every constructed PATH
-SYS_TOOLS="awk basename cat chmod cp cut date df dirname env expr find grep head id kill ln ls mkdir mktemp mv od ps pwd rm sed sleep sort stat tail tee tr uname wc"
+SYS_TOOLS="sha256sum shasum awk basename cat chmod cp cut date df dirname env expr find grep head id kill ln ls mkdir mktemp mv od ps pwd rm sed sleep sort stat tail tee tr uname wc"
 
 # mkpath NAME STUB...: builds $T/NAME with links to the system tools and to the named stubs (and, for the
 # names curl, tar, unzip, bsdtar, the real ones when present); prints the directory
@@ -288,5 +288,38 @@ if [ -d "$T/tools dir/jdk-21.0.1+1.tmp.999999" ]; then t_ok; else t_fail "--dry-
 OPT_DRY_RUN=0
 run_step pf-clean "$P" step_preflight || true
 if [ ! -e "$T/tools dir/jdk-21.0.1+1.tmp.999999" ] && [ ! -e "$T/bin dir/agent-profile.tmp.999999" ]; then t_ok; else t_fail "orphans in both directories are removed"; fi
+
+# --- no sha256sum and no shasum: exit 4 at preflight, not exit 5 after a download ---
+Pn=$(mkpath pf-nosha curl tar unzip)
+rm -f "$Pn/sha256sum" "$Pn/shasum"
+rc=0
+run_step pf-nosha "$Pn" step_preflight || rc=$?
+assert_eq 4 "$rc" "no sha256sum and no shasum: exit 4"
+assert_match 'sha256sum' "$(logtext pf-nosha)" "the missing hash tool is named"
+Ps=$(mkpath pf-shasum-only curl tar unzip)
+rm -f "$Ps/sha256sum"
+if [ -e "$Ps/shasum" ]; then
+  rc=0
+  run_step pf-shasum "$Ps" step_preflight || rc=$?
+  assert_eq 0 "$rc" "shasum alone is enough"
+fi
+
+# --- a --folder that is the home directory gets a WARN, nothing else changes ---
+SAVED_HOME=$HOME
+HOME=$T/homedir
+mkdir -p "$HOME"
+OPT_FOLDER=$HOME
+rc=0
+run_step pf-home "$P" step_preflight || rc=$?
+assert_eq 0 "$rc" "folder = home: the run continues"
+assert_match 'WARN +\[preflight\].*home directory.*permissions' "$(logtext pf-home)" "folder = home: WARN names the risk"
+OPT_FOLDER=$HOME/
+run_step pf-home2 "$P" step_preflight || true
+assert_match 'WARN +\[preflight\].*home directory' "$(logtext pf-home2)" "folder = home with a trailing slash: WARN"
+OPT_FOLDER=$HOME/project
+run_step pf-home3 "$P" step_preflight || true
+assert_eq 0 "$(grep -c 'home directory' "$T/pf-home3.log")" "folder below home: no WARN"
+OPT_FOLDER=$PWD
+HOME=$SAVED_HOME
 
 t_done

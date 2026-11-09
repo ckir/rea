@@ -191,6 +191,8 @@ lock_release "$T/tools"
 mkdir -p "$T/tools/.lock"
 printf 'pid=%s started=x\n' "$$" >"$T/tools/.lock/owner"
 assert_status 1 "live lock refused" sh -c ". ./setup.sh; LOCK_POLLS=1; lock_acquire \"\$1\"" _ "$T/tools"
+lock_msg=$(sh -c ". ./setup.sh; LOG_FILE=/dev/null; CONSOLE_LEVEL=ERROR; LOCK_POLLS=1; lock_acquire \"\$1\"" _ "$T/tools" 2>&1)
+assert_match "if no setup is running, delete .*/tools/\\.lock" "$lock_msg" "the lock message says how to clear a stuck lock"
 assert_status 0 "live lock left in place by the refused process" test -f "$T/tools/.lock/owner"
 rm -rf "$T/tools/.lock"
 mkdir -p "$T/tools/.lock"

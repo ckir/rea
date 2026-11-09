@@ -286,13 +286,40 @@ need_value() {
   fi
 }
 
-# abs_path PATH: PATH made absolute against the current directory, without resolving symlinks; '' stays ''
+# abs_path PATH: PATH made absolute against the current directory, without resolving symlinks or dot-dot; leading
+# ./ segments and trailing slashes are dropped, so ./ and .// are the current directory; '' stays ''
 abs_path() {
-  case "$1" in
-    '' | /*) printf '%s\n' "$1" ;;
-    .) printf '%s\n' "$PWD" ;;
-    ./*) abs_path "${1#./}" ;;
-    *) printf '%s/%s\n' "$PWD" "$1" ;;
+  ap_p=$1
+  [ -n "$ap_p" ] || {
+    printf '\n'
+    return 0
+  }
+  case "$ap_p" in
+    /*) ap_abs=1 ;;
+    *) ap_abs=0 ;;
+  esac
+  if [ "$ap_abs" -eq 0 ]; then
+    while :; do
+      case "$ap_p" in
+        ./*) ap_p=${ap_p#./} ;;
+        /*) ap_p=${ap_p#/} ;;
+        *) break ;;
+      esac
+    done
+  fi
+  while :; do
+    case "$ap_p" in
+      ?*/) ap_p=${ap_p%/} ;;
+      *) break ;;
+    esac
+  done
+  if [ "$ap_abs" -eq 1 ]; then
+    printf '%s\n' "$ap_p"
+    return 0
+  fi
+  case "$ap_p" in
+    '' | .) printf '%s\n' "$PWD" ;;
+    *) printf '%s/%s\n' "$PWD" "$ap_p" ;;
   esac
 }
 
@@ -952,7 +979,7 @@ lock_acquire() {
     fi
     la_polls=$((la_polls + 1))
     if [ "$la_polls" -ge "${LOCK_POLLS:-60}" ]; then
-      die "$EX_STEP" tools-bin "lock held by pid ${la_pid:-unknown}: $la_dir/.lock"
+      die "$EX_STEP" tools-bin "lock held by pid ${la_pid:-unknown}: $la_dir/.lock (if no setup is running, delete $la_dir/.lock)"
     fi
     sleep 2
   done
@@ -1510,6 +1537,9 @@ step_preflight() {
   if ! command -v tar >/dev/null 2>&1; then
     die "$EX_PREREQ" preflight "tar not found; install tar (apt install tar, dnf install tar, or brew install gnu-tar) and re-run"
   fi
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    die "$EX_PREREQ" preflight "neither sha256sum nor shasum found; install coreutils (apt install coreutils) or perl's shasum and re-run"
+  fi
   # The zip of Ghidra is read with unzip or bsdtar; without either, jar from the JDK is the reader, which
   # is safe because step jdk runs before step ghidra.
   if ZIP_TOOL=$(archive_tool_for ""); then
@@ -1517,6 +1547,11 @@ step_preflight() {
   else
     ZIP_TOOL=jar
     log INFO preflight "neither unzip nor bsdtar found; the Ghidra zip will be read with jar from the JDK"
+  fi
+  pf_folder=$(abs_path "${OPT_FOLDER:-}")
+  pf_home=$(abs_path "${HOME:-}")
+  if [ -n "$pf_home" ] && [ "$pf_folder" = "$pf_home" ]; then
+    log WARN preflight "the folder is your home directory: agy will run with permissions skipped over all of it; pass --folder <your project> to limit that"
   fi
   TOOLS_DIR=$(tools_dir_default)
   BIN_DIR=$(bin_dir_default)
@@ -3107,6 +3142,8 @@ main() {
   step_launch
 }
 
-if [ "${REA_SETUP_NO_MAIN:-}" != 1 ]; then
+# Run main when executed as setup.sh. A sourcing test (REA_SETUP_NO_MAIN=1, $0 is the test or the shell) skips it; a
+# stale REA_SETUP_NO_MAIN in the caller's environment cannot turn a real run into a silent no-op.
+if [ "${0##*/}" = setup.sh ] || [ "${REA_SETUP_NO_MAIN:-}" != 1 ]; then
   main "$@"
 fi
