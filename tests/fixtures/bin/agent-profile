@@ -1,0 +1,15 @@
+#!/bin/sh
+# Test stub. Answers --version, -V and -v with STUB_<name>_VERSION (hyphens in the command name become
+# underscores, so agent-profile reads STUB_agent_profile_VERSION) and exits with STUB_<name>_EXIT (default 0).
+n=$(basename "$0" | tr '-' '_')
+eval "v=\${STUB_${n}_VERSION:-}"
+eval "rc=\${STUB_${n}_EXIT:-0}"
+case "${1:-}" in
+  --version | -V | -v)
+    if [ -z "$v" ]; then
+      if [ "$n" = node ]; then v=v24.22.2; else v=1.0.0; fi
+    fi
+    printf '%s\n' "$v"
+    ;;
+esac
+exit "$rc"

@@ -1368,6 +1368,139 @@ EOF
   return 0
 }
 
+# --- steps ---
+
+CRED_OVERRIDE_VARS="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_REFRESH_TOKEN ANTHROPIC_PROFILE CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY"
+HINT_NODE="install Node 24: fnm install 24 (https://github.com/Schniz/fnm) or https://nodejs.org"
+HINT_CLAUDE_CMD="agent-profile refuses npm .cmd shims; install Claude Code's native installer"
+
+# step_preflight: platform, profile name, downloader and archive tools, the two install directories and
+# their orphan cleanup. Sets OS, ARCH, TOOLS_DIR, BIN_DIR, ZIP_TOOL and SUMMARY_preflight.
+step_preflight() {
+  platform_detect || die "$EX_PLATFORM" preflight "unsupported platform: $OS $ARCH (no agent-profile, clavity-ls or Ghidra native build)"
+  log INFO preflight "platform: $OS $ARCH"
+  if ! profile_name_valid "$OPT_PROFILE"; then
+    die "$EX_USAGE" preflight "invalid profile name: $OPT_PROFILE"
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    die "$EX_PREREQ" preflight "curl not found; install curl (apt install curl, dnf install curl, or brew install curl) and re-run"
+  fi
+  if ! command -v tar >/dev/null 2>&1; then
+    die "$EX_PREREQ" preflight "tar not found; install tar (apt install tar, dnf install tar, or brew install gnu-tar) and re-run"
+  fi
+  # The zip of Ghidra is read with unzip or bsdtar; without either, jar from the JDK is the reader, which
+  # is safe because step jdk runs before step ghidra.
+  if ZIP_TOOL=$(archive_tool_for ""); then
+    log DEBUG preflight "zip tool: $ZIP_TOOL"
+  else
+    ZIP_TOOL=jar
+    log INFO preflight "neither unzip nor bsdtar found; the Ghidra zip will be read with jar from the JDK"
+  fi
+  TOOLS_DIR=$(tools_dir_default)
+  BIN_DIR=$(bin_dir_default)
+  log DEBUG preflight "tools dir: $(abbrev_home "$TOOLS_DIR"); bin dir: $(abbrev_home "$BIN_DIR")"
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log DEBUG preflight "read-only run: orphan cleanup skipped"
+  else
+    cleanup_orphans "$TOOLS_DIR"
+    cleanup_orphans "$BIN_DIR"
+  fi
+  summary_set preflight ok
+  log INFO preflight "ok"
+  return 0
+}
+
+# summary_set ID VALUE / summary_get ID: the per-step outcome behind SUMMARY_<id> for the final summary
+summary_set() {
+  eval "SUMMARY_$1=\$2"
+}
+
+summary_get() {
+  eval "printf '%s\\n' \"\${SUMMARY_$1:-}\""
+}
+
+# prereq_tool NAME HINT: dies EX_PREREQ naming NAME when it is not on PATH
+prereq_tool() {
+  command -v "$1" >/dev/null 2>&1 || die "$EX_PREREQ" prereq "$1 not found; $2"
+}
+
+# prereq_node: node must exist and satisfy node_version_ok
+prereq_node() {
+  prereq_tool node "$HINT_NODE"
+  node_rc=0
+  node_out=$(node --version 2>/dev/null) || node_rc=$?
+  if [ "$node_rc" -ne 0 ]; then
+    die "$EX_PREREQ" prereq "node --version failed (exit $node_rc); $HINT_NODE"
+  fi
+  node_ver=$(semver_from_output "$node_out")
+  if [ -z "$node_ver" ] || ! node_version_ok "$node_ver"; then
+    die "$EX_PREREQ" prereq "node $node_out is not supported (needs 22.x >= 22.23.4, 24.x >= 24.22.1 or >= 26.12.1); $HINT_NODE"
+  fi
+  log DEBUG prereq "node $node_ver"
+}
+
+# prereq_claude: claude must exist; on Windows it must resolve to a native .exe
+prereq_claude() {
+  prereq_tool claude "install Claude Code (https://docs.claude.com/en/docs/claude-code/setup)"
+  if [ "$OS" = windows ]; then
+    pc_path=$(command -v claude)
+    case "$pc_path" in
+      *.exe | *.EXE) ;;
+      *) die "$EX_PREREQ" prereq "claude resolves to $pc_path; $HINT_CLAUDE_CMD" ;;
+    esac
+  fi
+}
+
+# prereq_credentials: warns, by name only, about each variable that overrides the profile's isolation;
+# returns 1 when it warned
+prereq_credentials() {
+  pcr_found=""
+  for pcr_name in $CRED_OVERRIDE_VARS; do
+    eval "pcr_val=\${$pcr_name:-}"
+    if [ -n "$pcr_val" ]; then
+      pcr_found="$pcr_found $pcr_name"
+    fi
+  done
+  if [ -n "$pcr_found" ]; then
+    log WARN prereq "set in this environment, these override the profile's credential isolation (names only):$pcr_found"
+    return 1
+  fi
+  return 0
+}
+
+# step_prereq: node, npx, claude, agy, a procps ps on Linux, and (Windows) wt and a PowerShell. With
+# --check-upstream, claude, agy and wt are skipped. Sets SUMMARY_prereq.
+step_prereq() {
+  prereq_node
+  prereq_tool npx "it ships with Node; $HINT_NODE"
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log INFO prereq "skip claude, agy and wt (--check-upstream)"
+  else
+    prereq_claude
+    prereq_tool agy "install the Antigravity CLI (agy) and put it on PATH"
+    if [ "$OS" = windows ]; then
+      prereq_tool wt "install Windows Terminal (https://aka.ms/terminal)"
+    fi
+  fi
+  if [ "$OS" = windows ]; then
+    command -v pwsh >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1 ||
+      die "$EX_PREREQ" prereq "pwsh or powershell not found; install PowerShell (https://aka.ms/powershell)"
+  fi
+  if [ "$OS" = linux ]; then
+    sp_pid=$(ps -o pid= -p "$$" 2>/dev/null) || sp_pid=""
+    case "$sp_pid" in
+      '' | *[!0-9' ']*) die "$EX_PREREQ" prereq "a procps ps is required (ps -o pid= -p PID failed); install procps (apt install procps)" ;;
+    esac
+  fi
+  if prereq_credentials; then
+    summary_set prereq ok
+    log INFO prereq "ok"
+  else
+    summary_set prereq warn
+  fi
+  return 0
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -1393,11 +1526,8 @@ main() {
   log DEBUG preflight "$(uname -a)"
   log DEBUG preflight "invoked: $0 $*"
   log_config
-  if ! profile_name_valid "$OPT_PROFILE"; then
-    die "$EX_USAGE" preflight "invalid profile name: $OPT_PROFILE"
-  fi
-  platform_detect || die "$EX_PLATFORM" preflight "unsupported platform: $(uname -s) $(uname -m)"
-  log INFO preflight "platform: $OS $ARCH"
+  step_preflight
+  step_prereq
 }
 
 if [ "${REA_SETUP_NO_MAIN:-}" != 1 ]; then

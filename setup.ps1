@@ -1701,6 +1701,110 @@ Set-Alias -Name Remove-ReaOrphans -Value Remove-ReaOrphan
 Set-Alias -Name Remove-ReaOldJdks -Value Remove-ReaOldJdk
 Set-Alias -Name Test-ReaFixedNtfs -Value Test-ReaFixedNtfsVolume
 
+# --- steps ---
+
+$script:CredentialOverrideNames = @(
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+    'ANTHROPIC_PROFILE', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'
+)
+$script:HintNode = 'install Node 24: fnm install 24 (https://github.com/Schniz/fnm) or https://nodejs.org'
+$script:HintClaudeShim = "agent-profile refuses npm .cmd shims; install Claude Code's native installer"
+$script:Summary = @{}
+$script:ToolsDir = ''
+$script:BinDir = ''
+
+# The path of the executable Name resolves to, or $null. -CommandType Application first, so an extensionless
+# script of the same name is never preferred (Start-Process on 5.1 may otherwise pick it). One function so a
+# test can stand in for any machine.
+function Resolve-ReaExecutable {
+    param([string]$Name)
+    $found = Get-Command -Name $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $found) { return $null }
+    return [string]$found.Source
+}
+
+# True when Path names a native executable (.exe); an npm .cmd or .ps1 shim is not.
+function Test-ReaNativeExecutable {
+    param([AllowEmptyString()][string]$Path)
+    return $Path.EndsWith('.exe', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Preflight: platform, profile name, tar.exe, a fixed NTFS tools volume, the two install directories and their
+# orphan cleanup. Sets ToolsDir, BinDir and the summary.
+function Invoke-ReaStepPreflight {
+    $platform = Get-ReaPlatform
+    if ($platform.Arch -ne 'x64') {
+        Stop-Rea -Code $script:EX_PLATFORM -Step preflight -Message "unsupported platform: $($platform.Os) $($platform.Arch) (no agent-profile, clavity-ls or Ghidra native build)"
+    }
+    Write-ReaLog INFO preflight "platform: $($platform.Os) $($platform.Arch)"
+    if (-not (Test-ReaProfileName $script:Opt.ProfileName)) {
+        Stop-Rea -Code $script:EX_USAGE -Step preflight -Message "invalid profile name: $($script:Opt.ProfileName)"
+    }
+    $tar = Get-ReaTarExe
+    if (-not (Resolve-ReaExecutable -Name $tar)) {
+        Stop-Rea -Code $script:EX_PREREQ -Step preflight -Message "$tar not found; it ships with Windows 10 build 17063 and later: update Windows, then re-run"
+    }
+    $script:ToolsDir = Get-ReaToolsDir
+    $script:BinDir = Get-ReaBinDir
+    Write-ReaLog DEBUG preflight ("tools dir: {0}; bin dir: {1}" -f (Get-ReaShortPath $script:ToolsDir), (Get-ReaShortPath $script:BinDir))
+    Test-ReaFixedNtfsVolume -Path $script:ToolsDir | Out-Null
+    if ($script:Opt.DryRun -or $script:Opt.CheckUpstream) {
+        Write-ReaLog DEBUG preflight 'read-only run: orphan cleanup skipped'
+    } else {
+        Remove-ReaOrphan -Dir $script:ToolsDir
+        Remove-ReaOrphan -Dir $script:BinDir
+    }
+    $script:Summary['preflight'] = 'ok'
+    Write-ReaLog INFO preflight 'ok'
+}
+
+# Stops with exit code 4 naming Name when it does not resolve; returns the resolved path.
+function Assert-ReaPrereqTool {
+    param([string]$Name, [string]$Hint)
+    $path = Resolve-ReaExecutable -Name $Name
+    if (-not $path) {
+        Stop-Rea -Code $script:EX_PREREQ -Step prereq -Message "$Name not found; $Hint"
+    }
+    return $path
+}
+
+# Prerequisites: node (version floor), npx, claude (a native .exe), agy, wt and a PowerShell. -CheckUpstream
+# skips claude, agy and wt. Credential-override variables set in the environment are warned about by name.
+function Invoke-ReaStepPrereq {
+    $nodePath = Assert-ReaPrereqTool -Name node -Hint $script:HintNode
+    $run = Invoke-ReaCommand -Step prereq -FilePath $nodePath -ArgumentList @('--version')
+    if ($run.ExitCode -ne 0) {
+        Stop-Rea -Code $script:EX_PREREQ -Step prereq -Message "node --version failed (exit $($run.ExitCode)); $script:HintNode"
+    }
+    $nodeVersion = Get-ReaSemver -Text ([string]$run.Stdout)
+    if (-not $nodeVersion -or -not (Test-ReaNodeVersion $nodeVersion)) {
+        Stop-Rea -Code $script:EX_PREREQ -Step prereq -Message "node $(([string]$run.Stdout).Trim()) is not supported (needs 22.x >= 22.23.4, 24.x >= 24.22.1 or >= 26.12.1); $script:HintNode"
+    }
+    Write-ReaLog DEBUG prereq "node $nodeVersion"
+    Assert-ReaPrereqTool -Name npx -Hint "it ships with Node; $script:HintNode" | Out-Null
+    if ($script:Opt.CheckUpstream) {
+        Write-ReaLog INFO prereq 'skip claude, agy and wt (-CheckUpstream)'
+    } else {
+        $claudePath = Assert-ReaPrereqTool -Name claude -Hint 'install Claude Code (https://docs.claude.com/en/docs/claude-code/setup)'
+        if (-not (Test-ReaNativeExecutable $claudePath)) {
+            Stop-Rea -Code $script:EX_PREREQ -Step prereq -Message "claude resolves to $claudePath; $script:HintClaudeShim"
+        }
+        Assert-ReaPrereqTool -Name agy -Hint 'install the Antigravity CLI (agy) and put it on PATH' | Out-Null
+        Assert-ReaPrereqTool -Name wt -Hint 'install Windows Terminal (https://aka.ms/terminal)' | Out-Null
+    }
+    if (-not (Resolve-ReaExecutable -Name pwsh) -and -not (Resolve-ReaExecutable -Name powershell)) {
+        Stop-Rea -Code $script:EX_PREREQ -Step prereq -Message 'pwsh or powershell not found; install PowerShell (https://aka.ms/powershell)'
+    }
+    $set = @($script:CredentialOverrideNames | Where-Object { [Environment]::GetEnvironmentVariable($_) })
+    if ($set.Count -gt 0) {
+        Write-ReaLog WARN prereq ("set in this environment, these override the profile's credential isolation (names only): " + ($set -join ' '))
+        $script:Summary['prereq'] = 'warn'
+    } else {
+        $script:Summary['prereq'] = 'ok'
+        Write-ReaLog INFO prereq 'ok'
+    }
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -1747,14 +1851,8 @@ function Invoke-Main {
         if ($script:Opt.InstallHopper) {
             Stop-Rea -Code $script:EX_USAGE -Step args -Message '-InstallHopper is not available on Windows'
         }
-        if (-not (Test-ReaProfileName $script:Opt.ProfileName)) {
-            Stop-Rea -Code $script:EX_USAGE -Step preflight -Message "invalid profile name: $($script:Opt.ProfileName)"
-        }
-        $platform = Get-ReaPlatform
-        if ($platform.Arch -ne 'x64') {
-            Stop-Rea -Code $script:EX_PLATFORM -Step preflight -Message "unsupported platform: $($platform.Os) $($platform.Arch)"
-        }
-        Write-ReaLog INFO preflight "platform: $($platform.Os) $($platform.Arch)"
+        Invoke-ReaStepPreflight
+        Invoke-ReaStepPrereq
         return $script:EX_OK
     } catch {
         $code = $_.Exception.Data['ReaCode']

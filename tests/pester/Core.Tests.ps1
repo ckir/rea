@@ -372,8 +372,14 @@ Describe 'Invoke-Main' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         try {
             $r = Invoke-Setup -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
-            $r.Code | Should -Be 0
             $r.Output | Should -Match 'platform: windows'
+            if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+                $r.Code | Should -Be 0
+            } else {
+                # Off Windows the preflight stops at the fixed-NTFS check (exit 1); the steps are tested in Prereq.Tests.ps1.
+                $r.Code | Should -Be 1
+                $r.Output | Should -Match 'fixed NTFS'
+            }
             $text = [System.IO.File]::ReadAllText((Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').FullName)
             $text | Should -Match '(?m)invoked: -DryRun -LogDir=.* -Yes\s*$'
             @(Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').Count | Should -Be 1
