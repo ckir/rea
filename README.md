@@ -30,6 +30,8 @@ All platforms: Claude Code (native install) and agy on `PATH`, and Node with `np
 | Other | `ps` from procps | | `wt` (Windows Terminal; install with `winget install Microsoft.WindowsTerminal`) |
 
 Supported platforms: Linux x64, macOS x64 and arm64, Windows x64. Anything else exits with code 3.
+`setup.sh` is not the Windows script: under a Windows POSIX shell (MINGW, MSYS or CYGWIN) it detects
+"windows" and carries on with the Windows asset names, a path that is untested; use `setup.ps1` on Windows.
 
 ## Download, verify, run
 
@@ -62,11 +64,13 @@ Invoke-WebRequest https://github.com/ckir/rea/releases/latest/download/setup.ps1
 Invoke-WebRequest https://github.com/ckir/rea/releases/latest/download/SHA256SUMS -OutFile SHA256SUMS
 (Get-FileHash setup.ps1).Hash
 Select-String ' setup.ps1$' SHA256SUMS
+(Get-FileHash setup.ps1).Hash -eq ((Select-String ' setup.ps1$' SHA256SUMS).Line.Split(' ')[0])
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
 The hash printed by `Get-FileHash` (upper case) must equal the one on the `SHA256SUMS` line (lower case);
-compare them before the last command. The last command is the one documented way to run the script: a stock
+compare them by eye, or use the one-liner, which prints `True` when they match (PowerShell's `-eq` ignores
+case). Do that before the last command. The last command is the one documented way to run the script: a stock
 Windows 11 execution policy of `Restricted` refuses `.\setup.ps1` outright, and a downloaded file also carries
 the Mark of the Web. `-ExecutionPolicy Bypass` applies to that one process only. If you prefer to keep your
 policy, run `Unblock-File .\setup.ps1` and then start it the way your policy allows. Neither way needs
@@ -86,7 +90,7 @@ Flags are the same in both scripts: kebab-case in `setup.sh`, PascalCase paramet
 | `--bin-dir PATH` | `-BinDir PATH` | `~/.local/bin`; `%LOCALAPPDATA%\rea-tools\bin` | Where `agent-profile` and `clavity-ls` are installed |
 | `--log-dir PATH` | `-LogDir PATH` | see below | Where the log files go |
 | `--install-hopper` | `-InstallHopper` | off | Pass `--install-hopper` to `rea setup` (installs commercial demo software; may ask for root). Rejected on Windows with exit 2 |
-| `--yes` | `-Yes` | off | Do not ask `Proceed? [y/N]`. Without a terminal and without this flag the script refuses (exit 2) |
+| `--yes` | `-Yes` | off | Do not ask `Proceed? [y/N]` (answering no exits 0 and prints `nothing changed`). Without a terminal and without this flag the script refuses (exit 2) |
 | `--dry-run` | `-DryRun` | off | Plan only; see below |
 | `--no-launch` | `-NoLaunch` | off | Do everything except `clavity-ls start`; prints the command |
 | `--check-upstream` | `-CheckUpstream` | off | Read-only check that every pinned and resolved release, asset, URL and hash still matches; exit 5 if one breaks. Skips the Claude Code, agy and `wt` checks |
@@ -94,14 +98,17 @@ Flags are the same in both scripts: kebab-case in `setup.sh`, PascalCase paramet
 | `--quiet` | `-Quiet` | off | Console level WARN |
 | `--help` | (use `Get-Help .\setup.ps1`) | | `setup.sh` prints its usage and exits 0 |
 
-Exit codes: 0 success; 1 a step failed; 2 usage error, or non-interactive without `--yes`; 3 unsupported
+Exit codes: 0 success; 1 a step failed; 2 a usage error the script finds itself (for example an unknown option
+to `setup.sh`, or non-interactive without `--yes`); 3 unsupported
 platform or architecture; 4 a prerequisite you must install; 5 verification failed (checksum, version,
-doctor). When the final `clavity-ls start` runs, the script exits with its exit code unchanged; the log line
+doctor). A bad or unknown parameter given to `setup.ps1` is rejected by PowerShell's own parameter binding
+before the script starts; its message and exit code are PowerShell's, not the script's. When the final `clavity-ls start` runs, the script exits with its exit code unchanged; the log line
 `launch exited <n>` tells it apart from the script's own codes.
 
 ### Dry run
 
-`--dry-run` / `-DryRun` changes nothing except its own log file: it still makes the read-only network
+`--dry-run` / `-DryRun` changes nothing except its own log file and, when `rea setup --dry-run` runs, `npx`'s
+own cache: it still makes the read-only network
 requests for metadata (release redirects, API calls), downloads no archive, installs nothing and never asks.
 It prints what each step would do. On a fresh machine, where there is no profile, Ghidra or JDK yet, the
 `rea setup --dry-run` call is skipped, so `rea`'s own plan is not shown; it is shown only when those already
@@ -113,7 +120,7 @@ exist.
 |---|---|---|
 | JDK and Ghidra | `$XDG_DATA_HOME/rea-tools`, else `~/.local/share/rea-tools` (each in a versioned subdirectory) | `%LOCALAPPDATA%\rea-tools` (must be a fixed NTFS volume) |
 | `agent-profile`, `clavity-ls` | `~/.local/bin` | `%LOCALAPPDATA%\rea-tools\bin` |
-| Claude Code profile | `~/.agent-profile/profiles/<name>` | `%USERPROFILE%\.agent-profile\profiles\<name>` |
+| Claude Code profile | the directory `agent-profile` reports for `<name>` (normally `~/.agent-profile/profiles/<name>`) | the same (normally `%USERPROFILE%\.agent-profile\profiles\<name>`) |
 | Logs (newest 20 kept) | `$XDG_STATE_HOME/rea-setup/logs`, else `~/.local/state/rea-setup/logs` | `%LOCALAPPDATA%\rea-setup\logs` |
 | Environment file | `<tools dir>/env.sh` | `<tools dir>\env.ps1` |
 
@@ -191,8 +198,11 @@ There is no uninstall command. To remove everything the script installed, delete
 - the tools directory (`~/.local/share/rea-tools`, or `%LOCALAPPDATA%\rea-tools` on Windows),
 - `agent-profile` and `clavity-ls` from the bin directory (`~/.local/bin`; on Windows they sit inside the
   tools directory above),
-- the profile directory `~/.agent-profile/profiles/<name>`,
+- the profile directory (normally `~/.agent-profile/profiles/<name>`),
 - the logs under the state directory (`~/.local/state/rea-setup`, `%LOCALAPPDATA%\rea-setup` on Windows).
+
+The `npx` cache that `rea setup` and `rea doctor` fill (`~/.npm/_npx`, `%LOCALAPPDATA%\npm-cache` on Windows)
+is left untouched.
 
 ## Development
 

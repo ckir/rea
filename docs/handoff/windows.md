@@ -1,9 +1,20 @@
 # Handoff: run and verify setup.ps1 on Windows
 
-For: an agent session started on the owner's Windows machine, after fetching branch `feat/setup-script` at
-commit `a902737` (or the commit that contains this file). Written 2026-11-09 on a Linux box, which cannot run
+For: an agent session started on the owner's Windows machine. Branch `feat/setup-script`; the owner must push it
+(or hand you a bundle or zip) first; use the commit that contains this file (the owner gets it with
+`git log -1 --format=%H -- docs/handoff/windows.md` and quotes it in the message that starts your session).
+Written 2026-11-09 on a Linux box, which cannot run
 Windows PowerShell 5.1, `wt`, NTFS volume checks, SmartScreen or `tar.exe`. Every Windows-specific behaviour
 of `setup.ps1` is so far untested on a real machine; CI (`windows-latest`) has not run yet either.
+
+## How the code gets to this machine
+
+The owner pushes `feat/setup-script` to origin (`https://github.com/ckir/rea.git`), or runs
+`git bundle create rea.bundle feat/setup-script` and copies `rea.bundle` to you
+(`git clone rea.bundle rea-setup`, then `git checkout feat/setup-script`). Do not push anything yourself.
+
+**Step 0:** confirm `git log --oneline -1` matches the SHA the owner sent you and that `README.md` exists. If
+not, stop and tell the owner.
 
 ## Ground rules in force
 
@@ -28,8 +39,7 @@ Windows-specific has been run.
 - Do not use `powershell -File .\setup.ps1` without `-ExecutionPolicy Bypass` for the first run: a stock
   `Restricted` policy refuses it, which is itself the thing item 3 checks.
 - `-InstallHopper` is rejected on Windows (exit 2); do not try it.
-- A real run installs about 1.2 GB under `%LOCALAPPDATA%\rea-tools` and downloads about 778 MB. Run
-  `Remove-Item -Recurse` on it only when an item says so.
+- A real run installs about 1.2 GB under `%LOCALAPPDATA%\rea-tools` and downloads about 778 MB.
 - `-Yes` skips the question but the disclosures are still printed.
 
 ## Items, in order (item 1 gates the rest)
@@ -53,8 +63,10 @@ Use Windows PowerShell 5.1 (`powershell.exe`) unless stated. Get the script from
    powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Yes -NoLaunch
    $LASTEXITCODE
    ```
-   Expected: exit 0; the console prints the log path first; steps `preflight`, `prereq`, `tools-bin`, `jdk`,
-   `ghidra`, `profile`, `rea-setup`, `rea-doctor` each end `ok`; a summary on stdout; `env.ps1` written. Take
+   Expected: exit 0; steps `preflight`, `prereq`, `tools-bin`, `jdk`, `ghidra`, `profile`, `rea-setup`,
+   `rea-doctor` each log an INFO result line (`ok`, or `skip (already valid)` when reused) and no ERROR line;
+   a summary on stdout whose `log file:` line is where the log path is shown (the console does not print it
+   earlier; failures end with a `details: <log path>` line); `env.ps1` written. Take
    timings from the log timestamps (state the load you did not control). Then run it a second time with
    the same command: expect every step `skip (already valid)` or reuse, exit 0, and about 30 s (npx).
    Also: in a window where `Get-ExecutionPolicy` is `Restricted`, run `.\setup.ps1` plainly and report the
@@ -72,9 +84,9 @@ Use Windows PowerShell 5.1 (`powershell.exe`) unless stated. Get the script from
 6. **Longest Ghidra path versus MAX_PATH.** The longest entry in the Ghidra zip is 149 characters below the
    extraction directory; the script refuses when the result would pass 240. With `LongPathsEnabled` unset,
    run with a deliberately long tools dir:
-   `-ToolsDir C:\<a directory name padded so the full path is 70 characters> -Yes -NoLaunch -DryRun` is not
-   enough (a dry run extracts nothing); use a real run on a spare directory and expect exit 5 with
-   `the longest path to extract would be`. Then a 64-character tools dir must succeed. Delete the spare
+   `-ToolsDir C:\<a directory name padded so the full path is 70 characters> -Yes -NoLaunch` (a dry run is not
+   enough, it extracts nothing). Note that the whole Ghidra zip (about 570 MB) is downloaded and verified
+   before the path check can fail. Expect exit 5 with `the longest path to extract would be`. Then a 64-character tools dir must succeed. Delete the spare
    directory afterwards. Report the lengths you used.
 7. **SmartScreen and antivirus.** After item 3, run `Get-ChildItem $env:LOCALAPPDATA\rea-tools\bin | Get-Item |
    Select Name,Length` and `Get-MpThreatDetection` (if Defender). Report: whether `agent-profile.exe` and

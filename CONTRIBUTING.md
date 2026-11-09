@@ -47,7 +47,7 @@ on Ubuntu.
 ## The canary
 
 `.github/workflows/canary.yml` runs weekly (and on demand) `sh setup.sh --check-upstream --yes` on Linux and
-macOS and `setup.ps1 -CheckUpstream -Yes` on Windows. It downloads no archive and writes nothing; it prints
+macOS and `setup.ps1 -CheckUpstream -Yes` on Windows. It downloads no archive and writes nothing but its own log; it prints
 one ok or FAIL line per expectation (latest releases, asset names, URLs, the embedded Ghidra hash) and exits 5
 when one breaks.
 

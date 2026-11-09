@@ -1,9 +1,20 @@
 # Handoff: run and verify setup.sh on macOS
 
-For: an agent session started on the owner's macOS machine, after fetching branch `feat/setup-script` at
-commit `a902737` (or the commit that contains this file). Written 2026-11-09 on a Linux box, which has no
+For: an agent session started on the owner's macOS machine. Branch `feat/setup-script`; the owner must push it
+(or hand you a bundle or zip) first; use the commit that contains this file (the owner gets it with
+`git log -1 --format=%H -- docs/handoff/macos.md` and quotes it in the message that starts your session).
+Written 2026-11-09 on a Linux box, which has no
 Gatekeeper, no BSD `sed`, no bsdtar listing, no bash 3.2 and no `Contents/Home` JDK layout. Nothing macOS-specific
 has been run; CI (`macos-latest`) has not run yet either.
+
+## How the code gets to this machine
+
+The owner pushes `feat/setup-script` to origin (`https://github.com/ckir/rea.git`), or runs
+`git bundle create rea.bundle feat/setup-script` and copies `rea.bundle` to you
+(`git clone rea.bundle rea-setup`, then `git checkout feat/setup-script`). Do not push anything yourself.
+
+**Step 0:** confirm `git log --oneline -1` matches the SHA the owner sent you and that `README.md` exists. If
+not, stop and tell the owner.
 
 ## Ground rules in force
 
@@ -42,10 +53,14 @@ tested against GNU tar and `unzip -Z` here.
    echo $?
    ```
    Expected: exit 0; steps `preflight`, `prereq`, `tools-bin`, `jdk`, `ghidra`, `profile`, `rea-setup`,
-   `rea-doctor` end `ok` (or `warn` for ghidra); the WARN line
+   `rea-doctor` each log an INFO result line (`ok`, or `skip (already valid)` when reused); the WARN line
    `the official 12.1.4 archive has no macOS native decompiler` at step `ghidra`; the launch step logs
-   `no terminal can be opened from here: two-terminal instructions printed` and the stdout ends with the
-   Terminal 1 / Terminal 2 commands. Second run: every step `skip (already valid)` or reuse, exit 0, about 30 s.
+   `no terminal can be opened from here: two-terminal instructions printed`. The log path is shown on the
+   summary's `log file:` line (the console does not print it earlier). The stdout then continues with
+   `Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.`, the Terminal 1 and
+   Terminal 2 command blocks, and ENDS with the line `Use these commands exactly as written: the attach hint
+   that clavity-ls agy prints omits --profile, and must not be used, because it would start Claude on your
+   default profile.` Second run: every step `skip (already valid)` or reuse, exit 0, about 30 s.
 3. **O7: quarantine of curl-downloaded binaries.** After item 2, run
    `xattr -l ~/.local/bin/agent-profile ~/.local/bin/clavity-ls` and
    `~/.local/bin/agent-profile --version; ~/.local/bin/clavity-ls --version`. Report whether
@@ -59,7 +74,7 @@ tested against GNU tar and `unzip -Z` here.
 5. **Two-terminal flow.** Open two new terminals. In both: `. ~/.local/share/rea-tools/env.sh`. Terminal 1:
    `clavity-ls agy "<folder>"`; terminal 2: `clavity-ls start "<folder>" --attach --profile rea` (exactly the
    commands the script printed, do not use the attach hint `clavity-ls agy` prints). Report whether Claude starts
-   on the `rea` profile (`/status` or `echo $CLAUDE_CONFIG_DIR` must show `~/.agent-profile/profiles/rea`),
+   on the `rea` profile (`/status` or `echo $CLAUDE_CONFIG_DIR` must show the profile directory agent-profile reports, normally `~/.agent-profile/profiles/rea`),
    whether `/mcp` lists `rea`, and anything that failed.
 6. **bash 3.2 and bsdtar listing format.** If `bsdtar` is present (macOS `tar` is bsdtar), the script's
    `archive_list` has parsed real archives during item 2. Check the log's DEBUG lines of step `archive` (or
