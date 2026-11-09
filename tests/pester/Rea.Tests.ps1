@@ -11,6 +11,16 @@
 # `rea doctor --json` answers (paths sanitised). Every run uses a scratch USERPROFILE that must end empty: the
 # steps never write the .claude directory or .claude.json of the home directory.
 
+BeforeDiscovery {
+    $script:Corpus = @()
+    $lines = [System.IO.File]::ReadAllLines((Join-Path $PSScriptRoot '../fixtures/redact-corpus.txt'))
+    foreach ($line in $lines) {
+        if (-not $line) { continue }
+        $tab = $line.IndexOf("`t")
+        $script:Corpus += , @{ In = $line.Substring(0, $tab); Want = $line.Substring($tab + 1) }
+    }
+}
+
 BeforeAll {
     $env:REA_SETUP_NO_MAIN = '1'
     . (Resolve-Path (Join-Path $PSScriptRoot '../../setup.ps1')).Path
@@ -473,5 +483,52 @@ Describe 'temporary files' {
         } finally {
             $env:TMPDIR = $saved
         }
+    }
+}
+
+Describe 'redaction corpus shared with tests/sh/rea.sh' {
+    It 'redacts <in>' -ForEach $script:Corpus {
+        Hide-ReaSecret $In | Should -Be $Want
+    }
+    It 'reads at least 39 corpus lines' {
+        @([System.IO.File]::ReadAllLines((Join-Path $script:Fix 'redact-corpus.txt')) | Where-Object { $_ }).Count | Should -BeGreaterOrEqual 39
+    }
+    It 'takes under 3 seconds on 200000 characters of [<unit>]' -ForEach @(
+        @{ unit = 'KEY' }, @{ unit = 'TOKEN_' }, @{ unit = 'http://' }, @{ unit = 'a=' }, @{ unit = '"a' }, @{ unit = 'a:' }
+    ) {
+        $text = $unit * [int][math]::Floor(200000 / $unit.Length)
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        $null = Hide-ReaSecret $text
+        $watch.Stop()
+        [Console]::Out.WriteLine(("timing [{0}] {1:N3} s" -f $unit, $watch.Elapsed.TotalSeconds))
+        $watch.Elapsed.TotalSeconds | Should -BeLessThan 3
+    }
+}
+
+Describe 'Get-ReaStderrTail' {
+    It 'gives the last 1000 characters marked with ... for <name>' -ForEach @(
+        @{ name = 'a 5000-character line and LF'; text = (('z' * 5000) + "`n") }
+        @{ name = 'a 5000-character line and CRLF'; text = (('z' * 5000) + "`r`n") }
+        @{ name = 'a 5000-character line without a newline'; text = ('z' * 5000) }
+    ) {
+        $t = Get-ReaStderrTail -Text $text
+        $t.Length | Should -Be 1003
+        $t | Should -Be ('...' + ('z' * 1000))
+    }
+    It 'gives the short line after a long line' {
+        Get-ReaStderrTail -Text (('z' * 5000) + "`nshort line") | Should -Be 'short line'
+        Get-ReaStderrTail -Text (('z' * 5000) + "`r`nshort line`r`n") | Should -Be 'short line'
+    }
+    It 'gives an empty tail for empty or null stderr' {
+        Get-ReaStderrTail -Text '' | Should -Be ''
+        Get-ReaStderrTail -Text $null | Should -Be ''
+    }
+    It 'returns exactly 1000 characters whole' {
+        $text = 'q' * 1000
+        Get-ReaStderrTail -Text $text | Should -Be $text
+    }
+    It 'redacts before cutting' {
+        $t = Get-ReaStderrTail -Text ("first`nANTHROPIC_API_KEY=sk-secret-123`n" + ('y' * 983))
+        $t | Should -Not -Match 'sk-secret'
     }
 }

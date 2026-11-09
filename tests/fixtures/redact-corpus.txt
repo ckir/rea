@@ -1,0 +1,39 @@
+{"Authorization": "Bearer abc123"}	{"Authorization": "<redacted>"}
+{"token": "tok\"en-rest"}	{"token": "<redacted>"}
+{"GITHUB_TOKEN": 12345}	{"GITHUB_TOKEN": <redacted>}
+X-Api-Key: abc123	X-Api-Key: <redacted>
+token : abc123	token : <redacted>
+{"Token":true}	{"Token":<redacted>}
+{"secret":null,"x":"y"}	{"secret":<redacted>,"x":"y"}
+{"password": -1.5e+3, "n": 2}	{"password": <redacted>, "n": 2}
+{"a": 1, "password": "p w", "b": 2}	{"a": 1, "password": "<redacted>", "b": 2}
+{"x-api-key":"k"}	{"x-api-key":"<redacted>"}
+{"token": "unterminated	{"token": "<redacted>"
+{"keyboard": "qwerty", "other": "ok"}	{"keyboard": "<redacted>", "other": "ok"}
+{"proxy-authorization":"Basic Zm9v"}	{"proxy-authorization":"<redacted>"}
+{"name":"x","value":"KEY is a word"}	{"name":"x","value":"KEY is a word"}
+GITHUB_TOKEN=abc KEY=def	GITHUB_TOKEN=<redacted> KEY=<redacted>
+ANTHROPIC_API_KEY=sk-1 other=2	ANTHROPIC_API_KEY=<redacted> other=2
+PASSWORD="a b c" next	PASSWORD=<redacted> next
+my_secret='a b c' next	my_secret=<redacted> next
+TOKEN=a=b=c	TOKEN=<redacted>
+KEY=a:b	KEY=<redacted>
+KEY=	KEY=<redacted>
+a=b,KEY=1	a=b,KEY=<redacted>
+KEY="abc"def tail	KEY=<redacted> tail
+API_KEY="va\"l" rest	API_KEY=<redacted> rest
+plain=value	plain=value
+Authorization: Bearer xyz	Authorization: <redacted>
+authorization: Basic Zm9v	authorization: <redacted>
+proxy-authorization: Basic abc	proxy-authorization: <redacted>
+token: a, other: b	token: <redacted>
+mixed Key: v1	mixed Key: <redacted>
+GitHub-Secret   : s3cr3t	GitHub-Secret   : <redacted>
+plain text: nothing here	plain text: nothing here
+monkey patch	monkey patch
+C:\Users\x\token.txt	C:\Users\x\token.txt
+https://user:pw@example.com/path	https://example.com/path
+https://example.com/p?token=1&x=2 done	https://example.com/p done
+https://token:abc@host/x	https://host/x
+see http://a?b?c and http://d?e	see http://a and http://d
+x?y http://c?d	x?y http://c

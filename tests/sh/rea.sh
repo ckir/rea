@@ -402,6 +402,37 @@ assert_match 'ERROR +\[rea-setup\] rea setup exited 3: ' "$(logtext c1)" "tail: 
 assert_eq "" "$(grep -c 'sk-secret-123' "$T/c1.log" | sed 's/^0$//')" "tail: a secret value sliced by the cut does not reach the log"
 assert_match 'yyyyyyyy' "$(logtext c1)" "tail: the end of stderr is kept"
 
+# --- redaction: the corpus shared with the Pester suite, timings, the stderr tail fallback ---
+rd_n=0
+while IFS= read -r rd_line; do
+  rd_n=$((rd_n + 1))
+  rd_in=${rd_line%%"	"*}
+  rd_want=${rd_line#*"	"}
+  assert_eq "$rd_want" "$(redact "$rd_in")" "redact corpus line $rd_n: $rd_in"
+done <"$FIX/redact-corpus.txt"
+assert_eq 1 "$([ "$rd_n" -ge 39 ] && echo 1 || echo 0)" "redact corpus: at least 39 lines were read ($rd_n)"
+# a 200000-character run must not take quadratic time
+for rd_unit in KEY TOKEN_ http:// 'a=' '"a' 'a:'; do
+  rd_big=$(node -e 'process.stdout.write(process.argv[1].repeat(Math.floor(200000/process.argv[1].length)))' -- "$rd_unit")
+  rd_t0=$(date +%s)
+  redact "$rd_big" >/dev/null
+  rd_t1=$(date +%s)
+  assert_eq 1 "$([ $((rd_t1 - rd_t0)) -lt 5 ] && echo 1 || echo 0)" "redact: 200000 characters of [$rd_unit] take under 5 s"
+done
+# the tail fallback: no usable line boundary gives the last 1000 characters marked with ...
+node -e 'process.stdout.write("z".repeat(5000))' >"$T/long1.txt"
+RS_PRE="STUB_NPX_EXIT_2=3; STUB_NPX_STDERR_2=\"\$(cat '$T/long1.txt')\"; export STUB_NPX_EXIT_2 STUB_NPX_STDERR_2"
+run_rea f1 step_rea_setup || :
+assert_match 'ERROR +\[rea-setup\] rea setup exited 3: \.\.\.zzzzzzzz' "$(logtext f1)" "tail: a single long line gives ... and its last characters"
+assert_eq 1003 "$(sed -n 's/.*rea setup exited 3: //p' "$T/f1.log" | head -n 1 | awk '{print length($0)}')" "tail: the fallback is 1000 characters plus the marker"
+node -e 'process.stdout.write("z".repeat(5000)+"\nshort line")' >"$T/long2.txt"
+RS_PRE="STUB_NPX_EXIT_2=3; STUB_NPX_STDERR_2=\"\$(cat '$T/long2.txt')\"; export STUB_NPX_EXIT_2 STUB_NPX_STDERR_2"
+run_rea f2 step_rea_setup || :
+assert_match 'rea setup exited 3: short line$' "$(logtext f2)" "tail: a long line then a short one gives the short one"
+RS_PRE="STUB_NPX_EXIT_2=3; STUB_NPX_STDERR_2=''; export STUB_NPX_EXIT_2 STUB_NPX_STDERR_2"
+run_rea f3 step_rea_setup || :
+assert_match 'rea setup exited 3: $' "$(logtext f3)" "tail: empty stderr gives an empty tail"
+
 # --dry-run and --check-upstream skip it
 RS_PRE="OPT_DRY_RUN=1"
 rc=0

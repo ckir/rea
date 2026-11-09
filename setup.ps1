@@ -118,16 +118,67 @@ function Format-ReaLogLine {
     return ('{0} {1} [{2}] {3}' -f $Timestamp, $Level.PadRight(5), $Step, $Message)
 }
 
-# Hides secrets in a log message. Names are matched case-insensitively (-replace is); quoted values are
-# consumed whole.
+# Secret names: TOKEN, KEY, SECRET or PASSWORD in any case, and for the JSON and colon forms AUTHORIZATION too.
+$script:ReaRxNameBasic = New-Object System.Text.RegularExpressions.Regex 'TOKEN|KEY|SECRET|PASSWORD', 'IgnoreCase'
+$script:ReaRxNameAuth = New-Object System.Text.RegularExpressions.Regex 'TOKEN|KEY|SECRET|PASSWORD|AUTHORIZATION', 'IgnoreCase'
+
+$script:ReaRxEquals = New-Object System.Text.RegularExpressions.Regex '(?<![A-Za-z0-9_])([A-Za-z0-9_]+)='
+$script:ReaRxEqualsValue = New-Object System.Text.RegularExpressions.Regex "\G(`"[^`"\n]*`"[^ \n]*|'[^'\n]*'[^ \n]*|[^ \n]*)"
+$script:ReaRxJsonKey = New-Object System.Text.RegularExpressions.Regex '"([A-Za-z0-9_.-]+)"[ ]*:[ ]*'
+$script:ReaRxJsonValue = New-Object System.Text.RegularExpressions.Regex '\G("(?:[^"\\\n]|\\.)*"?|[A-Za-z0-9_.+-]+)'
+$script:ReaRxColon = New-Object System.Text.RegularExpressions.Regex '(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)([ ]*:)'
+$script:ReaRxColonValue = New-Object System.Text.RegularExpressions.Regex '\G[^\n]*'
+
+# One redaction rule. Find locates candidates (Group 1 is the name); a candidate whose name is secret has the value
+# that Take matches right behind it replaced, any other is copied and the scan goes on behind it. The scan visits
+# each character once (no pattern here backtracks over a long run), where one pattern with the name inside the
+# word took seconds on 200000 characters. Mode: equals, json or colon.
+function Edit-ReaSecretRule {
+    param([string]$Text, $Find, $Take, [string]$Mode)
+    $out = New-Object System.Text.StringBuilder
+    $pos = 0
+    $names = $script:ReaRxNameAuth
+    if ($Mode -eq 'equals') { $names = $script:ReaRxNameBasic }
+    while ($pos -le $Text.Length) {
+        $m = $Find.Match($Text, $pos)
+        if (-not $m.Success) { break }
+        $end = $m.Index + $m.Length
+        $secret = $names.IsMatch($m.Groups[1].Value)
+        $v = $null
+        if ($secret) { $v = $Take.Match($Text, $end) }
+        if ($secret -and $v.Success) {
+            [void]$out.Append($Text, $pos, $m.Index - $pos)
+            if ($Mode -eq 'equals') {
+                [void]$out.Append($m.Groups[1].Value + '=<redacted>')
+            } elseif ($Mode -eq 'colon') {
+                [void]$out.Append($m.Groups[1].Value + $m.Groups[2].Value + ' <redacted>')
+            } elseif ($v.Value.StartsWith('"')) {
+                [void]$out.Append($m.Value + '"<redacted>"')
+            } else {
+                [void]$out.Append($m.Value + '<redacted>')
+            }
+            $pos = $end + $v.Length
+        } else {
+            [void]$out.Append($Text, $pos, $end - $pos)
+            $pos = $end
+        }
+    }
+    if ($pos -lt $Text.Length) { [void]$out.Append($Text, $pos, $Text.Length - $pos) }
+    return $out.ToString()
+}
+
+# Hides secrets in a log message, line by line, in the order of setup.sh redact (tests/fixtures/redact-corpus.txt
+# pins both): URL userinfo and query; NAME=value (quoted values consumed whole); "NAME": value in JSON form
+# (strings with escaped quotes, numbers, true, false, null); NAME: value to the end of the line. NAME contains
+# TOKEN, KEY, SECRET or PASSWORD, and for the JSON and colon forms also AUTHORIZATION, any case. A JSON value that
+# is an object or an array is left alone.
 function Hide-ReaSecret {
     param([AllowEmptyString()][string]$Text)
-    $names = 'TOKEN|KEY|SECRET|PASSWORD'
-    $r = $Text -replace "(?<![A-Za-z0-9_])([A-Za-z0-9_]*($names)[A-Za-z0-9_]*)=(`"[^`"]*`"|'[^']*'|[^ ]*)", '${1}=<redacted>'
-    $r = $r -replace "(`"[A-Za-z0-9_]*($names)[A-Za-z0-9_]*`"[ ]*:[ ]*)`"[^`"]*`"", '${1}"<redacted>"'
-    $r = $r -replace '(authorization:)[^"]*', '${1} <redacted>'
-    $r = $r -replace '(https?://)[^/@ ]*@', '${1}'
-    $r = $r -replace '(https?://[^ ?]*)\?[^ ]*', '${1}'
+    $r = $Text -replace '(https?://)[^/@ \n]*@', '${1}'
+    $r = $r -replace '\?(?<=https?://[^ ?\n]*\?)[^ \n]*', ''
+    $r = Edit-ReaSecretRule -Text $r -Find $script:ReaRxEquals -Take $script:ReaRxEqualsValue -Mode equals
+    $r = Edit-ReaSecretRule -Text $r -Find $script:ReaRxJsonKey -Take $script:ReaRxJsonValue -Mode json
+    $r = Edit-ReaSecretRule -Text $r -Find $script:ReaRxColon -Take $script:ReaRxColonValue -Mode colon
     return $r
 }
 
@@ -2801,17 +2852,22 @@ function Get-ReaGhidraStatus {
     return [pscustomobject]@{ Available = (Test-ReaJsonTrue $provider.available); Version = $version; Failing = $failing }
 }
 
-# The end of a stderr text, at most 1000 characters, cut at a line boundary (else a space) so that a NAME= prefix
-# cannot be sliced off its value; the partial first line is dropped.
+# The end of a stderr text, redacted first (so a cut cannot slice a secret name off its value), trailing whitespace
+# dropped, at most 1000 characters: the last 1000 without their partial first line; one long line has no boundary,
+# so its last 1000 characters come back marked with a leading '...'.
 function Get-ReaStderrTail {
     param([AllowEmptyString()][string]$Text)
     if ($null -eq $Text) { return '' }
-    if ($Text.Length -le 1000) { return $Text.Trim() }
-    $tail = $Text.Substring($Text.Length - 1000)
-    $cut = $tail.IndexOf("`n")
-    if ($cut -lt 0) { $cut = $tail.IndexOf(' ') }
-    if ($cut -lt 0) { return '' }
-    return $tail.Substring($cut + 1).Trim()
+    if ($Text.Length -gt 20000) { $Text = $Text.Substring($Text.Length - 20000) }
+    $clean = (Hide-ReaSecret $Text).TrimEnd()
+    if ($clean.Length -le 1000) { return $clean.Trim() }
+    $window = $clean.Substring($clean.Length - 1000)
+    $cut = $window.IndexOf("`n")
+    if ($cut -ge 0) {
+        $rest = $window.Substring($cut + 1).Trim()
+        if ($rest) { return $rest }
+    }
+    return '...' + $window
 }
 
 # The raw doctor answer to the log at DEBUG (the file; the console only at DEBUG), bounded to 200000 characters with
