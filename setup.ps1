@@ -1769,6 +1769,12 @@ $script:HintClaudeShim = "agent-profile refuses npm .cmd shims; install Claude C
 $script:Summary = @{}
 $script:ToolsDir = ''
 $script:BinDir = ''
+# Set by the plan phase and the steps: whether a choice found something to reuse, whether tools-bin installed
+# or updated anything, and the JDK release the plan resolved (Install-ReaJdk consumes it).
+$script:JdkReused = $false
+$script:GhidraReused = $false
+$script:ToolsBinActed = $false
+$script:JdkPlanned = $null
 
 # The path of the executable Name resolves to, or $null. -CommandType Application first, so an extensionless
 # script of the same name is never preferred (Start-Process on 5.1 may otherwise pick it). One function so a
@@ -1986,6 +1992,7 @@ function Install-ReaSingleBinary {
             Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "the checksum file of $Name holds no SHA-256: $SidecarUrl"
         }
         $archive = Join-Path $stage ($Url.Substring($Url.LastIndexOf('/') + 1))
+        Write-ReaLog DEBUG tools-bin "disk_free_mb $(Get-ReaFreeMb -Path $dir) MB at $dir before the download of $Name"
         if (-not (Get-ReaDownload -Url $Url -Destination $archive -Sha256 $hash)) {
             Stop-Rea -Code $script:EX_VERIFY -Step tools-bin -Message "cannot download and verify $Name from $Url"
         }
@@ -2016,6 +2023,7 @@ function Install-ReaSingleBinary {
             }
             Stop-Rea -Code $script:EX_STEP -Step tools-bin -Message "cannot move $ExpectedFile into place: $DestPath"
         }
+        Write-ReaLog DEBUG tools-bin "disk_free_mb $(Get-ReaFreeMb -Path $dir) MB at $dir after installing $Name"
         return 'installed'
     } finally {
         Clear-ReaTempFile -Path $stage
@@ -2069,6 +2077,7 @@ function Install-ReaTool {
     }
     $result = $decision
     if ($decision -eq 'install' -or $decision -eq 'update') {
+        $script:ToolsBinActed = $true
         if ($script:Opt.DryRun -or $script:Opt.CheckUpstream) {
             Write-ReaLog INFO tools-bin "${Name}: read-only run, nothing installed"
             $result = "$decision (not done: read-only run)"
@@ -2087,6 +2096,7 @@ function Install-ReaTool {
 # agent-profile then clavity-ls, each installed or updated to the latest release in the bin directory. Takes
 # the lock on the tools directory (kept until Unlock-ReaToolsDir) and puts the bin directory first on PATH.
 function Invoke-ReaStepToolsBin {
+    $script:ToolsBinActed = $false
     $readOnly = ($script:Opt.DryRun -or $script:Opt.CheckUpstream)
     if ($readOnly) {
         Write-ReaLog DEBUG tools-bin 'read-only run: no lock taken'
@@ -2100,19 +2110,29 @@ function Invoke-ReaStepToolsBin {
     }
     $platform = Get-ReaPlatform
     $lines = New-Object System.Collections.Generic.List[string]
-    $ap = Resolve-ReaAgentProfile -Os $platform.Os -Arch $platform.Arch
+    $planned = $script:ToolsBinPlanned
+    $script:ToolsBinPlanned = $null
+    $ap = $null
+    if ($planned) { $ap = $planned.AgentProfile }
+    if (-not $ap) { $ap = Resolve-ReaAgentProfile -Os $platform.Os -Arch $platform.Arch }
     if (-not $ap) {
         Stop-Rea -Code $script:EX_PLATFORM -Step tools-bin -Message "no agent-profile build for $($platform.Os) $($platform.Arch)"
     }
     $lines.Add((Install-ReaTool -Name 'agent-profile' -Latest $ap.Version -Url $ap.Url -SidecarUrl $ap.SidecarUrl))
-    $cl = Resolve-ReaClavityRelease -Os $platform.Os -Arch $platform.Arch
+    $cl = $null
+    if ($planned) { $cl = $planned.Clavity }
+    if (-not $cl) { $cl = Resolve-ReaClavityRelease -Os $platform.Os -Arch $platform.Arch }
     if (-not $cl) {
         Stop-Rea -Code $script:EX_PLATFORM -Step tools-bin -Message "no clavity-ls build for $($platform.Os) $($platform.Arch)"
     }
     $lines.Add((Install-ReaTool -Name 'clavity-ls' -Latest $cl.Version -Url $cl.Url -SidecarUrl $cl.SidecarUrl))
     $env:PATH = $script:BinDir + [System.IO.Path]::PathSeparator + $env:PATH
     $script:Summary['tools_bin'] = ($lines -join [Environment]::NewLine)
-    Write-ReaLog INFO tools-bin 'ok'
+    if ($script:ToolsBinActed) {
+        Write-ReaLog INFO tools-bin 'ok'
+    } else {
+        Write-ReaLog INFO tools-bin 'skip (already valid)'
+    }
 }
 
 # Lets go of the lock Invoke-ReaStepToolsBin took on the tools directory. It belongs after the last step that
@@ -2264,7 +2284,9 @@ function Install-ReaJdk {
     $platform = Get-ReaPlatform
     $tools = $script:ToolsDir
     Assert-ReaFreeMb -Path $tools -Mb 600
-    $jdk = Resolve-ReaJdkRelease -Os $platform.Os -Arch $platform.Arch
+    $jdk = $script:JdkPlanned
+    $script:JdkPlanned = $null
+    if (-not $jdk) { $jdk = Resolve-ReaJdkRelease -Os $platform.Os -Arch $platform.Arch }
     $size = 'unknown'
     if ($jdk.Bytes) { $size = $jdk.Bytes }
     Write-ReaLog INFO jdk "resolved $($jdk.Release): $($jdk.Url) ($size bytes)"
@@ -2303,6 +2325,7 @@ function Install-ReaJdk {
                 Write-ReaLog WARN jdk "the checksum sidecar of $release is unreachable; relying on the SHA-256 from the release listing"
             }
         }
+        Write-ReaLog DEBUG jdk "disk_free_mb $(Get-ReaFreeMb -Path $tools) MB at $tools before the download"
         if (-not (Get-ReaDownload -Url $jdk.Url -Destination $archive -Sha256 $jdk.Sha256)) {
             Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "cannot download and verify $release from $($jdk.Url)"
         }
@@ -2345,6 +2368,7 @@ function Install-ReaJdk {
     }
     $jdkHome = Get-ReaJdkHomeCandidate -Dir $final -Os $platform.Os
     $script:JavaHomeSelected = $jdkHome
+    Write-ReaLog DEBUG jdk "disk_free_mb $(Get-ReaFreeMb -Path $tools) MB at $tools after the install"
     Write-ReaLog INFO jdk "installed $release in $(Get-ReaShortPath $final)"
     Remove-ReaOldJdk -ToolsDir $tools -InUse @($jdkHome)
     $script:Summary['jdk'] = "$release installed: $jdkHome"
@@ -2359,13 +2383,17 @@ function Get-ReaJavaHomeFlag {
 }
 
 # Sets JavaHomeSelected and Summary['jdk']. Precedence: -JavaHome (invalid: exit 1), the JAVA_HOME environment
-# variable (invalid: WARN and go on), the newest valid install in the tools directory, a new install.
+# variable (invalid: WARN and go on), the newest valid install in the tools directory, a new install. With
+# -PlanOnly it stops before the install: JdkReused says whether there is something to reuse; nothing is
+# downloaded or written.
 function Select-ReaJdk {
     param(
         [string]$FlagHome = (Get-ReaJavaHomeFlag),
-        [string]$EnvHome = $env:JAVA_HOME
+        [string]$EnvHome = $env:JAVA_HOME,
+        [switch]$PlanOnly
     )
     $script:JavaHomeSelected = ''
+    $script:JdkReused = $true
     $os = [string](Get-ReaPlatform).Os
     if ($FlagHome) {
         $candidate = Get-ReaJdkHomeCandidate -Dir $FlagHome -Os $os
@@ -2411,14 +2439,28 @@ function Select-ReaJdk {
         $script:Summary['jdk'] = "reused ${best}: $($script:JavaHomeSelected)"
         return
     }
+    $script:JdkReused = $false
+    if ($PlanOnly) { return }
     $installed = Install-ReaJdk
     if ($installed) { $script:JavaHomeSelected = [string]$installed }
 }
 
-# Picks or installs the JDK that Ghidra and rea run with. Runs under the lock Invoke-ReaStepToolsBin took.
+# Picks or installs the JDK that Ghidra and rea run with. Runs under the lock Invoke-ReaStepToolsBin took. After
+# Invoke-ReaPlanJdk it follows the plan (the choice was made there).
 function Invoke-ReaStepJdk {
-    Select-ReaJdk
-    Write-ReaLog INFO jdk 'ok'
+    switch ($script:PlanJdk) {
+        'reuse' { }
+        'install' {
+            $installed = Install-ReaJdk
+            if ($installed) { $script:JavaHomeSelected = [string]$installed }
+        }
+        default { Select-ReaJdk }
+    }
+    if ($script:JdkReused) {
+        Write-ReaLog INFO jdk 'skip (already valid)'
+    } else {
+        Write-ReaLog INFO jdk 'ok'
+    }
 }
 
 # --- step ghidra ---
@@ -2478,6 +2520,7 @@ function Install-ReaGhidra {
     $stage = $null
     try {
         $archive = Join-Path $work ('.download.' + $PID + '.zip')
+        Write-ReaLog DEBUG ghidra "disk_free_mb $(Get-ReaFreeMb -Path $tools) MB at $tools before the download"
         if (-not (Get-ReaDownload -Url $script:PIN_GHIDRA_URL -Destination $archive -Sha256 $script:PIN_GHIDRA_SHA256)) {
             Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message "cannot download and verify Ghidra $version from $script:PIN_GHIDRA_URL"
         }
@@ -2523,6 +2566,7 @@ function Install-ReaGhidra {
         if ($stage) { Clear-ReaTempFile -Path $stage }
     }
     $script:GhidraDirSelected = $final
+    Write-ReaLog DEBUG ghidra "disk_free_mb $(Get-ReaFreeMb -Path $tools) MB at $tools after the install"
     Write-ReaLog INFO ghidra "installed Ghidra $version in $(Get-ReaShortPath $final)"
     $script:Summary['ghidra'] = "$version installed: $final"
     return $final
@@ -2537,14 +2581,18 @@ function Get-ReaGhidraDirFlag {
 
 # Sets GhidraDirSelected, GhidraOfficial and Summary['ghidra']. Precedence: -GhidraDir (invalid: exit 1), the
 # GHIDRA_INSTALL_DIR environment variable (invalid: WARN and go on), the install in the tools directory (valid and
-# marked complete; one without the mark is treated as absent and replaced), a new install.
+# marked complete; one without the mark is treated as absent and replaced), a new install. With -PlanOnly it
+# stops before the install: GhidraReused says whether there is something to reuse; nothing is downloaded or
+# written.
 function Select-ReaGhidra {
     param(
         [string]$FlagDir = (Get-ReaGhidraDirFlag),
-        [string]$EnvDir = $env:GHIDRA_INSTALL_DIR
+        [string]$EnvDir = $env:GHIDRA_INSTALL_DIR,
+        [switch]$PlanOnly
     )
     $script:GhidraDirSelected = ''
     $script:GhidraOfficial = $false
+    $script:GhidraReused = $true
     if ($FlagDir) {
         $check = Test-ReaGhidraValid -Dir $FlagDir
         if (-not $check.Valid) {
@@ -2587,20 +2635,34 @@ function Select-ReaGhidra {
             Write-ReaLog WARN ghidra "ignoring the install ${topDir}: $($check.Reason)"
         }
     }
+    $script:GhidraReused = $false
+    if ($PlanOnly) { return }
     $installed = Install-ReaGhidra
     if ($installed) { $script:GhidraDirSelected = [string]$installed }
 }
 
-# Picks or installs the Ghidra that rea runs with. Runs under the lock Invoke-ReaStepToolsBin took. On macOS the
+# Picks or installs the Ghidra that rea runs with. Runs under the lock Invoke-ReaStepToolsBin took; after
+# Invoke-ReaPlanGhidra it follows the plan. On macOS the
 # official archive has no native decompiler: a WARN and a warn summary, never a failure.
 function Invoke-ReaStepGhidra {
-    Select-ReaGhidra
+    switch ($script:PlanGhidra) {
+        'reuse' { }
+        'install' {
+            $installed = Install-ReaGhidra
+            if ($installed) { $script:GhidraDirSelected = [string]$installed }
+        }
+        default { Select-ReaGhidra }
+    }
     Write-ReaLog DEBUG ghidra "selected: $script:GhidraDirSelected"
     if (([string](Get-ReaPlatform).Os) -eq 'mac' -and $script:GhidraOfficial) {
         Write-ReaLog WARN ghidra 'the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
         $script:Summary['ghidra'] = "warn: $($script:Summary['ghidra']); no macOS native decompiler in the official archive"
     }
-    Write-ReaLog INFO ghidra 'ok'
+    if ($script:GhidraReused) {
+        Write-ReaLog INFO ghidra 'skip (already valid)'
+    } else {
+        Write-ReaLog INFO ghidra 'ok'
+    }
 }
 
 # --- step profile ---
@@ -2724,6 +2786,8 @@ function Invoke-ReaStepProfile {
     }
     $dir = Get-ReaProfileConfigDir -Name $name -Executable $exe
     if ($script:Opt.DryRun) {
+        $script:ClaudeConfigDirSelected = $dir
+        $env:CLAUDE_CONFIG_DIR_SELECTED = $dir
         Write-ReaLog INFO profile ('would use ' + (Get-ReaShortPath $dir) + ' (read-only run, nothing created)')
         $script:Summary['profile'] = "would use $dir (not created: read-only run)"
         return
@@ -3005,6 +3069,323 @@ function Invoke-ReaStepReaDoctor {
     Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea reports the Ghidra provider unavailable; failing checks: $names"
 }
 
+# --- plan phase: resolution and validity checks only, no download and no write ---
+
+# What the plan phase decided for each step ('install', 'update', 'reuse' or 'skip'), a line of text for the
+# plan and the disclosures, and the download sizes in bytes. The resolutions the plan made are kept for the
+# steps (each step consumes its own and clears it).
+$script:PlanToolsBin = ''
+$script:PlanJdk = ''
+$script:PlanGhidra = ''
+$script:PlanToolsBinText = ''
+$script:PlanJdkText = ''
+$script:PlanGhidraText = ''
+$script:PlanJdkBytes = [int64]0
+$script:PlanGhidraBytes = [int64]0
+$script:ToolsBinPlanned = $null
+# The size of the Temurin 21 archive (208 MiB, measured) when the release listing gave none.
+$script:JdkDownloadEstimateBytes = [int64]218103808
+$script:EnvFile = ''
+
+# Writes one line on stdout (the final summary and the answers a caller may read). One function so a test can
+# capture it; a function cannot return it, because its output would join the exit code.
+function Write-ReaOutput {
+    param([AllowEmptyString()][string]$Text)
+    [Console]::Out.WriteLine($Text)
+}
+
+# Writes one line on stderr, for what the user reads before the question.
+function Write-ReaNotice {
+    param([AllowEmptyString()][string]$Text)
+    [Console]::Error.WriteLine($Text)
+}
+
+# Bytes in megabytes (MiB), one decimal, with a point whatever the culture.
+function Format-ReaMegabyte {
+    param([int64]$Bytes)
+    return ([double]$Bytes / 1MB).ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+# install, update or reuse for one managed tool.
+function Get-ReaToolDecision {
+    param([string]$Name, [string]$Latest)
+    $have = Get-ReaInstalledVersion -Name $Name
+    if (-not $have) { return 'install' }
+    if ((Compare-ReaSemver $have $Latest) -eq -1) { return 'update' }
+    return 'reuse'
+}
+
+# Resolves the latest agent-profile and clavity-ls (the answers are kept for Invoke-ReaStepToolsBin) and sets
+# PlanToolsBin to install (one is missing), update (one is behind) or reuse. Skipped by -CheckUpstream.
+function Invoke-ReaPlanToolsBin {
+    if ($script:Opt.CheckUpstream) { return }
+    $platform = Get-ReaPlatform
+    $ap = Resolve-ReaAgentProfile -Os $platform.Os -Arch $platform.Arch
+    if (-not $ap) {
+        Stop-Rea -Code $script:EX_PLATFORM -Step tools-bin -Message "no agent-profile build for $($platform.Os) $($platform.Arch)"
+    }
+    $cl = Resolve-ReaClavityRelease -Os $platform.Os -Arch $platform.Arch
+    if (-not $cl) {
+        Stop-Rea -Code $script:EX_PLATFORM -Step tools-bin -Message "no clavity-ls build for $($platform.Os) $($platform.Arch)"
+    }
+    $script:ToolsBinPlanned = [pscustomobject]@{ AgentProfile = $ap; Clavity = $cl }
+    $apDecision = Get-ReaToolDecision -Name 'agent-profile' -Latest $ap.Version
+    $clDecision = Get-ReaToolDecision -Name 'clavity-ls' -Latest $cl.Version
+    $script:PlanToolsBin = 'reuse'
+    if ($apDecision -eq 'update' -or $clDecision -eq 'update') { $script:PlanToolsBin = 'update' }
+    if ($apDecision -eq 'install' -or $clDecision -eq 'install') { $script:PlanToolsBin = 'install' }
+    $script:PlanToolsBinText = "agent-profile $($ap.Version) ($apDecision), clavity-ls $($cl.Version) ($clDecision) in $script:BinDir"
+    Write-ReaLog INFO plan "tools-bin: $script:PlanToolsBin ($script:PlanToolsBinText)"
+}
+
+# Sets PlanJdk to reuse (Select-ReaJdk picked one) or install (the release is resolved; the answer is kept for
+# Install-ReaJdk) and PlanJdkBytes to the download size.
+function Invoke-ReaPlanJdk {
+    if ($script:Opt.CheckUpstream) { return }
+    Select-ReaJdk -PlanOnly
+    if ($script:JdkReused) {
+        $script:PlanJdk = 'reuse'
+        $script:PlanJdkBytes = [int64]0
+        $script:PlanJdkText = $script:JavaHomeSelected
+    } else {
+        $platform = Get-ReaPlatform
+        $jdk = Resolve-ReaJdkRelease -Os $platform.Os -Arch $platform.Arch
+        $script:JdkPlanned = $jdk
+        $script:PlanJdk = 'install'
+        $script:PlanJdkBytes = $script:JdkDownloadEstimateBytes
+        if ($jdk.Bytes) { $script:PlanJdkBytes = [int64]$jdk.Bytes }
+        $script:PlanJdkText = "$($jdk.Release) into $script:ToolsDir"
+    }
+    Write-ReaLog INFO plan "jdk: $script:PlanJdk ($script:PlanJdkText)"
+}
+
+# Sets PlanGhidra to reuse (Select-ReaGhidra picked one) or install, and PlanGhidraBytes.
+function Invoke-ReaPlanGhidra {
+    if ($script:Opt.CheckUpstream) { return }
+    Select-ReaGhidra -PlanOnly
+    if ($script:GhidraReused) {
+        $script:PlanGhidra = 'reuse'
+        $script:PlanGhidraBytes = [int64]0
+        $script:PlanGhidraText = $script:GhidraDirSelected
+    } else {
+        $script:PlanGhidra = 'install'
+        $script:PlanGhidraBytes = [int64]$script:PIN_GHIDRA_ZIP_BYTES
+        $script:PlanGhidraText = "Ghidra $script:PIN_GHIDRA_VERSION into $(Join-Path $script:ToolsDir $script:PIN_GHIDRA_TOPDIR)"
+    }
+    Write-ReaLog INFO plan "ghidra: $script:PlanGhidra ($script:PlanGhidraText)"
+}
+
+# The free space the pending installs need: 1500 MB for Ghidra, 600 for the JDK, 200 for the rest.
+function Get-ReaNeededMb {
+    $mb = 200
+    if ($script:PlanGhidra -eq 'install') { $mb += 1500 }
+    if ($script:PlanJdk -eq 'install') { $mb += 600 }
+    return $mb
+}
+
+# The four things the user is told before anything is downloaded (spec section 10), on stderr.
+function Write-ReaDisclosure {
+    $bytes = $script:PlanGhidraBytes + $script:PlanJdkBytes
+    Write-ReaNotice 'Before anything is changed, please note:'
+    if ($bytes -gt 0) {
+        Write-ReaNotice ("  1. Download: {0} MB in total (Ghidra {1} MB, JDK {2} MB), unpacked under {3}; agent-profile and clavity-ls go to {4} when they are new or outdated." -f (Format-ReaMegabyte $bytes), (Format-ReaMegabyte $script:PlanGhidraBytes), (Format-ReaMegabyte $script:PlanJdkBytes), $script:ToolsDir, $script:BinDir)
+    } else {
+        Write-ReaNotice ("  1. Download: nothing for Ghidra and the JDK (both are already there); agent-profile and clavity-ls go to {0} when they are new or outdated." -f $script:BinDir)
+    }
+    Write-ReaNotice '  2. clavity-ls start always runs agy with --dangerously-skip-permissions, and agy is not isolated by the profile (it shares ~/.gemini/antigravity-cli/).'
+    Write-ReaNotice '  3. --install-hopper may ask for administrator rights and installs commercial demo software.'
+    Write-ReaNotice '  4. npx -y rea-agents@latest downloads and runs the newest published npm package with your rights.'
+}
+
+# would install, would update, would reuse or skip, then Text.
+function Format-ReaPlanPhrase {
+    param([string]$Plan, [string]$Text)
+    if ($Plan -eq 'install' -or $Plan -eq 'update' -or $Plan -eq 'reuse') { return "would $Plan $Text" }
+    return "skip $Text"
+}
+
+# One line per step, on stderr.
+function Show-ReaPlanSummary {
+    $jdkText = '{0} ({1} MB)' -f $script:PlanJdkText, (Format-ReaMegabyte $script:PlanJdkBytes)
+    $ghidraText = '{0} ({1} MB)' -f $script:PlanGhidraText, (Format-ReaMegabyte $script:PlanGhidraBytes)
+    Write-ReaNotice 'Plan:'
+    Write-ReaNotice ('  {0,-10} {1}' -f 'tools-bin:', (Format-ReaPlanPhrase $script:PlanToolsBin $script:PlanToolsBinText))
+    Write-ReaNotice ('  {0,-10} {1}' -f 'jdk:', (Format-ReaPlanPhrase $script:PlanJdk $jdkText))
+    Write-ReaNotice ('  {0,-10} {1}' -f 'ghidra:', (Format-ReaPlanPhrase $script:PlanGhidra $ghidraText))
+    Write-ReaNotice ('  {0,-10} would create or reuse the agent-profile profile {1}' -f 'profile:', $script:Opt.ProfileName)
+    Write-ReaNotice ('  {0,-10} would register rea in that profile' -f 'rea-setup:')
+    Write-ReaNotice ('  {0,-10} would check the registration and Ghidra' -f 'rea-doctor:')
+    if ($script:Opt.NoLaunch) {
+        Write-ReaNotice ('  {0,-10} skip (-NoLaunch)' -f 'launch:')
+    } else {
+        Write-ReaNotice ('  {0,-10} would start clavity-ls on {1}' -f 'launch:', $script:Opt.Folder)
+    }
+}
+
+# The free-space check for every pending install at once, the disclosures, the plan and the question. Returns
+# $false when the user declines (after printing `nothing changed` on stdout); the caller then exits 0. Skipped by
+# -CheckUpstream; -DryRun prints and never asks.
+function Invoke-ReaPlanConfirm {
+    if ($script:Opt.CheckUpstream) { return $true }
+    $needed = Get-ReaNeededMb
+    Write-ReaLog DEBUG plan "free space needed: $needed MB"
+    Assert-ReaFreeMb -Path $script:ToolsDir -Mb $needed
+    Write-ReaDisclosure
+    Show-ReaPlanSummary
+    if ($script:Opt.DryRun) {
+        Write-ReaLog INFO plan 'dry run: nothing will be changed'
+        return $true
+    }
+    if (-not (Read-ReaConfirm -Prompt 'Proceed?')) {
+        Write-ReaLog INFO plan 'declined'
+        Write-ReaOutput 'nothing changed'
+        return $false
+    }
+    return $true
+}
+
+# --- env file, summary and launch ---
+
+# Text in single quotes, each embedded ' doubled (safe for any PowerShell).
+function ConvertTo-ReaPsQuoted {
+    param([AllowEmptyString()][string]$Text)
+    return ("'" + $Text.Replace("'", "''") + "'")
+}
+
+# Writes ToolsDir\env.ps1, which sets GHIDRA_INSTALL_DIR and JAVA_HOME and puts the bin directory first on PATH,
+# for a terminal that does not inherit this script's environment. Written to a temporary file and moved over the
+# old one on every run, in UTF-8 with a byte-order mark (Windows PowerShell 5.1 reads a script without one as ANSI,
+# which would damage a non-ASCII user name in a path). A dry run writes nothing.
+function Write-ReaEnvFile {
+    param([string]$ToolsDir)
+    $script:EnvFile = ''
+    if ($script:Opt.CheckUpstream) { return }
+    $file = Join-Path $ToolsDir 'env.ps1'
+    if ($script:Opt.DryRun) {
+        Write-ReaLog INFO env "would write $file"
+        return
+    }
+    if (-not $script:GhidraDirSelected -or -not $script:JavaHomeSelected) {
+        Stop-Rea -Code $script:EX_STEP -Step env -Message "cannot write ${file}: no Ghidra or JDK was selected"
+    }
+    try {
+        [System.IO.Directory]::CreateDirectory($ToolsDir) | Out-Null
+    } catch {
+        Stop-Rea -Code $script:EX_STEP -Step env -Message "cannot create directory: $ToolsDir"
+    }
+    $lines = @(
+        '# Written by setup.ps1 on every run. Dot-source it in a terminal that does not inherit its environment.',
+        ('$env:GHIDRA_INSTALL_DIR = ' + (ConvertTo-ReaPsQuoted $script:GhidraDirSelected)),
+        ('$env:JAVA_HOME = ' + (ConvertTo-ReaPsQuoted $script:JavaHomeSelected)),
+        ('$env:PATH = ' + (ConvertTo-ReaPsQuoted $script:BinDir) + ' + [System.IO.Path]::PathSeparator + $env:PATH')
+    )
+    $tmp = "$file.tmp.$PID"
+    Register-ReaTempFile -Path $tmp
+    try {
+        [System.IO.File]::WriteAllText($tmp, (($lines -join [Environment]::NewLine) + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding $true))
+        Move-ReaIntoPlace -Source $tmp -Destination $file
+    } catch {
+        Stop-Rea -Code $script:EX_STEP -Step env -Message "cannot write ${file}: $($_.Exception.Message)"
+    }
+    $script:EnvFile = $file
+    Write-ReaLog INFO env ('wrote ' + (Get-ReaShortPath $file))
+}
+
+# What was installed, reused or skipped, where, and what to do next; on stdout, before the launch.
+function Write-ReaSummary {
+    if ($script:Opt.CheckUpstream) { return }
+    if ($script:Opt.DryRun) {
+        Write-ReaOutput 'Dry run: nothing was changed. Plan result:'
+    } else {
+        Write-ReaOutput 'Setup summary:'
+    }
+    Write-ReaOutput ('  profile:     ' + $script:Summary['profile'])
+    Write-ReaOutput ('  tools-bin:   in ' + $script:BinDir)
+    foreach ($line in @(([string]$script:Summary['tools_bin']) -split "`r?`n")) {
+        Write-ReaOutput ('               ' + $line)
+    }
+    Write-ReaOutput ('  jdk:         ' + $script:Summary['jdk'])
+    Write-ReaOutput ('  ghidra:      ' + $script:Summary['ghidra'])
+    Write-ReaOutput ('  rea setup:   ' + $script:Summary['rea_setup'])
+    Write-ReaOutput ('  rea doctor:  ' + $script:Summary['rea_doctor'])
+    Write-ReaOutput ('  log file:    ' + $script:LogFile)
+    if ($script:EnvFile) {
+        Write-ReaOutput ('  env file:    ' + $script:EnvFile)
+    } else {
+        Write-ReaOutput '  env file:    not written'
+    }
+    Write-ReaOutput 'Next:'
+    Write-ReaOutput ('  clavity-ls start "{0}" --profile {1}' -f $script:Opt.Folder, $script:Opt.ProfileName)
+    Write-ReaOutput '  (to launch again, run this script again: it skips everything that is already in place)'
+}
+
+# The two-terminal flow, for a machine where clavity-ls cannot open a terminal itself.
+function Write-ReaLaunchInstruction {
+    $envFile = Join-Path $script:ToolsDir 'env.ps1'
+    Write-ReaOutput 'Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.'
+    Write-ReaOutput 'Terminal 1:'
+    Write-ReaOutput ('  . "{0}"' -f $envFile)
+    Write-ReaOutput ('  clavity-ls agy "{0}"' -f $script:Opt.Folder)
+    Write-ReaOutput 'Terminal 2:'
+    Write-ReaOutput ('  . "{0}"' -f $envFile)
+    Write-ReaOutput ('  clavity-ls start "{0}" --attach --profile {1}' -f $script:Opt.Folder, $script:Opt.ProfileName)
+    Write-ReaOutput 'Use these commands exactly as written: the attach hint that clavity-ls agy prints omits --profile, and must not be used, because it would start Claude on your default profile.'
+}
+
+# Runs FilePath with ArgumentList and the three variables in the child's environment only. stdin and stdout are
+# the console's; stderr is shown as it comes and kept. Returns ExitCode and the Stderr text.
+function Start-ReaLaunchProcess {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'None')]
+    param([string]$FilePath, [string[]]$ArgumentList, [hashtable]$Environment)
+    if (-not $PSCmdlet.ShouldProcess($FilePath, 'start')) { return }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = (@($ArgumentList | ForEach-Object { ConvertTo-ReaQuotedArgument $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardError = $true
+    foreach ($name in $Environment.Keys) { $psi.EnvironmentVariables[$name] = [string]$Environment[$name] }
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $seen = New-Object System.Text.StringBuilder
+    while ($null -ne ($line = $proc.StandardError.ReadLine())) {
+        [Console]::Error.WriteLine($line)
+        [void]$seen.AppendLine($line)
+    }
+    $proc.WaitForExit()
+    return [pscustomobject]@{ ExitCode = $proc.ExitCode; Stderr = $seen.ToString() }
+}
+
+# The last step; returns clavity-ls start's own exit code. -NoLaunch prints the command; a dry run logs what it
+# would do; otherwise clavity-ls start runs directly (Windows has Windows Terminal, which clavity-ls uses), and
+# when it exits 1 having said `terminal` on stderr the two-terminal flow is printed too.
+function Invoke-ReaStepLaunch {
+    if ($script:Opt.CheckUpstream) { return $script:EX_OK }
+    $folder = $script:Opt.Folder
+    $name = $script:Opt.ProfileName
+    if ($script:Opt.DryRun) {
+        Write-ReaLog INFO launch "would run: clavity-ls start `"$folder`" --profile $name"
+        return $script:EX_OK
+    }
+    if ($script:Opt.NoLaunch) {
+        Write-ReaLog INFO launch 'skip (-NoLaunch)'
+        Write-ReaOutput ('launch skipped (-NoLaunch); run: clavity-ls start "{0}" --profile {1}' -f $folder, $name)
+        return $script:EX_OK
+    }
+    $exe = Resolve-ReaExecutable -Name 'clavity-ls'
+    if (-not $exe) {
+        Stop-Rea -Code $script:EX_STEP -Step launch -Message 'clavity-ls not found on PATH after the tools-bin step'
+    }
+    $childPath = $script:BinDir + [System.IO.Path]::PathSeparator + $env:PATH
+    $childEnv = @{ GHIDRA_INSTALL_DIR = $script:GhidraDirSelected; JAVA_HOME = $script:JavaHomeSelected; PATH = $childPath }
+    Write-ReaLog INFO launch "running clavity-ls start `"$folder`" --profile $name"
+    $run = Start-ReaLaunchProcess -FilePath $exe -ArgumentList @('start', $folder, '--profile', $name) -Environment $childEnv
+    $code = [int]$run.ExitCode
+    Write-ReaLog INFO launch "launch exited $code"
+    if ($code -eq 1 -and ([string]$run.Stderr) -match '(?i)terminal') {
+        Write-ReaLaunchInstruction
+    }
+    return $code
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -3053,6 +3434,10 @@ function Invoke-Main {
         }
         Invoke-ReaStepPreflight
         Invoke-ReaStepPrereq
+        Invoke-ReaPlanToolsBin
+        Invoke-ReaPlanJdk
+        Invoke-ReaPlanGhidra
+        if (-not (Invoke-ReaPlanConfirm)) { return $script:EX_OK }
         Invoke-ReaStepToolsBin
         Invoke-ReaStepJdk
         Invoke-ReaStepGhidra
@@ -3060,7 +3445,9 @@ function Invoke-Main {
         Invoke-ReaStepProfile
         Invoke-ReaStepReaSetup
         Invoke-ReaStepReaDoctor
-        return $script:EX_OK
+        Write-ReaEnvFile -ToolsDir $script:ToolsDir
+        Write-ReaSummary
+        return (Invoke-ReaStepLaunch)
     } catch {
         $code = $_.Exception.Data['ReaCode']
         if ($null -ne $code) { return [int]$code }

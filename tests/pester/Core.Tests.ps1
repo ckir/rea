@@ -372,7 +372,7 @@ Describe 'Invoke-Main' {
         }
     }
 
-    It 'runs preflight, prereq, tools-bin, jdk, ghidra, the lock release, profile, rea-setup and rea-doctor and writes one log file (steps mocked, same on every OS)' {
+    It 'runs preflight, prereq, the three plans, the confirmation, tools-bin, jdk, ghidra, the lock release, profile, rea-setup, rea-doctor, the env file, the summary and the launch, and writes one log file (steps mocked, same on every OS)' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         $savedLogDir = $script:Opt.LogDir
         $savedLog = $script:LogFile
@@ -381,6 +381,10 @@ Describe 'Invoke-Main' {
             $script:Calls = New-Object System.Collections.Generic.List[string]
             Mock Invoke-ReaStepPreflight { $script:Calls.Add('preflight') }
             Mock Invoke-ReaStepPrereq { $script:Calls.Add('prereq') }
+            Mock Invoke-ReaPlanToolsBin { $script:Calls.Add('plan-tools-bin') }
+            Mock Invoke-ReaPlanJdk { $script:Calls.Add('plan-jdk') }
+            Mock Invoke-ReaPlanGhidra { $script:Calls.Add('plan-ghidra') }
+            Mock Invoke-ReaPlanConfirm { $script:Calls.Add('confirm'); return $true }
             Mock Invoke-ReaStepToolsBin { $script:Calls.Add('tools-bin') }
             Mock Invoke-ReaStepJdk { $script:Calls.Add('jdk') }
             Mock Invoke-ReaStepGhidra { $script:Calls.Add('ghidra') }
@@ -388,9 +392,36 @@ Describe 'Invoke-Main' {
             Mock Invoke-ReaStepProfile { $script:Calls.Add('profile') }
             Mock Invoke-ReaStepReaSetup { $script:Calls.Add('rea-setup') }
             Mock Invoke-ReaStepReaDoctor { $script:Calls.Add('rea-doctor') }
-            Invoke-Main | Should -Be 0
-            ($script:Calls -join ',') | Should -Be 'preflight,prereq,tools-bin,jdk,ghidra,unlock,profile,rea-setup,rea-doctor'
+            Mock Write-ReaEnvFile { $script:Calls.Add('env') }
+            Mock Write-ReaSummary { $script:Calls.Add('summary') }
+            Mock Invoke-ReaStepLaunch { $script:Calls.Add('launch'); return 7 }
+            Invoke-Main | Should -Be 7
+            ($script:Calls -join ',') | Should -Be 'preflight,prereq,plan-tools-bin,plan-jdk,plan-ghidra,confirm,tools-bin,jdk,ghidra,unlock,profile,rea-setup,rea-doctor,env,summary,launch'
             @(Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').Count | Should -Be 1
+        } finally {
+            $script:Opt.LogDir = $savedLogDir
+            $script:LogFile = $savedLog
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'a declined question ends the run with 0 before any step changes anything' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
+        $savedLogDir = $script:Opt.LogDir
+        $savedLog = $script:LogFile
+        try {
+            $script:Opt.LogDir = $dir
+            $script:Calls = New-Object System.Collections.Generic.List[string]
+            Mock Invoke-ReaStepPreflight { $script:Calls.Add('preflight') }
+            Mock Invoke-ReaStepPrereq { $script:Calls.Add('prereq') }
+            Mock Invoke-ReaPlanToolsBin { $script:Calls.Add('plan') }
+            Mock Invoke-ReaPlanJdk { $script:Calls.Add('plan') }
+            Mock Invoke-ReaPlanGhidra { $script:Calls.Add('plan') }
+            Mock Invoke-ReaPlanConfirm { $script:Calls.Add('confirm'); return $false }
+            Mock Invoke-ReaStepToolsBin { $script:Calls.Add('tools-bin') }
+            Mock Invoke-ReaStepLaunch { $script:Calls.Add('launch'); return 7 }
+            Invoke-Main | Should -Be 0
+            ($script:Calls -join ',') | Should -Be 'preflight,prereq,plan,plan,plan,confirm'
         } finally {
             $script:Opt.LogDir = $savedLogDir
             $script:LogFile = $savedLog
