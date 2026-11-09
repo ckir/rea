@@ -281,12 +281,12 @@ assert_match 'tar' "$(logtext pf-notar)" "tar is named"
 
 # orphans in both directories are removed, except under --dry-run
 mkdir -p "$T/tools dir" "$T/bin dir" || exit 1
-mkdir "$T/tools dir/x.tmp.999999" "$T/bin dir/y.tmp.999999"
+mkdir "$T/tools dir/jdk-21.0.1+1.tmp.999999" "$T/bin dir/agent-profile.tmp.999999"
 OPT_DRY_RUN=1
 run_step pf-dry "$P" step_preflight || true
-if [ -d "$T/tools dir/x.tmp.999999" ]; then t_ok; else t_fail "--dry-run removed an orphan"; fi
+if [ -d "$T/tools dir/jdk-21.0.1+1.tmp.999999" ]; then t_ok; else t_fail "--dry-run removed an orphan"; fi
 OPT_DRY_RUN=0
 run_step pf-clean "$P" step_preflight || true
-if [ ! -e "$T/tools dir/x.tmp.999999" ] && [ ! -e "$T/bin dir/y.tmp.999999" ]; then t_ok; else t_fail "orphans in both directories are removed"; fi
+if [ ! -e "$T/tools dir/jdk-21.0.1+1.tmp.999999" ] && [ ! -e "$T/bin dir/agent-profile.tmp.999999" ]; then t_ok; else t_fail "orphans in both directories are removed"; fi
 
 t_done

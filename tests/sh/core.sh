@@ -75,4 +75,29 @@ if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
 fi
 assert_eq 1 "$(find "$t_tmp" -name 'setup-*.log' | wc -l | tr -d ' ')" "main wrote one log file"
 rm -rf "$t_tmp"
+# --- abs_path and the path options ---
+assert_eq "$PWD/tools" "$(abs_path tools)" "relative path made absolute"
+assert_eq "$PWD/tools" "$(abs_path ./tools)" "leading ./ dropped"
+assert_eq "$PWD" "$(abs_path .)" "dot is the current directory"
+assert_eq "/opt/x" "$(abs_path /opt/x)" "absolute path unchanged"
+assert_eq "" "$(abs_path '')" "empty stays empty"
+parse_args --tools-dir tools --bin-dir ../bin --ghidra-dir gh --java-home ./jh --folder proj
+assert_eq "$PWD/tools" "$OPT_TOOLS_DIR" "--tools-dir absolute"
+assert_eq "$PWD/../bin" "$OPT_BIN_DIR" "--bin-dir absolute"
+assert_eq "$PWD/gh" "$OPT_GHIDRA_DIR" "--ghidra-dir absolute"
+assert_eq "$PWD/jh" "$OPT_JAVA_HOME" "--java-home absolute"
+assert_eq "$PWD/proj" "$OPT_FOLDER" "--folder absolute"
+parse_args
+assert_eq "" "$OPT_TOOLS_DIR" "unset tools dir stays empty"
+
+# --- main: seams are not reachable from the environment, the log path is the first console line, the hash is real ---
+sm=$(ARCHIVE_TAR=x ARCHIVE_ZIP_TOOL=y LOCK_POLLS=1 sh -c '. ./setup.sh; usage() { echo "T=${ARCHIVE_TAR-unset} Z=${ARCHIVE_ZIP_TOOL-unset} L=${LOCK_POLLS-unset} N=${REA_SETUP_NO_MAIN-unset}"; }; main --help' 2>&1)
+assert_eq "T=unset Z=unset L=unset N=unset" "$sm" "main unsets the test seams"
+ld=$(mktemp -d "${TMPDIR:-/tmp}/rea-core-main.XXXXXX")
+first=$(env -u REA_SETUP_NO_MAIN HOME="$ld" sh "$ROOT/setup.sh" --log-dir "$ld/logs" --dry-run --yes 2>&1 | head -n 1)
+assert_match "^[^ ]+ INFO +\\[preflight\\] log file: ~/logs/setup-[0-9TZ]+-[0-9]+\\.log" "$first" "first console line names the log"
+want=$(sha256_file "$ROOT/setup.sh")
+assert_match "script version .* sha256 $want" "$(cat "$ld"/logs/setup-*.log)" "the log carries the real script hash"
+rm -rf "$ld"
+
 t_done

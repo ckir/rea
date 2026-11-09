@@ -262,17 +262,28 @@ sh -c ". ./setup.sh; install_traps; staging_new \"\$1\" w >/dev/null; staging_ne
 assert_eq "" "$(find "$T/trap dir" -name '*.tmp.*' | head -n 1)" "staging made in the main shell removed on exit (names with spaces)"
 
 # --- orphan cleanup ---
-mkdir -p "$T/tools/x.tmp.999999" "$T/tools/y.tmp.$$" "$T/tools/w.old.999999" "$T/tools/old live.tmp.$$" "$T/tools/keep.tmp.abc" "$T/tools/other.dir"
-touch -d "3 days ago" "$T/tools/old live.tmp.$$" 2>/dev/null || touch -t 200001010000 "$T/tools/old live.tmp.$$"
+mkdir -p "$T/tools/agent-profile.tmp.999999" "$T/tools/jdk-21.0.1+1.tmp.$$" "$T/tools/clavity-ls.exe.old.999999" "$T/tools/jdk-21 old live.tmp.$$" "$T/tools/jdk-21.0.2+1.tmp.abc" "$T/tools/other.dir"
+touch -d "3 days ago" "$T/tools/jdk-21 old live.tmp.$$" 2>/dev/null || touch -t 200001010000 "$T/tools/jdk-21 old live.tmp.$$"
 cleanup_orphans "$T/tools"
-assert_status 1 "dead-pid staging removed" test -d "$T/tools/x.tmp.999999"
-assert_status 1 "dead-pid .old removed (Windows leftovers)" test -d "$T/tools/w.old.999999"
-assert_status 0 "live young staging kept" test -d "$T/tools/y.tmp.$$"
-assert_status 1 "live but older than 24 h removed" test -d "$T/tools/old live.tmp.$$"
-assert_status 0 "non-numeric suffix kept" test -d "$T/tools/keep.tmp.abc"
+assert_status 1 "dead-pid staging removed" test -d "$T/tools/agent-profile.tmp.999999"
+assert_status 1 "dead-pid .old removed (Windows leftovers)" test -d "$T/tools/clavity-ls.exe.old.999999"
+assert_status 0 "live young staging kept" test -d "$T/tools/jdk-21.0.1+1.tmp.$$"
+assert_status 1 "live but older than 24 h removed" test -d "$T/tools/jdk-21 old live.tmp.$$"
+assert_status 0 "non-numeric suffix kept" test -d "$T/tools/jdk-21.0.2+1.tmp.abc"
 assert_status 0 "unrelated dir kept" test -d "$T/tools/other.dir"
 assert_status 0 "cleanup of an empty or missing dir is fine" cleanup_orphans "$T/nothing here"
-rm -rf "$T/tools/y.tmp.$$" "$T/tools/keep.tmp.abc" "$T/tools/other.dir"
+# names the script does not create are never touched, even with a dead pid (the bin dir is shared)
+mkdir -p "$T/foreign"
+for n in vim.tmp.3999998 notes.old.3999999 my.backup.old.3999997 jdk-notes.tmp.3999996 ghidra-notes.old.3999995; do mkdir "$T/foreign/$n"; done
+for n in agent-profile.tmp.3999998 clavity-ls.old.3999997 jdk-21.0.1+1.work.tmp.3999996 ghidra.work.tmp.3999995 ghidra_12.1.4_PUBLIC.old.3999994 env.sh.tmp.3999993; do mkdir "$T/foreign/$n"; done
+cleanup_orphans "$T/foreign"
+for n in vim.tmp.3999998 notes.old.3999999 my.backup.old.3999997 jdk-notes.tmp.3999996 ghidra-notes.old.3999995; do
+  assert_status 0 "foreign $n kept" test -d "$T/foreign/$n"
+done
+for n in agent-profile.tmp.3999998 clavity-ls.old.3999997 jdk-21.0.1+1.work.tmp.3999996 ghidra.work.tmp.3999995 ghidra_12.1.4_PUBLIC.old.3999994 env.sh.tmp.3999993; do
+  assert_status 1 "own $n removed" test -d "$T/foreign/$n"
+done
+rm -rf "$T/tools/jdk-21.0.1+1.tmp.$$" "$T/tools/jdk-21.0.2+1.tmp.abc" "$T/tools/other.dir"
 
 # --- staging and install_commit ---
 s=$(staging_new "$T/tools" ghidra_12.1.4_PUBLIC)
@@ -407,7 +418,7 @@ assert_status 0 "jdk-notes (user directory) untouched" test -f "$pj/jdk-notes/ke
 assert_status 0 "jdk-21-scratch (no marker) untouched" test -d "$pj/jdk-21-scratch"
 assert_status 0 "jdk-0.0.1-user (no marker) untouched" test -d "$pj/jdk-0.0.1-user/sub"
 assert_status 0 "jdk-mac-old (not a version name) untouched" test -d "$pj/jdk-mac-old"
-assert_status 1 "old mac-layout jdk with a release file pruned" test -d "$pj/jdk-1.8.0+1"
+assert_status 0 "a jdk with only its own release file (no sentinel) is a user's, never pruned" test -d "$pj/jdk-1.8.0+1"
 assert_status 0 "newest jdk kept" test -d "$pj/jdk-21.0.13+10"
 assert_status 0 "second newest jdk kept" test -d "$pj/jdk-21.0.13+9"
 assert_status 1 "21.0.9+10 pruned (older release)" test -d "$pj/jdk-21.0.9+10"
@@ -428,5 +439,18 @@ assert_status 0 "JAVA_HOME_SELECTED's jdk never pruned" test -d "$pj/jdk-21.0.9+
 JAVA_HOME="" JAVA_HOME_SELECTED="" prune_jdks "$pj"
 assert_status 1 "unprotected old jdk pruned" test -d "$pj/jdk-21.0.9+10"
 assert_status 0 "prune of a missing dir is fine" prune_jdks "$T/no such tools"
+# hand-extracted JDKs (a release file, no sentinel) are never pruned, however old
+pu="$T/prune user"
+mkdir -p "$pu/jdk-11.0.2+9" "$pu/jdk-17.0.2+8"
+: >"$pu/jdk-11.0.2+9/release"
+: >"$pu/jdk-17.0.2+8/release"
+mkjdk_in() { mkdir -p "$pu/$1" && : >"$pu/$1/.install-complete"; }
+mkjdk_in jdk-21.0.13+9
+mkjdk_in jdk-21.0.14+1
+mkjdk_in jdk-21.0.15+1
+JAVA_HOME="" JAVA_HOME_SELECTED="" prune_jdks "$pu"
+assert_status 0 "user jdk-11 kept" test -d "$pu/jdk-11.0.2+9"
+assert_status 0 "user jdk-17 kept" test -d "$pu/jdk-17.0.2+8"
+assert_status 1 "oldest script-made jdk pruned" test -d "$pu/jdk-21.0.13+9"
 
 t_done

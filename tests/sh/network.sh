@@ -291,4 +291,57 @@ http_get https://github.com/a "$TMP/out"
 assert_match 'rea-setup-cfg\.' "$TMP_FILES" "http_get registers its curl config"
 cleanup_tmp
 assert_eq "" "$(ls "$TMPDIR")" "nothing left in TMPDIR"
+# --- metadata probes: retried like http_get, and -q always first so a ~/.curlrc cannot change the policy ---
+# probe_stub answers "code[:exit[:location]]" per call from STUB_PLAN, counts calls, and records the first argument
+probe_stub() {
+  ps_n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0)
+  ps_n=$((ps_n + 1))
+  echo "$ps_n" >"$STUB_COUNT"
+  echo "$1" >>"$TMP/first-args"
+  ps_line=$(sed -n "${ps_n}p" "$STUB_PLAN")
+  ps_code="" ps_rc="" ps_loc=""
+  IFS=: read -r ps_code ps_rc ps_loc <<EOF
+$ps_line
+EOF
+  ps_rc=${ps_rc:-0}
+  if [ -n "$ps_loc" ]; then ps_loc="https:$ps_loc"; fi
+  printf '%s %s' "$ps_code" "$ps_loc"
+  return "$ps_rc"
+}
+CURL=probe_stub
+: >"$TMP/first-args"
+stub_reset 504 503 200
+assert_eq "https://github.com/a" "$(resolve_redirects https://github.com/a)" "resolve_redirects retries 504 and 503"
+assert_eq 3 "$(cat "$STUB_COUNT")" "three probes"
+stub_reset 000:28 302:0://github.com/b 000:7 200
+assert_eq "https://github.com/b" "$(resolve_redirects https://github.com/a)" "transient curl exits are retried on each hop"
+stub_reset 404 200
+assert_status 3 "404 on a hop is not retried" resolve_redirects https://github.com/a
+assert_eq 1 "$(cat "$STUB_COUNT")" "one probe on 404"
+stub_reset 000:60 200
+assert_status 3 "curl exit 60 is not retried" resolve_redirects https://github.com/a
+assert_eq 1 "$(cat "$STUB_COUNT")" "one probe on curl exit 60"
+stub_reset 504 504 504 504 200
+assert_status 3 "gives up after four attempts" resolve_redirects https://github.com/a
+assert_eq 4 "$(cat "$STUB_COUNT")" "four probes"
+stub_reset 405 504 200
+assert_eq "https://github.com/a" "$(resolve_redirects https://github.com/a)" "the ranged fallback is retried too"
+stub_reset 504 302:0://github.com/ckir/clavity/releases/tag/clavity-v31
+assert_eq clavity-v31 "$(github_latest_tag ckir/clavity)" "latest tag survives a 504"
+stub_reset 504 504 504 504
+assert_status 1 "latest tag fails after four 504s" github_latest_tag ckir/clavity
+assert_eq 4 "$(cat "$STUB_COUNT")" "four tag probes"
+# every curl call starts with -q
+: >"$TMP/first-args"
+stub_reset 200
+http_get https://github.com/a "$TMP/out" || true
+stub_reset 200
+resolve_redirects https://github.com/a >/dev/null || true
+stub_reset 302:0://github.com/ckir/clavity/releases/tag/v1
+github_latest_tag ckir/clavity >/dev/null || true
+stub_reset 200
+cu_headers https://github.com/a -I >/dev/null || true
+assert_eq "-q -q -q -q" "$(tr '\n' ' ' <"$TMP/first-args" | sed 's/ $//')" "-q is the first curl argument of every call"
+CURL=stub_curl
+
 t_done

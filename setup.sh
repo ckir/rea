@@ -286,6 +286,16 @@ need_value() {
   fi
 }
 
+# abs_path PATH: PATH made absolute against the current directory, without resolving symlinks; '' stays ''
+abs_path() {
+  case "$1" in
+    '' | /*) printf '%s\n' "$1" ;;
+    .) printf '%s\n' "$PWD" ;;
+    ./*) abs_path "${1#./}" ;;
+    *) printf '%s/%s\n' "$PWD" "$1" ;;
+  esac
+}
+
 parse_args() {
   OPT_PROFILE=rea
   OPT_FOLDER=$PWD
@@ -323,6 +333,12 @@ parse_args() {
       *) die "$EX_USAGE" args "unknown option: $1 (see --help)" ;;
     esac
   done
+  # The paths are recorded in the profile, env.sh and the printed commands, which run elsewhere: make them absolute now
+  OPT_FOLDER=$(abs_path "$OPT_FOLDER")
+  OPT_GHIDRA_DIR=$(abs_path "$OPT_GHIDRA_DIR")
+  OPT_JAVA_HOME=$(abs_path "$OPT_JAVA_HOME")
+  OPT_TOOLS_DIR=$(abs_path "$OPT_TOOLS_DIR")
+  OPT_BIN_DIR=$(abs_path "$OPT_BIN_DIR")
 }
 
 # --- platform ---
@@ -522,9 +538,53 @@ net_proto() {
   esac
 }
 
+# probe_retry URL [CURL_ARG...]: one metadata request (no body is written) with the retries http_get has: 5xx,
+# 429 and curl exits 6 7 28 35 52 56 are retried after the pauses in RETRY_WAITS; anything else stops at once.
+# Sets PR_RESP to "<http code> <redirect url>" ("000 " when curl failed). curl's exit code and the first line
+# of its stderr go to the DEBUG log. -q is first so a ~/.curlrc (location, insecure...) cannot change the policy.
+probe_retry() {
+  pr_url=$1
+  shift
+  PR_RESP="000 "
+  pr_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || return 1
+  register_tmp "$pr_err"
+  pr_total=0
+  for pr_w in $RETRY_WAITS; do
+    [ -n "$pr_w" ] && pr_total=$((pr_total + 1))
+  done
+  pr_attempt=0
+  for pr_wait in $RETRY_WAITS; do
+    pr_attempt=$((pr_attempt + 1))
+    pr_rc=0
+    PR_RESP=$("$CURL" -q -sS "$@" -o /dev/null -w '%{http_code} %{redirect_url}' --proto "$(net_proto)" --tlsv1.2 \
+      --connect-timeout 20 --max-time 60 "$pr_url" 2>"$pr_err") || pr_rc=$?
+    if [ "$pr_rc" -ne 0 ]; then
+      PR_RESP="000 "
+      log DEBUG net "curl exit $pr_rc for $pr_url (attempt $pr_attempt of $pr_total): $(head -n 1 "$pr_err" | head -c 300)"
+    fi
+    pr_retry=0
+    if [ "$pr_rc" -eq 0 ]; then
+      case "${PR_RESP%% *}" in
+        5?? | 429) pr_retry=1 ;;
+      esac
+    else
+      case "$pr_rc" in
+        6 | 7 | 28 | 35 | 52 | 56) pr_retry=1 ;;
+      esac
+    fi
+    [ "$pr_retry" -eq 1 ] || break
+    [ "$pr_attempt" -lt "$pr_total" ] || break
+    log DEBUG net "retrying in ${pr_wait}s"
+    "$SLEEP" "$pr_wait"
+  done
+  rm -f "$pr_err"
+  return 0
+}
+
 # resolve_redirects URL: prints the final URL after at most 5 redirects, using HEAD (no body is fetched).
 # A hop answering 405 or 403 to HEAD is asked again with a one-byte ranged GET. Every hop must pass
-# url_allowed. Returns 1 for a disallowed hop, 2 for more than 5 redirects, 3 for any other failure.
+# url_allowed and is retried like http_get retries. Returns 1 for a disallowed hop, 2 for more than 5
+# redirects, 3 for any other failure.
 resolve_redirects() {
   rr_url=$1
   rr_hops=0
@@ -533,12 +593,12 @@ resolve_redirects() {
       log ERROR net "redirect target not allowed: $rr_url"
       return 1
     }
-    rr_resp=$("$CURL" -sS -I -o /dev/null -w '%{http_code} %{redirect_url}' --proto "$(net_proto)" --tlsv1.2 \
-      --connect-timeout 20 --max-time 60 "$rr_url" 2>/dev/null) || rr_resp="000 "
+    probe_retry "$rr_url" -I
+    rr_resp=$PR_RESP
     case "$rr_resp" in
       403* | 405*)
-        rr_resp=$("$CURL" -sS -r 0-0 -o /dev/null -w '%{http_code} %{redirect_url}' --proto "$(net_proto)" --tlsv1.2 \
-          --connect-timeout 20 --max-time 60 "$rr_url" 2>/dev/null) || rr_resp="000 "
+        probe_retry "$rr_url" -r 0-0
+        rr_resp=$PR_RESP
         ;;
     esac
     rr_code=${rr_resp%% *}
@@ -605,7 +665,7 @@ http_get() {
     hg_attempt=$((hg_attempt + 1))
     hg_rc=0
     : >"$hg_hdr"
-    hg_code=$("$CURL" -sS -K "$hg_cfg" --proto "$(net_proto)" --tlsv1.2 --speed-limit 1024 --speed-time 60 \
+    hg_code=$("$CURL" -q -sS -K "$hg_cfg" --proto "$(net_proto)" --tlsv1.2 --speed-limit 1024 --speed-time 60 \
       --connect-timeout 20 -D "$hg_hdr" -o "$hg_dest" -w '%{http_code}' "$@" "$hg_url" 2>"$hg_err") || hg_rc=$?
     log DEBUG net "GET $hg_url -> ${hg_code:-000} (curl exit $hg_rc, attempt $hg_attempt of $hg_total)"
     if [ "$hg_rc" -ne 0 ]; then
@@ -708,8 +768,8 @@ json_query() {
 github_latest_tag() {
   gl_url="https://github.com/$1/releases/latest"
   url_allowed "$gl_url" || return 1
-  gl_loc=$("$CURL" -sS -I -o /dev/null -w '%{redirect_url}' --proto "$(net_proto)" --tlsv1.2 \
-    --connect-timeout 20 --max-time 60 "$gl_url" 2>/dev/null) || return 1
+  probe_retry "$gl_url" -I
+  gl_loc=${PR_RESP#* }
   log DEBUG net "latest release of $1 -> $gl_loc"
   case "$gl_loc" in
     */releases/tag/?*) gl_tag=${gl_loc##*/} ;;
@@ -945,27 +1005,31 @@ cleanup_install() {
   return 0
 }
 
-# cleanup_orphans DIR: removes DIR/*.tmp.PID and DIR/*.old.PID (also the Windows script's leftovers) whose
-# process is gone or whose modification time is over 24 hours old; logs each
+# cleanup_orphans DIR: removes DIR/<name>.tmp.PID and DIR/<name>.old.PID (also the Windows script's leftovers)
+# whose process is gone or whose modification time is over 24 hours old; logs each. Only the names this script
+# creates are considered (agent-profile*, clavity-ls*, jdk-<digit>*, ghidra.work, ghidra_<digit>*, env.*): the
+# bin dir is shared with other tools and the tools dir may hold a user's own files.
 cleanup_orphans() {
   co_dir=$1
-  for co_path in "$co_dir"/*.tmp.* "$co_dir"/*.old.*; do
-    if [ ! -e "$co_path" ] && [ ! -L "$co_path" ]; then
-      continue
-    fi
-    co_pid=${co_path##*.}
-    case "$co_pid" in
-      '' | *[!0-9]*) continue ;;
-    esac
-    if ! pid_alive "$co_pid"; then
-      co_why="pid $co_pid is not running"
-    elif older_than_min "$co_path" 1440; then
-      co_why="older than 24 hours"
-    else
-      continue
-    fi
-    log INFO cleanup "removing orphan ($co_why): $co_path"
-    rm -rf -- "$co_path" || log WARN cleanup "could not remove orphan: $co_path"
+  for co_pat in 'agent-profile*' 'clavity-ls*' 'jdk-[0-9]*' 'ghidra.work' 'ghidra_[0-9]*' 'env.*'; do
+    for co_path in "$co_dir"/$co_pat.tmp.* "$co_dir"/$co_pat.old.*; do
+      if [ ! -e "$co_path" ] && [ ! -L "$co_path" ]; then
+        continue
+      fi
+      co_pid=${co_path##*.}
+      case "$co_pid" in
+        '' | *[!0-9]*) continue ;;
+      esac
+      if ! pid_alive "$co_pid"; then
+        co_why="pid $co_pid is not running"
+      elif older_than_min "$co_path" 1440; then
+        co_why="older than 24 hours"
+      else
+        continue
+      fi
+      log INFO cleanup "removing orphan ($co_why): $co_path"
+      rm -rf -- "$co_path" || log WARN cleanup "could not remove orphan: $co_path"
+    done
   done
   return 0
 }
@@ -1373,8 +1437,8 @@ jdk_newer() {
   [ "$(jdk_build "$jn_a")" -gt "$(jdk_build "$jn_b")" ]
 }
 
-# prune_jdks TOOLS: keeps the two newest jdk-<digit>* directories that hold .install-complete or a release
-# file (nothing else is ever touched) by release, and whichever one holds JAVA_HOME or
+# prune_jdks TOOLS: keeps the two newest jdk-<digit>* directories that hold .install-complete (nothing else
+# is ever touched) by release, and whichever one holds JAVA_HOME or
 # JAVA_HOME_SELECTED; removes the rest (a failed removal only warns). Staging and .old directories are
 # ignored.
 prune_jdks() {
@@ -1386,8 +1450,9 @@ prune_jdks() {
     case "$pj_n" in
       *.tmp.* | *.old.*) continue ;;
     esac
-    # Only what an install made: the sentinel, or a JDK's own release file (also in the macOS layout)
-    if [ ! -f "$pj_d/.install-complete" ] && [ ! -f "$pj_d/release" ] && [ ! -f "$pj_d/Contents/Home/release" ]; then
+    # Only what an install of this script made: the sentinel. A JDK's own release file is not proof, a
+    # hand-extracted Temurin has one too.
+    if [ ! -f "$pj_d/.install-complete" ]; then
       continue
     fi
     pj_all="${pj_all}${pj_all:+$NL}$pj_n"
@@ -2009,7 +2074,7 @@ jdk_select() {
 step_jdk() {
   case "${PLAN_jdk:-}" in
     reuse) ;;
-    install) jdk_install ;;
+    install) jdk_choose || jdk_install ;; # re-checked under the lock: another run may have installed it meanwhile
     *) jdk_select ;;
   esac
   if [ "${JDK_REUSED:-0}" -eq 1 ]; then
@@ -2163,7 +2228,7 @@ ghidra_select() {
 step_ghidra() {
   case "${PLAN_ghidra:-}" in
     reuse) ;;
-    install) ghidra_install ;;
+    install) ghidra_choose || ghidra_install ;; # re-checked under the lock: another run may have installed it meanwhile
     *) ghidra_select ;;
   esac
   log DEBUG ghidra "selected: $GHIDRA_DIR_SELECTED"
@@ -2836,7 +2901,7 @@ cu_sidecar() {
 cu_headers() {
   ch_url=$1
   shift
-  "$CURL" -sS --proto "$(net_proto)" --tlsv1.2 --connect-timeout 20 --max-time 60 "$@" "$ch_url" 2>/dev/null |
+  "$CURL" -q -sS --proto "$(net_proto)" --tlsv1.2 --connect-timeout 20 --max-time 60 "$@" "$ch_url" 2>/dev/null |
     tr -d '\r' | tr '[:upper:]' '[:lower:]'
 }
 
@@ -2998,12 +3063,21 @@ log_config() {
 }
 
 main() {
-  unset UNAME_S UNAME_M
+  # test seams must not be reachable from the caller's environment
+  unset UNAME_S UNAME_M ARCHIVE_TAR ARCHIVE_ZIP_TOOL LOCK_POLLS REA_SETUP_NO_MAIN
+  unset CLAUDE_CONFIG_DIR_SELECTED GHIDRA_DIR_SELECTED JAVA_HOME_SELECTED
   install_traps
   parse_args "$@"
   CONSOLE_LEVEL=$OPT_CONSOLE_LEVEL
   LOG_FILE=$(log_open)
-  log DEBUG preflight "script version $PIN_SCRIPT_VERSION sha256 n/a"
+  if [ "$LOG_FILE" != /dev/null ]; then
+    log INFO preflight "log file: $(abbrev_home "$LOG_FILE")"
+  fi
+  main_sha=n/a
+  if [ -f "$0" ] && { command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; }; then
+    main_sha=$(sha256_file "$0") || main_sha=n/a
+  fi
+  log DEBUG preflight "script version $PIN_SCRIPT_VERSION sha256 $main_sha"
   log DEBUG preflight "$(uname -a)"
   log DEBUG preflight "invoked: $0 $*"
   log_config

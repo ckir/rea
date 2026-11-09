@@ -474,4 +474,20 @@ assert_eq 0 "$(count_of "$DL_PATH")" "check-upstream: the zip is not downloaded"
 # --- main runs the steps in order, the lock released after the last ---
 assert_eq "plan_confirm step_tools_bin step_jdk step_ghidra tools_lock_release" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (plan_confirm|step_tools_bin|step_jdk|step_ghidra|tools_lock_release)$' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: step_ghidra runs after step_jdk and before the lock release"
 
+# --- an install plan is re-checked under the lock: what another run installed meanwhile is reused ---
+r3=$(
+  PLAN_ghidra=install
+  ghidra_choose() { GHIDRA_REUSED=1; return 0; }
+  ghidra_install() { echo INSTALLED; }
+  step_ghidra 2>/dev/null
+)
+assert_eq "" "$r3" "step_ghidra: the plan said install, the recheck found one, nothing is installed"
+r3=$(
+  PLAN_ghidra=install
+  ghidra_choose() { GHIDRA_REUSED=0; return 1; }
+  ghidra_install() { echo INSTALLED; }
+  step_ghidra 2>/dev/null
+)
+assert_match "INSTALLED" "$r3" "step_ghidra: still installs when the recheck finds nothing"
+
 t_done
