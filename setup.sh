@@ -113,11 +113,14 @@ die() {
 
 # run_cmd STEP cmd...: logs the argument list, exit code and duration; stdout goes to the file named by
 # RUN_STDOUT, stderr to the log (bounded to 4000 characters on failure) and its last 1000 bytes to
-# RUN_STDERR_TAIL. Returns the command's exit code.
+# RUN_STDERR_TAIL (cut at a line boundary). RUN_STDOUT is registered for cleanup. Returns the command's exit code.
 run_cmd() {
   rc_step=$1
   shift
   RUN_STDOUT=$(mktemp "${TMPDIR:-/tmp}/rea-setup-out.XXXXXX") || return 1
+  register_tmp "$RUN_STDOUT"
+  rc_nl='
+'
   rc_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || {
     rm -f "$RUN_STDOUT"
     return 1
@@ -128,7 +131,16 @@ run_cmd() {
   "$@" >"$RUN_STDOUT" 2>"$rc_err" || rc=$?
   rc_secs=$(($(date +%s) - rc_start))
   log DEBUG "$rc_step" "exit $rc after ${rc_secs}s"
+  rc_size=$(wc -c <"$rc_err" | tr -d ' ')
   RUN_STDERR_TAIL=$(tail -c 1000 "$rc_err")
+  if [ "$rc_size" -gt 1000 ]; then
+    # drop the partial first line (else the first word) so a NAME= prefix cannot be sliced off its value
+    case "$RUN_STDERR_TAIL" in
+      *"$rc_nl"*) RUN_STDERR_TAIL=${RUN_STDERR_TAIL#*"$rc_nl"} ;;
+      *" "*) RUN_STDERR_TAIL=${RUN_STDERR_TAIL#* } ;;
+      *) RUN_STDERR_TAIL="" ;;
+    esac
+  fi
   if [ "$rc" -ne 0 ]; then
     log DEBUG "$rc_step" "stderr: $(head -c 4000 "$rc_err")"
   fi
@@ -200,6 +212,7 @@ redact() {
   rd_auth='[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
   printf '%s\n' "$1" | sed -E \
     -e "s/([A-Za-z0-9_]*($rd_names)[A-Za-z0-9_]*)=(\"[^\"]*\"|${rd_q}[^${rd_q}]*${rd_q}|[^ ]*)/\\1=<redacted>/g" \
+    -e "s/(\"[A-Za-z0-9_]*($rd_names)[A-Za-z0-9_]*\"[ ]*:[ ]*)\"[^\"]*\"/\\1\"<redacted>\"/g" \
     -e "s/($rd_auth:)[^\"]*/\\1 <redacted>/g" \
     -e 's#(https?://)[^/@ ]*@#\1#g' \
     -e 's#(https?://[^ ?]*)\?[^ ]*#\1#g'
@@ -2279,20 +2292,33 @@ rea_ghidra_status() {
   json_query "$1" '(()=>{const p=(d.providerInspections||[]).find(x=>x&&x.id==="ghidra");if(!p)return "false - ghidra_provider_missing";const f=(p.checks||[]).filter(c=>c&&c.ok!==true).map(c=>c.name).join(",");return String(p.available===true)+" "+(p.providerVersion||"-")+(f?" "+f:"")})()'
 }
 
-# rea_doctor_run STEP ARGS...: rea doctor ARGS... through rea_env_run; exit 0 and 1 (unhealthy) are both
-# answers, any other exit code, and an answer that is not a JSON object, die EX_VERIFY with the end of stderr.
-# The answer file is left in RD_JSON for the caller to remove.
+# rea_log_json STEP LABEL FILE: the raw doctor answer in FILE to the log (DEBUG: the file, not the console at
+# INFO), bounded to 200000 characters with a marker; log redacts secrets and abbreviates the home directory.
+rea_log_json() {
+  lj_text=$(head -c 200000 "$3")
+  lj_size=$(wc -c <"$3" | tr -d ' ')
+  if [ "$lj_size" -gt 200000 ]; then
+    lj_text="$lj_text [output truncated at 200000 characters]"
+  fi
+  log DEBUG "$1" "$2 output: $lj_text"
+}
+
+# rea_doctor_run STEP ARGS...: rea doctor ARGS... through rea_env_run. Exit 0 and 1 are both read (1 is how rea
+# reports an unhealthy answer, and its JSON names what failed); any other exit code, and an answer that is not
+# a JSON object, die EX_VERIFY with the end of stderr. The raw answer goes to the log. RD_JSON holds the answer
+# file (registered for cleanup) and RD_RC the exit code; the caller decides the verdict from both.
 rea_doctor_run() {
   rr_step=$1
   shift
-  rr_rc=0
-  rea_env_run "$rr_step" doctor "$@" || rr_rc=$?
+  RD_RC=0
+  rea_env_run "$rr_step" doctor "$@" || RD_RC=$?
   RD_JSON=$RUN_STDOUT
-  case "$rr_rc" in
+  rea_log_json "$rr_step" "rea doctor $*" "$RD_JSON"
+  case "$RD_RC" in
     0 | 1) ;;
-    *) die "$EX_VERIFY" "$rr_step" "rea doctor $* exited $rr_rc: $RUN_STDERR_TAIL" ;;
+    *) die "$EX_VERIFY" "$rr_step" "rea doctor $* exited $RD_RC: $RUN_STDERR_TAIL" ;;
   esac
-  rea_json_object "$RD_JSON" || die "$EX_VERIFY" "$rr_step" "rea doctor $* printed output that is not a JSON object (exit $rr_rc): $RUN_STDERR_TAIL"
+  rea_json_object "$RD_JSON" || die "$EX_VERIFY" "$rr_step" "rea doctor $* printed output that is not a JSON object (exit $RD_RC): $RUN_STDERR_TAIL"
   return 0
 }
 
@@ -2355,16 +2381,18 @@ step_rea_doctor() {
   rea_env_ready rea-doctor
   rea_doctor_run rea-doctor --client claude_code --skill --json
   rd_file=$RD_JSON
-  if ! rea_doctor_healthy "$rd_file"; then
+  rd_healthy=0
+  rea_doctor_healthy "$rd_file" && rd_healthy=1
+  if [ "$rd_healthy" -eq 0 ]; then
     rd_names=$(rea_doctor_failing "$rd_file" | tr '\n' ' ')
-    rm -f "$rd_file"
-    die "$EX_VERIFY" rea-doctor "rea doctor reports the Claude Code setup unhealthy; failing checks: ${rd_names:-none listed (healthy is not true)}"
+    die "$EX_VERIFY" rea-doctor "rea doctor reports the Claude Code setup unhealthy (exit $RD_RC); failing checks: ${rd_names:-none listed (healthy is not true)}"
   fi
-  rm -f "$rd_file"
+  if [ "$RD_RC" -ne 0 ]; then
+    die "$EX_VERIFY" rea-doctor "rea doctor exited $RD_RC but its JSON says healthy is true: the exit code and the JSON disagree"
+  fi
   rea_doctor_run rea-doctor --provider ghidra --json
   rd_file=$RD_JSON
   rd_status=$(rea_ghidra_status "$rd_file") || rd_status=""
-  rm -f "$rd_file"
   rd_avail=${rd_status%% *}
   rd_rest=${rd_status#* }
   rd_ver=${rd_rest%% *}
@@ -2372,8 +2400,11 @@ step_rea_doctor() {
   case "$rd_rest" in
     *" "*) rd_names=${rd_rest#* } ;;
   esac
-  log DEBUG rea-doctor "ghidra provider: available=$rd_avail version=$rd_ver failing=${rd_names:-none}"
+  log DEBUG rea-doctor "ghidra provider: available=$rd_avail version=$rd_ver failing=${rd_names:-none} exit=$RD_RC"
   if [ "$rd_avail" = true ]; then
+    if [ "$RD_RC" -ne 0 ]; then
+      die "$EX_VERIFY" rea-doctor "rea doctor exited $RD_RC but its JSON says the Ghidra provider is available: the exit code and the JSON disagree"
+    fi
     summary_set rea_doctor "ok: ghidra $rd_ver"
     log INFO rea-doctor "ok"
     return 0

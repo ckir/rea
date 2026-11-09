@@ -75,7 +75,17 @@ assert_status 0 "object: client-ok" rea_json_object "$CO"
 assert_status 1 "object: an array" rea_json_object "$T/array.json"
 assert_status 1 "object: not JSON" rea_json_object "$T/notjson.txt"
 assert_eq 1 "$(grep -c '' "$CE")" "fixtures: client-empty is one line"
-assert_eq 0 "$(grep -c '/home/user' "$FIX"/rea-doctor-*.json | grep -vc ':0$' | sed 's/^0$/0/')" "fixtures: no personal home path"
+# the forbidden strings are built here so that this file does not hold them verbatim
+BAD1="/home/""user"
+BAD2="/tmp/""claude"
+BAD3="claude-""1001"
+BAD4="Kirgous""sios"
+BAD5="Cos""tas"
+for bad in "$BAD1" "$BAD2" "$BAD3" "$BAD4" "$BAD5"; do
+  assert_eq "" "$(grep -l -F "$bad" "$FIX"/rea-doctor-*.json | tr '\n' ' ')" "fixtures: no session or personal string [$bad]"
+done
+assert_eq "config_drift" "$(json_query "$GM" '(d.scope_checks.find(c=>c.name==="ghidra-native_decompiler")).classification')" "fixtures: the failing mac scope check is not classified healthy"
+assert_eq "false false" "$(json_query "$GM" '[d.scope_checks.find(c=>c.name==="ghidra-native_decompiler").ok,d.checks.find(c=>c.name==="ghidra-native_decompiler").ok].join(" ")')" "fixtures: mac-nodecomp is failing in scope_checks and checks"
 assert_eq "false" "$(json_query "$GM" '(d.providerInspections.find(p=>p.id==="ghidra")).available')" "fixtures: mac-nodecomp is unavailable"
 assert_eq "executable_missing" "$(json_query "$GM" '((d.providerInspections.find(p=>p.id==="ghidra")).checks.find(c=>c.name==="native_decompiler")).code')" "fixtures: mac-nodecomp code"
 
@@ -311,6 +321,86 @@ rc=0
 run_rea d9 step_rea_doctor || rc=$?
 assert_eq 5 "$rc" "doctor: an exit code of 127 dies with 5 even with parsable output"
 assert_match 'exited 127: npx: not found' "$(logtext d9)" "doctor: the exit code and stderr are named"
+
+# the exit code and the JSON must agree: exit 1 with a healthy answer, exit 0 with an unhealthy one
+RS_PRE="STUB_NPX_FILE_1='$CO'; STUB_NPX_EXIT_1=1; export STUB_NPX_FILE_1 STUB_NPX_EXIT_1"
+rc=0
+run_rea e1 step_rea_doctor || rc=$?
+assert_eq 5 "$rc" "doctor: exit 1 with healthy:true dies with 5"
+assert_match 'ERROR +\[rea-doctor\] .*exit code and the JSON disagree' "$(logtext e1)" "doctor: the disagreement is named"
+assert_eq 1 "$(calls e1 | grep -c '')" "doctor: no ghidra doctor after the contradiction"
+RS_PRE="STUB_NPX_FILE_1='$CE'; STUB_NPX_EXIT_1=0; export STUB_NPX_FILE_1 STUB_NPX_EXIT_1"
+rc=0
+run_rea e2 step_rea_doctor || rc=$?
+assert_eq 5 "$rc" "doctor: exit 0 with healthy:false dies with 5"
+assert_match 'ERROR +\[rea-doctor\] .*registration:claude_code skill:identity' "$(logtext e2)" "doctor: exit 0 with healthy:false names the failing scope checks"
+RS_PRE="STUB_NPX_FILE_1='$CO'; STUB_NPX_FILE_2='$GO'; STUB_NPX_EXIT_2=1; export STUB_NPX_FILE_1 STUB_NPX_FILE_2 STUB_NPX_EXIT_2"
+rc=0
+run_rea e3 step_rea_doctor || rc=$?
+assert_eq 5 "$rc" "doctor: exit 1 with available:true dies with 5"
+assert_match 'ERROR +\[rea-doctor\] .*exit code and the JSON disagree' "$(logtext e3)" "doctor: the ghidra disagreement is named"
+RS_PRE="OS=mac; STUB_NPX_FILE_1='$CO'; STUB_NPX_FILE_2='$GO'; STUB_NPX_EXIT_2=1; export STUB_NPX_FILE_1 STUB_NPX_FILE_2 STUB_NPX_EXIT_2"
+rc=0
+run_rea e4 step_rea_doctor || rc=$?
+assert_eq 5 "$rc" "doctor: the mac exception does not cover available:true with exit 1"
+# a signal or exit 2 is a failure with the stderr tail
+RS_PRE="STUB_NPX_FILE_1='$CO'; STUB_NPX_FILE_2='$GO'; STUB_NPX_EXIT_2=2; STUB_NPX_STDERR_2='usage error'; export STUB_NPX_FILE_1 STUB_NPX_FILE_2 STUB_NPX_EXIT_2 STUB_NPX_STDERR_2"
+rc=0
+run_rea e5 step_rea_doctor || rc=$?
+assert_eq 5 "$rc" "doctor: ghidra doctor exit 2 dies with 5"
+assert_match 'exited 2: usage error' "$(logtext e5)" "doctor: exit 2 names the stderr"
+
+# the raw JSON goes to the log at DEBUG, redacted, and not to the console at INFO
+node -e '
+const fs=require("fs");const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+d.identity.cli_package_version="6.8.0-uniq-4711";d.GITHUB_TOKEN="abc123";
+fs.writeFileSync(process.argv[2],JSON.stringify(d,null,1).replace(/\n */g," ")+"\n")' "$CO" "$T/co-secret.json"
+RS_PRE="CONSOLE_LEVEL=INFO; STUB_NPX_FILE_1='$T/co-secret.json'; STUB_NPX_FILE_2='$GO'; export STUB_NPX_FILE_1 STUB_NPX_FILE_2"
+rc=0
+run_rea j1 step_rea_doctor || rc=$?
+assert_eq 0 "$rc" "log: the injected-secret answer is otherwise healthy"
+assert_match 'DEBUG +\[rea-doctor\] rea doctor --client claude_code --skill --json output: .*6\.8\.0-uniq-4711' "$(logtext j1)" "log: the raw client JSON is in the log file at DEBUG"
+assert_match 'DEBUG +\[rea-doctor\] rea doctor --provider ghidra --json output: .*"providerVersion"' "$(logtext j1)" "log: the raw ghidra JSON is in the log file at DEBUG"
+assert_eq "" "$(grep -c 'abc123' "$T/j1.log" | sed 's/^0$//')" "log: the secret-looking JSON value is redacted"
+assert_match '<redacted>' "$(logtext j1)" "log: the redaction marker is there"
+assert_eq "" "$(grep -c 'uniq-4711' "$T/j1.out" | sed 's/^0$//')" "log: the raw JSON is not on the console at INFO"
+# the log text of a failing run holds the JSON too
+RS_PRE="STUB_NPX_FILE_1='$CE'; STUB_NPX_EXIT_1=1; export STUB_NPX_FILE_1 STUB_NPX_EXIT_1"
+run_rea j2 step_rea_doctor || :
+assert_match 'output: \{"healthy":false' "$(logtext j2)" "log: the raw JSON of an unhealthy answer is logged"
+# bounded to 200000 characters with a marker
+node -e 'process.stdout.write(JSON.stringify({healthy:true,pad:"x".repeat(250000)})+"\n")' >"$T/big.json"
+RS_PRE="STUB_NPX_FILE_1='$T/big.json'; STUB_NPX_FILE_2='$GO'; export STUB_NPX_FILE_1 STUB_NPX_FILE_2"
+rc=0
+run_rea j3 step_rea_doctor || rc=$?
+assert_eq 0 "$rc" "log: a big answer is still parsed whole"
+assert_match '\[output truncated at 200000 characters\]' "$(logtext j3)" "log: the truncation marker"
+assert_eq 1 "$(awk 'length($0) > 201000 {n++} END {print n + 0 ? 0 : 1}' "$T/j3.log")" "log: no line is longer than the bound plus its prefix"
+assert_status 0 "redact: a JSON-form secret" sh -c ". ./setup.sh; [ \"\$(redact '{\"GITHUB_TOKEN\": \"abc123\", \"x\": 1}')\" = '{\"GITHUB_TOKEN\": \"<redacted>\", \"x\": 1}' ]"
+
+# no temporary file survives a failing doctor or a successful step, under a private TMPDIR
+PRIV="$T/priv tmp"
+mkdir -p "$PRIV"
+RS_PRE="TMPDIR='$PRIV'; export TMPDIR; STUB_NPX_FILE_1='$CE'; STUB_NPX_EXIT_1=1; export STUB_NPX_FILE_1 STUB_NPX_EXIT_1"
+run_rea t1 step_rea_doctor || :
+assert_eq 0 "$(find "$PRIV" -type f | grep -c '')" "tmp: a doctor that fails leaves no file"
+RS_PRE="TMPDIR='$PRIV'; export TMPDIR; STUB_NPX_FILE_1='$T/notjson.txt'; export STUB_NPX_FILE_1"
+run_rea t2 step_rea_doctor || :
+assert_eq 0 "$(find "$PRIV" -type f | grep -c '')" "tmp: a doctor with unparsable output leaves no file"
+RS_PRE="TMPDIR='$PRIV'; export TMPDIR; STUB_NPX_FILE_1='$CO'; STUB_NPX_FILE_2='$GO'; export STUB_NPX_FILE_1 STUB_NPX_FILE_2"
+run_rea t3 step_rea_doctor || :
+assert_eq 0 "$(find "$PRIV" -type f | grep -c '')" "tmp: a passing doctor leaves no file"
+RS_PRE="TMPDIR='$PRIV'; export TMPDIR; STUB_NPX_EXIT_2=3; export STUB_NPX_EXIT_2"
+run_rea t4 step_rea_setup || :
+assert_eq 0 "$(find "$PRIV" -type f | grep -c '')" "tmp: a setup that fails leaves no file"
+
+# the stderr tail is cut at a line boundary: a secret name sliced by the 1000-byte cut must not leak its value
+node -e 'process.stdout.write("first line\nANTHROPIC_API_KEY=sk-secret-123\n"+"y".repeat(983))' >"$T/err-cut.txt"
+RS_PRE="STUB_NPX_EXIT_2=3; STUB_NPX_STDERR_2=\"\$(cat '$T/err-cut.txt')\"; export STUB_NPX_EXIT_2 STUB_NPX_STDERR_2"
+run_rea c1 step_rea_setup || :
+assert_match 'ERROR +\[rea-setup\] rea setup exited 3: ' "$(logtext c1)" "tail: the failure is reported"
+assert_eq "" "$(grep -c 'sk-secret-123' "$T/c1.log" | sed 's/^0$//')" "tail: a secret value sliced by the cut does not reach the log"
+assert_match 'yyyyyyyy' "$(logtext c1)" "tail: the end of stderr is kept"
 
 # --dry-run and --check-upstream skip it
 RS_PRE="OPT_DRY_RUN=1"

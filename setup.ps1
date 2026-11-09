@@ -123,7 +123,8 @@ function Format-ReaLogLine {
 function Hide-ReaSecret {
     param([AllowEmptyString()][string]$Text)
     $names = 'TOKEN|KEY|SECRET|PASSWORD'
-    $r = $Text -replace "([A-Za-z0-9_]*($names)[A-Za-z0-9_]*)=(`"[^`"]*`"|'[^']*'|[^ ]*)", '${1}=<redacted>'
+    $r = $Text -replace "(?<![A-Za-z0-9_])([A-Za-z0-9_]*($names)[A-Za-z0-9_]*)=(`"[^`"]*`"|'[^']*'|[^ ]*)", '${1}=<redacted>'
+    $r = $r -replace "(`"[A-Za-z0-9_]*($names)[A-Za-z0-9_]*`"[ ]*:[ ]*)`"[^`"]*`"", '${1}"<redacted>"'
     $r = $r -replace '(authorization:)[^"]*', '${1} <redacted>'
     $r = $r -replace '(https?://)[^/@ ]*@', '${1}'
     $r = $r -replace '(https?://[^ ?]*)\?[^ ]*', '${1}'
@@ -2800,23 +2801,49 @@ function Get-ReaGhidraStatus {
     return [pscustomobject]@{ Available = (Test-ReaJsonTrue $provider.available); Version = $version; Failing = $failing }
 }
 
-# rea doctor ArgumentList through Invoke-ReaEnvironmentCommand. Exit 0 and 1 (unhealthy) are both answers; any other
-# exit code, and an answer that is not a JSON object, stop with exit 5 and the end of stderr. Returns the text.
+# The end of a stderr text, at most 1000 characters, cut at a line boundary (else a space) so that a NAME= prefix
+# cannot be sliced off its value; the partial first line is dropped.
+function Get-ReaStderrTail {
+    param([AllowEmptyString()][string]$Text)
+    if ($null -eq $Text) { return '' }
+    if ($Text.Length -le 1000) { return $Text.Trim() }
+    $tail = $Text.Substring($Text.Length - 1000)
+    $cut = $tail.IndexOf("`n")
+    if ($cut -lt 0) { $cut = $tail.IndexOf(' ') }
+    if ($cut -lt 0) { return '' }
+    return $tail.Substring($cut + 1).Trim()
+}
+
+# The raw doctor answer to the log at DEBUG (the file; the console only at DEBUG), bounded to 200000 characters with
+# a marker; Write-ReaLog hides secrets and shortens the home directory.
+function Write-ReaJsonLog {
+    param([string]$Step, [string]$Label, [AllowEmptyString()][string]$Text)
+    $shown = $Text
+    if ($null -eq $shown) { $shown = '' }
+    if ($shown.Length -gt 200000) {
+        $shown = $shown.Substring(0, 200000) + ' [output truncated at 200000 characters]'
+    }
+    Write-ReaLog -Level DEBUG -Step $Step -Message ("$Label output: " + $shown.Trim())
+}
+
+# rea doctor ArgumentList through Invoke-ReaEnvironmentCommand. Exit 0 and 1 are both read (1 is how rea reports an
+# unhealthy answer, and its JSON names what failed); any other exit code, and an answer that is not a JSON object,
+# stop with exit 5 and the end of stderr. The raw answer goes to the log. Returns ExitCode and Json; the caller
+# decides the verdict from both.
 function Invoke-ReaDoctorRun {
     param([string]$Step, [string[]]$ArgumentList)
     $run = Invoke-ReaEnvironmentCommand -Step $Step -ArgumentList (@('doctor') + $ArgumentList)
-    $tail = [string]$run.Stderr
-    if ($tail.Length -gt 1000) { $tail = $tail.Substring($tail.Length - 1000) }
-    $tail = $tail.Trim()
+    $tail = Get-ReaStderrTail -Text ([string]$run.Stderr)
     $label = 'rea doctor ' + ($ArgumentList -join ' ')
-    $unused = $null
+    Write-ReaJsonLog -Step $Step -Label $label -Text ([string]$run.Stdout)
     if ($run.ExitCode -ne 0 -and $run.ExitCode -ne 1) {
         Stop-Rea -Code $script:EX_VERIFY -Step $Step -Message "$label exited $($run.ExitCode): $tail"
     }
+    $unused = $null
     if (-not (Test-ReaJsonObject -Json ([string]$run.Stdout) -Doc ([ref]$unused))) {
         Stop-Rea -Code $script:EX_VERIFY -Step $Step -Message "$label printed output that is not a JSON object (exit $($run.ExitCode)): $tail"
     }
-    return [string]$run.Stdout
+    return [pscustomobject]@{ ExitCode = [int]$run.ExitCode; Json = [string]$run.Stdout }
 }
 
 # Registers rea in the profile with `rea setup`. A dry run of rea first (stdout at DEBUG), then the real setup unless
@@ -2839,7 +2866,7 @@ function Invoke-ReaStepReaSetup {
     if ($out.Length -gt 4000) { $out = $out.Substring(0, 4000) }
     Write-ReaLog DEBUG rea-setup ('rea setup dry-run output: ' + $out.Trim())
     if ($dry.ExitCode -ne 0) {
-        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "rea setup --dry-run exited $($dry.ExitCode): $(([string]$dry.Stderr).Trim())"
+        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "rea setup --dry-run exited $($dry.ExitCode): $(Get-ReaStderrTail -Text ([string]$dry.Stderr))"
     }
     if ($script:Opt.DryRun) {
         Write-ReaLog INFO rea-setup ('skip (read-only run): rea setup would register rea in ' + (Get-ReaShortPath $script:ClaudeConfigDirSelected))
@@ -2850,7 +2877,7 @@ function Invoke-ReaStepReaSetup {
     if ($script:Opt.InstallHopper) { $setupArgs += '--install-hopper' }
     $run = Invoke-ReaEnvironmentCommand -Step rea-setup -ArgumentList $setupArgs
     if ($run.ExitCode -ne 0) {
-        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "rea setup exited $($run.ExitCode): $(([string]$run.Stderr).Trim())"
+        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "rea setup exited $($run.ExitCode): $(Get-ReaStderrTail -Text ([string]$run.Stderr))"
     }
     $cfg = Join-Path $script:ClaudeConfigDirSelected '.claude.json'
     if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) {
@@ -2885,16 +2912,22 @@ function Invoke-ReaStepReaDoctor {
     }
     Assert-ReaEnvironmentReady -Step rea-doctor
     $client = Invoke-ReaDoctorRun -Step rea-doctor -ArgumentList @('--client', 'claude_code', '--skill', '--json')
-    if (-not (Test-ReaDoctorHealthy -Json $client)) {
-        $names = (Get-ReaDoctorFailing -Json $client) -join ' '
+    if (-not (Test-ReaDoctorHealthy -Json $client.Json)) {
+        $names = (Get-ReaDoctorFailing -Json $client.Json) -join ' '
         if (-not $names) { $names = 'none listed (healthy is not true)' }
-        Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea doctor reports the Claude Code setup unhealthy; failing checks: $names"
+        Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea doctor reports the Claude Code setup unhealthy (exit $($client.ExitCode)); failing checks: $names"
+    }
+    if ($client.ExitCode -ne 0) {
+        Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea doctor exited $($client.ExitCode) but its JSON says healthy is true: the exit code and the JSON disagree"
     }
     $ghidra = Invoke-ReaDoctorRun -Step rea-doctor -ArgumentList @('--provider', 'ghidra', '--json')
-    $status = Get-ReaGhidraStatus -Json $ghidra
+    $status = Get-ReaGhidraStatus -Json $ghidra.Json
     $names = ($status.Failing -join ',')
-    Write-ReaLog DEBUG rea-doctor ("ghidra provider: available={0} version={1} failing={2}" -f $status.Available, $status.Version, $names)
+    Write-ReaLog DEBUG rea-doctor ("ghidra provider: available={0} version={1} failing={2} exit={3}" -f $status.Available, $status.Version, $names, $ghidra.ExitCode)
     if ($status.Available) {
+        if ($ghidra.ExitCode -ne 0) {
+            Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea doctor exited $($ghidra.ExitCode) but its JSON says the Ghidra provider is available: the exit code and the JSON disagree"
+        }
         $script:Summary['rea_doctor'] = "ok: ghidra $($status.Version)"
         Write-ReaLog INFO rea-doctor 'ok'
         return

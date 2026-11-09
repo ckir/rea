@@ -94,10 +94,27 @@ Describe 'doctor answer helpers' {
         $s.Failing -join ',' | Should -Be 'x'
         Get-ReaGhidraStatus -Json 'nope' | Should -BeNullOrEmpty
     }
-    It 'the fixtures carry no personal home path' {
+    It 'the fixtures carry no session or personal string: <what>' -ForEach @(
+        @{ what = 'home'; bad = '/home/' + 'user' }
+        @{ what = 'tmp session'; bad = '/tmp/' + 'claude' }
+        @{ what = 'uid'; bad = 'claude-' + '1001' }
+        @{ what = 'surname'; bad = 'Kirgous' + 'sios' }
+        @{ what = 'forename'; bad = 'Cos' + 'tas' }
+    ) {
         foreach ($n in 'client-ok', 'client-empty', 'ghidra-ok', 'ghidra-bad', 'ghidra-mac-nodecomp') {
-            (script:Read-Fix "rea-doctor-$n.json") | Should -Not -Match '/home/user'
+            (script:Read-Fix "rea-doctor-$n.json").Contains($bad) | Should -BeFalse
         }
+    }
+    It 'the failing mac scope check is not classified healthy and fails in both lists' {
+        $d = ConvertFrom-Json -InputObject $script:GM
+        foreach ($list in @($d.scope_checks, $d.checks)) {
+            $c = @($list) | Where-Object { $_.name -eq 'ghidra-native_decompiler' } | Select-Object -First 1
+            $c.ok | Should -BeFalse
+            $c.classification | Should -Be 'config_drift'
+        }
+    }
+    It 'Hide-ReaSecret hides the value of a JSON-form secret' {
+        Hide-ReaSecret '{"GITHUB_TOKEN": "abc123", "x": 1}' | Should -Be '{"GITHUB_TOKEN": "<redacted>", "x": 1}'
     }
 }
 
@@ -351,6 +368,66 @@ Describe 'rea steps' {
             script:Get-Code { Invoke-ReaStepReaDoctor } | Should -Be 5
             Get-LogText | Should -Match 'exited 127: npx: not found'
         }
+        It 'dies with 5 on exit 1 with healthy:true and says the exit code and the JSON disagree' {
+            $script:Answers[1] = @{ Out = $script:CO; Exit = 1 }
+            script:Get-Code { Invoke-ReaStepReaDoctor } | Should -Be 5
+            Get-LogText | Should -Match 'ERROR +\[rea-doctor\] .*exit code and the JSON disagree'
+            $script:Calls.Count | Should -Be 1
+        }
+        It 'dies with 5 on exit 0 with healthy:false, naming the failing scope checks' {
+            $script:Answers[1] = @{ Out = $script:CE; Exit = 0 }
+            script:Get-Code { Invoke-ReaStepReaDoctor } | Should -Be 5
+            Get-LogText | Should -Match 'ERROR +\[rea-doctor\] .*registration:claude_code skill:identity'
+        }
+        It 'dies with 5 on exit 1 with available:true (also on mac)' -ForEach @(@{ os = 'linux' }, @{ os = 'mac' }) {
+            Mock Get-ReaPlatform { return @{ Os = $os; Arch = 'x64' } }
+            $script:Answers[1] = @{ Out = $script:CO }
+            $script:Answers[2] = @{ Out = $script:GO; Exit = 1 }
+            script:Get-Code { Invoke-ReaStepReaDoctor } | Should -Be 5
+            Get-LogText | Should -Match 'ERROR +\[rea-doctor\] .*exit code and the JSON disagree'
+        }
+        It 'dies with 5 on a ghidra doctor exit 2 with the stderr tail' {
+            $script:Answers[1] = @{ Out = $script:CO }
+            $script:Answers[2] = @{ Out = $script:GO; Exit = 2; Err = 'usage error' }
+            script:Get-Code { Invoke-ReaStepReaDoctor } | Should -Be 5
+            Get-LogText | Should -Match 'exited 2: usage error'
+        }
+        It 'logs the raw JSON of both calls at DEBUG, redacted, and not visible at INFO' {
+            $script:ConsoleLevel = 'INFO'
+            $d = ConvertFrom-Json -InputObject $script:CO
+            $d.identity.cli_package_version = '6.8.0-uniq-4711'
+            $d | Add-Member -NotePropertyName GITHUB_TOKEN -NotePropertyValue 'abc123'
+            $script:Answers[1] = @{ Out = (ConvertTo-Json -InputObject $d -Depth 20 -Compress) }
+            $script:Answers[2] = @{ Out = $script:GO }
+            Invoke-ReaStepReaDoctor
+            $text = Get-LogText
+            $text | Should -Match 'DEBUG +\[rea-doctor\] rea doctor --client claude_code --skill --json output: .*6\.8\.0-uniq-4711'
+            $text | Should -Match 'DEBUG +\[rea-doctor\] rea doctor --provider ghidra --json output: .*providerVersion'
+            $text | Should -Not -Match 'abc123'
+            $text | Should -Match '<redacted>'
+            Test-ReaLogVisible -Level DEBUG | Should -BeFalse
+        }
+        It 'logs the raw JSON of an unhealthy answer too' {
+            $script:Answers[1] = @{ Out = $script:CE; Exit = 1 }
+            script:Get-Code { Invoke-ReaStepReaDoctor } | Should -Be 5
+            Get-LogText | Should -Match 'output: \{"healthy":false'
+        }
+        It 'bounds the logged JSON to 200000 characters with a marker and still parses it whole' {
+            $script:Answers[1] = @{ Out = ('{"healthy":true,"pad":"' + ('x' * 250000) + '"}') }
+            $script:Answers[2] = @{ Out = $script:GO }
+            Invoke-ReaStepReaDoctor
+            $text = Get-LogText
+            $text | Should -Match '\[output truncated at 200000 characters\]'
+            (($text -split "`n") | Measure-Object -Property Length -Maximum).Maximum | Should -BeLessThan 201000
+        }
+        It 'cuts the stderr tail at a line boundary so a sliced secret name leaks nothing' {
+            $script:Answers[2] = @{ Exit = 3; Err = ("first line`nANTHROPIC_API_KEY=sk-secret-123`n" + ('y' * 983)) }
+            script:Get-Code { Invoke-ReaStepReaSetup } | Should -Be 1
+            $text = Get-LogText
+            $text | Should -Match 'ERROR +\[rea-setup\] rea setup exited 3: '
+            $text | Should -Not -Match 'sk-secret-123'
+            $text | Should -Match 'yyyyyyyy'
+        }
         It '-DryRun skips it' {
             $script:Opt.DryRun = $true
             Invoke-ReaStepReaDoctor
@@ -379,5 +456,22 @@ Describe 'rea steps' {
 Describe 'pin' {
     It 'PIN_REA_SPEC is rea-agents@latest' {
         $script:PIN_REA_SPEC | Should -Be 'rea-agents@latest'
+    }
+}
+
+Describe 'temporary files' {
+    It 'Invoke-ReaCommand leaves no file in a private TMPDIR after a failing command' -Skip:($IsWindows -eq $true -or $PSVersionTable.PSVersion.Major -lt 6) {
+        $priv = Join-Path $script:T 'priv tmp'
+        New-Item -ItemType Directory -Path $priv | Out-Null
+        $saved = $env:TMPDIR
+        $script:LogFile = $null
+        try {
+            $env:TMPDIR = $priv
+            $r = Invoke-ReaCommand -Step t -FilePath 'sh' -ArgumentList @('-c', 'echo out; echo err >&2; exit 3')
+            $r.ExitCode | Should -Be 3
+            @(Get-ChildItem -LiteralPath $priv -Force).Count | Should -Be 0
+        } finally {
+            $env:TMPDIR = $saved
+        }
     }
 }
