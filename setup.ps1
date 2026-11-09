@@ -411,6 +411,529 @@ function Read-ReaConfirm {
     return ($answer -eq 'y' -or $answer -eq 'Y')
 }
 
+# --- network ---
+
+# Test seams: the allow-lists, the pauses between attempts and the stall limits are script-scope values so a
+# test can replace them. The waits give the pause before each retry, so they also set the number of attempts.
+$script:AllowedSchemes = @('https')
+$script:AllowedHosts = @($script:PIN_ALLOWED_HOSTS -split ' ' | Where-Object { $_ })
+$script:RetryWaits = @(2, 4, 8, 16)
+$script:ReadWriteTimeoutMs = 60000
+$script:StallSeconds = 60
+$script:StallMinBytes = 1024
+$script:TempFiles = New-Object System.Collections.Generic.List[string]
+
+# Makes sure TLS 1.2 is offered (Windows PowerShell 5.1 does not by default).
+function Initialize-ReaNetwork {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+
+# Pauses between retries; one function so tests can replace it.
+function Invoke-ReaSleep {
+    param([int]$Seconds)
+    Start-Sleep -Seconds $Seconds
+}
+
+# --- temporary files ---
+
+# Remembers a file or directory for Clear-ReaTempFile. A finally block covers an ordinary failure; this list is
+# for Invoke-Main's finally, which is the last chance when a step is interrupted from outside.
+function Register-ReaTempFile {
+    param([string]$Path)
+    $script:TempFiles.Add($Path)
+}
+
+# Removes every registered path, or only -Path; safe to call again and with an empty list. Names are literal
+# (no wildcard expansion).
+function Clear-ReaTempFile {
+    param([string]$Path = '')
+    if ($Path) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+        while ($script:TempFiles.Remove($Path)) { continue }
+        return
+    }
+    foreach ($p in @($script:TempFiles)) {
+        Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $script:TempFiles.Clear()
+}
+
+# The brief names three of these functions with a plural noun, which PSScriptAnalyzer's PSUseSingularNouns
+# rejects (and a suppression is not allowed), so each is defined with a singular noun and the plural name is an
+# alias for it. Inside this file the singular names are used; both work for a caller.
+Set-Alias -Name Clear-ReaTempFiles -Value Clear-ReaTempFile
+Set-Alias -Name Resolve-ReaRedirects -Value Resolve-ReaRedirect
+Set-Alias -Name Get-ReaGitHubReleaseAssets -Value Get-ReaGitHubReleaseAsset
+
+# --- URL rules ---
+
+# The lower-cased host of URL, without userinfo or port ($null without a scheme://).
+function Get-ReaUrlHost {
+    param([AllowEmptyString()][string]$Url)
+    $m = [regex]::Match($Url, '^.*?://([^/?#]*)')
+    if (-not $m.Success) { return $null }
+    $authority = $m.Groups[1].Value
+    $at = $authority.LastIndexOf('@')
+    if ($at -ge 0) { $authority = $authority.Substring($at + 1) }
+    $colon = $authority.IndexOf(':')
+    if ($colon -ge 0) { $authority = $authority.Substring(0, $colon) }
+    return $authority.ToLowerInvariant()
+}
+
+# True when the scheme is in $script:AllowedSchemes, the host in $script:AllowedHosts and the authority carries
+# no userinfo; whitespace and backslashes are refused outright. A trailing-dot host is not in the list.
+function Test-ReaUrlAllowed {
+    param([AllowEmptyString()][string]$Url)
+    if ($Url -match '[\s\\]') { return $false }
+    $m = [regex]::Match($Url, '^(.*?)://([^/?#]*)')
+    if (-not $m.Success) { return $false }
+    if ($script:AllowedSchemes -notcontains $m.Groups[1].Value.ToLowerInvariant()) { return $false }
+    if ($m.Groups[2].Value.Contains('@')) { return $false }
+    return ($script:AllowedHosts -contains (Get-ReaUrlHost $Url))
+}
+
+# False when the URL has a dot-dot path segment (plain or percent-encoded) or a backslash.
+function Test-ReaUrlPathSafe {
+    param([string]$Url)
+    if ($Url -match '/\.\.(/|\?|$)') { return $false }
+    if ($Url -match '%2[eE]') { return $false }
+    if ($Url.Contains('\')) { return $false }
+    return $true
+}
+
+# --- transport ---
+
+# A web request with redirects off (every hop is checked by Resolve-ReaRedirect) and the timeouts set.
+function New-ReaWebRequest {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'None')]
+    param([string]$Url, [string]$Method)
+    $null = $PSCmdlet.ShouldProcess($Url, 'create a web request')
+    Initialize-ReaNetwork
+    $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Url)
+    $req.Method = $Method
+    $req.AllowAutoRedirect = $false
+    $req.UserAgent = 'rea-setup/' + $script:PIN_SCRIPT_VERSION
+    $req.Timeout = 60000
+    $req.ReadWriteTimeout = $script:ReadWriteTimeoutMs
+    $req.KeepAlive = $false
+    return $req
+}
+
+# True for a failure worth another attempt: connection, name-resolution, timeout and broken-transfer errors. A
+# certificate failure or anything unrecognised is not.
+function Test-ReaTransientError {
+    param($Exception)
+    if ($Exception -is [System.AggregateException] -and $null -ne $Exception.InnerException) {
+        $Exception = $Exception.InnerException
+    }
+    if ($Exception -is [System.Net.WebException]) {
+        $transient = 'ConnectFailure', 'NameResolutionFailure', 'ProxyNameResolutionFailure', 'Timeout', 'ConnectionClosed', 'ReceiveFailure', 'SendFailure', 'PipelineFailure', 'KeepAliveFailure'
+        return ($transient -contains $Exception.Status.ToString())
+    }
+    return (($Exception -is [System.IO.IOException]) -or ($Exception -is [System.TimeoutException]))
+}
+
+# One HEAD (Method HEAD) or one-byte ranged GET (Method RANGE) without following redirects. Returns Status (0
+# when there was no HTTP answer), Location and Error. A non-2xx answer arrives as a WebException carrying the
+# response, so it is read from there.
+function Send-ReaHeadRequest {
+    param(
+        [string]$Url,
+        [ValidateSet('HEAD', 'RANGE')][string]$Method = 'HEAD'
+    )
+    $result = [pscustomobject]@{ Status = 0; Location = $null; Error = '' }
+    $resp = $null
+    try {
+        if ($Method -eq 'RANGE') {
+            $req = New-ReaWebRequest -Url $Url -Method 'GET'
+            $req.AddRange(0, 0)
+        } else {
+            $req = New-ReaWebRequest -Url $Url -Method 'HEAD'
+        }
+        try {
+            $resp = $req.GetResponse()
+        } catch [System.Net.WebException] {
+            $resp = $_.Exception.Response
+            if ($null -eq $resp) {
+                $result.Error = $_.Exception.Message
+                return $result
+            }
+        }
+        $result.Status = [int]$resp.StatusCode
+        $result.Location = $resp.Headers['Location']
+    } catch {
+        $result.Error = $_.Exception.Message
+    } finally {
+        if ($null -ne $resp) { $resp.Close() }
+    }
+    return $result
+}
+
+# The leading digits of a Retry-After value, or $null when there are none or more than six (so the number can
+# never overflow). The HTTP-date form is not honoured.
+function Get-ReaRetryAfter {
+    param([AllowNull()][AllowEmptyString()][string]$Value)
+    if (-not $Value) { return $null }
+    $m = [regex]::Match($Value, '^\s*([0-9]+)')
+    if (-not $m.Success) { return $null }
+    if ($m.Groups[1].Value.Length -gt 6) { return $null }
+    return [int]$m.Groups[1].Value
+}
+
+# True when a window of the transfer moved fewer than the minimum number of bytes.
+function Test-ReaStalled {
+    param([int64]$WindowBytes)
+    return ($WindowBytes -lt $script:StallMinBytes)
+}
+
+# One GET into Destination. Returns Status (the HTTP status once the body is complete; 0 for a transport failure,
+# a stall or a short body), RetryAfter (the raw header), Retryable (whether another attempt may help) and Error.
+# The body is copied in 64 KiB blocks; fewer than StallMinBytes in any StallSeconds window aborts the transfer.
+# The token goes in the Authorization header of this one request and is never put in a message.
+function Send-ReaHttpAttempt {
+    param(
+        [string]$Url,
+        [string]$Destination,
+        [AllowEmptyString()][string]$AuthToken = ''
+    )
+    $ProgressPreference = 'SilentlyContinue'
+    $result = [pscustomobject]@{ Status = 0; RetryAfter = $null; Retryable = $false; Error = '' }
+    $resp = $null
+    $stream = $null
+    $file = $null
+    try {
+        $req = New-ReaWebRequest -Url $Url -Method 'GET'
+        if ($AuthToken) { $req.Headers.Add('Authorization', ('Bearer ' + $AuthToken)) }
+        try {
+            $resp = $req.GetResponse()
+        } catch [System.Net.WebException] {
+            $resp = $_.Exception.Response
+            if ($null -eq $resp) {
+                $result.Error = $_.Exception.Message
+                $result.Retryable = Test-ReaTransientError $_.Exception
+                return $result
+            }
+        }
+        $status = [int]$resp.StatusCode
+        $values = $resp.Headers.GetValues('Retry-After')
+        if ($null -ne $values -and @($values).Count -gt 0) { $result.RetryAfter = @($values)[-1] }
+        if ($status -lt 200 -or $status -gt 299) {
+            $result.Status = $status
+            return $result
+        }
+        $file = New-Object System.IO.FileStream($Destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream = $resp.GetResponseStream()
+        $buffer = New-Object byte[] 65536
+        $total = [int64]0
+        $windowBytes = [int64]0
+        $window = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($true) {
+            # A read with its own timeout: not every runtime lets the response stream carry one.
+            $read = $stream.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $read.Wait($script:ReadWriteTimeoutMs)) {
+                throw (New-Object System.IO.IOException 'read timed out')
+            }
+            $n = $read.Result
+            if ($n -le 0) { break }
+            $file.Write($buffer, 0, $n)
+            $total += $n
+            $windowBytes += $n
+            if ($window.Elapsed.TotalSeconds -ge $script:StallSeconds) {
+                if (Test-ReaStalled -WindowBytes $windowBytes) {
+                    throw (New-Object System.IO.IOException 'transfer stalled')
+                }
+                $windowBytes = 0
+                $window.Restart()
+            }
+        }
+        if ($resp.ContentLength -ge 0 -and $total -ne $resp.ContentLength) {
+            $result.Error = "short body: $total of $($resp.ContentLength) bytes"
+            return $result
+        }
+        $result.Status = $status
+    } catch {
+        $result.Status = 0
+        $result.Error = $_.Exception.Message
+        $result.Retryable = Test-ReaTransientError $_.Exception
+    } finally {
+        if ($null -ne $file) { $file.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $resp) { $resp.Close() }
+    }
+    return $result
+}
+
+# Resolves a Location header against the URL that answered. An absolute value is returned as sent, so the
+# allow-list sees what the server wrote (a re-serialised URL could hide a backslash).
+function Resolve-ReaLocation {
+    param([string]$Base, [string]$Location)
+    if ($Location -match '^[^:/?#]*://' -or $Location -match '[\s\\]') { return $Location }
+    try {
+        return (New-Object System.Uri((New-Object System.Uri $Base), $Location)).AbsoluteUri
+    } catch {
+        return $Location
+    }
+}
+
+# Walks the redirects of URL with HEAD (no body is fetched), at most 5. A hop answering 405 or 403 to HEAD is
+# asked again with a one-byte ranged GET. Every hop must pass Test-ReaUrlAllowed. Returns Code and Url: Code 0
+# with the final URL, 1 for a disallowed hop, 2 for more than 5 redirects, 3 for any other failure.
+function Resolve-ReaRedirect {
+    param([string]$Url)
+    $current = $Url
+    $hops = 0
+    while ($true) {
+        if (-not (Test-ReaUrlAllowed $current)) {
+            Write-ReaLog ERROR net "redirect target not allowed: $current"
+            return [pscustomobject]@{ Code = 1; Url = $null }
+        }
+        $r = Send-ReaHeadRequest -Url $current -Method 'HEAD'
+        if ($r.Status -eq 405 -or $r.Status -eq 403) {
+            $r = Send-ReaHeadRequest -Url $current -Method 'RANGE'
+        }
+        Write-ReaLog DEBUG net "HEAD $current -> $($r.Status)"
+        if ($r.Status -ge 200 -and $r.Status -le 299) {
+            return [pscustomobject]@{ Code = 0; Url = $current }
+        }
+        if ($r.Status -ge 300 -and $r.Status -le 399 -and $r.Location) {
+            $hops++
+            if ($hops -gt 5) {
+                Write-ReaLog ERROR net "more than 5 redirects from $Url"
+                return [pscustomobject]@{ Code = 2; Url = $null }
+            }
+            $current = Resolve-ReaLocation -Base $current -Location $r.Location
+            continue
+        }
+        return [pscustomobject]@{ Code = 3; Url = $null }
+    }
+}
+
+# GET into Destination with retries; $true on 2xx. 5xx, 429 and retryable transport errors are retried
+# ($script:RetryWaits gives the pause before each retry, so it also sets the number of attempts; Retry-After
+# raises the pause, up to 120 seconds); any other failure returns $false at once. GITHUB_TOKEN goes to
+# api.github.com only and is ignored, with a warning, unless it is plain token characters. The destination is
+# removed on failure.
+function Invoke-ReaHttpGet {
+    param(
+        [string]$Url,
+        [string]$Destination
+    )
+    $ProgressPreference = 'SilentlyContinue'
+    if (-not (Test-ReaUrlAllowed $Url)) {
+        Write-ReaLog ERROR net "URL not allowed: $Url"
+        return $false
+    }
+    $token = ''
+    $env_token = $env:GITHUB_TOKEN
+    if ($env_token -and (Get-ReaUrlHost $Url) -ceq 'api.github.com') {
+        if ($env_token -match '^[A-Za-z0-9_.-]+\z') {
+            $token = $env_token
+        } else {
+            Write-ReaLog WARN net 'GITHUB_TOKEN ignored: unexpected characters'
+        }
+    }
+    $waits = @($script:RetryWaits)
+    $total = $waits.Count
+    $ok = $false
+    for ($attempt = 1; $attempt -le $total; $attempt++) {
+        $r = Send-ReaHttpAttempt -Url $Url -Destination $Destination -AuthToken $token
+        Write-ReaLog DEBUG net "GET $Url -> $($r.Status) (attempt $attempt of $total)"
+        if ($r.Error) { Write-ReaLog DEBUG net ('transport: ' + $r.Error) }
+        $retry = $false
+        if ($r.Status -ge 200 -and $r.Status -le 299) {
+            $ok = $true
+            break
+        } elseif ($r.Status -eq 429 -or ($r.Status -ge 500 -and $r.Status -le 599)) {
+            $retry = $true
+        } elseif ($r.Status -eq 0 -and $r.Retryable) {
+            $retry = $true
+        }
+        if (-not $retry -or $attempt -ge $total) { break }
+        $wait = [int]$waits[$attempt - 1]
+        $ra = Get-ReaRetryAfter $r.RetryAfter
+        if ($null -ne $ra -and $ra -gt $wait) { $wait = $ra }
+        if ($wait -gt 120) { $wait = 120 }
+        Write-ReaLog DEBUG net "retrying in ${wait}s"
+        Invoke-ReaSleep -Seconds $wait
+    }
+    if (-not $ok) {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        Write-ReaLog ERROR net "GET failed: $Url"
+    }
+    return $ok
+}
+
+# --- checksums ---
+
+# The lower-case SHA-256 of a file.
+function Get-ReaFileSha256 {
+    param([string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+# The first 64-hex token of a .sha256 sidecar, lower-cased (sha256sum, shasum and PowerShell layouts); $null when
+# there is none.
+function Get-ReaSidecarSha256 {
+    param([string]$Path)
+    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+        $m = [regex]::Match($line, '^\s*([0-9A-Fa-f]{64})([^0-9A-Fa-f].*)?$')
+        if ($m.Success) { return $m.Groups[1].Value.ToLowerInvariant() }
+    }
+    return $null
+}
+
+# Resolves the redirects, downloads to Destination.tmp.<pid>, checks the digest (case-insensitive) and only then
+# moves the file to Destination. $true on success; on any failure, or an interruption, nothing is left behind.
+function Get-ReaDownload {
+    param(
+        [string]$Url,
+        [string]$Destination,
+        [string]$Sha256
+    )
+    $resolved = Resolve-ReaRedirect -Url $Url
+    if ($resolved.Code -ne 0) {
+        Write-ReaLog ERROR net "cannot resolve $Url"
+        return $false
+    }
+    $tmp = $Destination + '.tmp.' + $PID
+    Register-ReaTempFile $tmp
+    try {
+        if (-not (Invoke-ReaHttpGet -Url $resolved.Url -Destination $tmp)) { return $false }
+        $got = Get-ReaFileSha256 $tmp
+        $want = $Sha256.ToLowerInvariant()
+        if ($got -cne $want) {
+            Write-ReaLog ERROR net "checksum mismatch for ${Url}: expected $want got $got"
+            return $false
+        }
+        Move-Item -LiteralPath $tmp -Destination $Destination -Force
+        return $true
+    } finally {
+        Clear-ReaTempFile -Path $tmp
+    }
+}
+
+# --- GitHub and Adoptium ---
+
+# The tag of the latest release of Repo, from the redirect of /releases/latest; $null when there is none.
+function Get-ReaGitHubLatestTag {
+    param([string]$Repo)
+    $url = "https://github.com/$Repo/releases/latest"
+    if (-not (Test-ReaUrlAllowed $url)) { return $null }
+    $r = Send-ReaHeadRequest -Url $url -Method 'HEAD'
+    Write-ReaLog DEBUG net "latest release of $Repo -> $($r.Location)"
+    if ($r.Location -and $r.Location -match '/releases/tag/[^/]+$') {
+        return $r.Location.Substring($r.Location.LastIndexOf('/') + 1)
+    }
+    return $null
+}
+
+# The asset names of the latest release of Repo, from the API; nothing on failure (wrap the call in @()).
+function Get-ReaGitHubReleaseAsset {
+    param([string]$Repo)
+    $tmp = [System.IO.Path]::GetTempFileName()
+    Register-ReaTempFile $tmp
+    try {
+        if (-not (Invoke-ReaHttpGet -Url "https://api.github.com/repos/$Repo/releases/latest" -Destination $tmp)) { return $null }
+        $d = [System.IO.File]::ReadAllText($tmp) | ConvertFrom-Json
+        $names = @($d.assets | ForEach-Object { [string]$_.name })
+        return $names
+    } catch {
+        Write-ReaLog ERROR net ('cannot read the release: ' + $_.Exception.Message)
+        return $null
+    } finally {
+        Clear-ReaTempFile -Path $tmp
+    }
+}
+
+# The asset names of a release, from the HTML of its expanded_assets page; the fallback for when the API is
+# rate-limited. Nothing on failure (wrap the call in @()).
+function Get-ReaGitHubReleaseAssetsScrape {
+    param([string]$Repo, [string]$Tag)
+    $tmp = [System.IO.Path]::GetTempFileName()
+    Register-ReaTempFile $tmp
+    try {
+        if (-not (Invoke-ReaHttpGet -Url "https://github.com/$Repo/releases/expanded_assets/$Tag" -Destination $tmp)) { return $null }
+        $html = [System.IO.File]::ReadAllText($tmp)
+        $needle = "/$Repo/releases/download/$Tag/"
+        $names = @([regex]::Matches($html, '/[^"<> ]+/releases/download/[^"<> ]+') |
+                ForEach-Object { $_.Value } |
+                Where-Object { $_.Contains($needle) } |
+                ForEach-Object { $_.Substring($_.LastIndexOf('/') + 1) } |
+                Sort-Object -Unique)
+        return $names
+    } finally {
+        Clear-ReaTempFile -Path $tmp
+    }
+}
+
+# True when Tag is a Temurin 21 release name such as jdk-21.0.13+9.
+function Test-ReaJdkRelease {
+    param([AllowEmptyString()][string]$Tag)
+    return ($Tag -match '^jdk-21(\.[0-9]+)*\+[0-9]+\z')
+}
+
+# Reads the first asset of an Adoptium response: Release, Url, Sha256, SidecarUrl, Bytes. $null unless the release
+# name, the download link (host github.com, path /adoptium/temurin21-binaries/, no dot-dot segment), the sidecar
+# link and the checksum all pass.
+function ConvertFrom-ReaAdoptium {
+    param([string]$Path)
+    try {
+        $first = @([System.IO.File]::ReadAllText($Path) | ConvertFrom-Json)[0]
+        $pkg = $first.binary.package
+        $jdk = [pscustomobject]@{
+            Release    = [string]$first.release_name
+            Url        = [string]$pkg.link
+            Sha256     = ([string]$pkg.checksum).ToLowerInvariant()
+            SidecarUrl = [string]$pkg.checksum_link
+            Bytes      = [string]$pkg.size
+        }
+    } catch {
+        Write-ReaLog ERROR net ('cannot read the Adoptium answer: ' + $_.Exception.Message)
+        return $null
+    }
+    if (-not (Test-ReaJdkRelease $jdk.Release)) {
+        Write-ReaLog ERROR net "unexpected JDK release name: $($jdk.Release)"
+        return $null
+    }
+    if (-not (Test-ReaUrlAllowed $jdk.Url)) { return $null }
+    if (-not (Test-ReaUrlPathSafe $jdk.Url)) {
+        Write-ReaLog ERROR net "unexpected JDK download path: $($jdk.Url)"
+        return $null
+    }
+    if ((Get-ReaUrlHost $jdk.Url) -cne 'github.com') { return $null }
+    if ($jdk.Url -notmatch '^[^:]*://[^/]*/adoptium/temurin21-binaries/.') {
+        Write-ReaLog ERROR net "unexpected JDK download path: $($jdk.Url)"
+        return $null
+    }
+    if ($jdk.Sha256 -notmatch '^[0-9a-f]{64}\z') { return $null }
+    if ($jdk.Bytes -notmatch '^[0-9]+\z') { return $null }
+    if ($jdk.SidecarUrl) {
+        if (-not (Test-ReaUrlAllowed $jdk.SidecarUrl)) { return $null }
+        if (-not (Test-ReaUrlPathSafe $jdk.SidecarUrl)) { return $null }
+    }
+    return $jdk
+}
+
+# Asks the Adoptium API for the latest Temurin 21 JDK and parses it. Returns Code and Jdk: Code 0 with the
+# parsed answer, 2 when the API cannot be reached (the caller uses the fallback pin), 1 when the answer fails
+# validation.
+function Resolve-ReaAdoptium {
+    param([string]$Os, [string]$Arch)
+    $tmp = [System.IO.Path]::GetTempFileName()
+    Register-ReaTempFile $tmp
+    try {
+        $url = 'https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=' + [uri]::EscapeDataString($Arch) + '&image_type=jdk&os=' + [uri]::EscapeDataString($Os) + '&vendor=eclipse'
+        if (-not (Invoke-ReaHttpGet -Url $url -Destination $tmp)) {
+            return [pscustomobject]@{ Code = 2; Jdk = $null }
+        }
+        $jdk = ConvertFrom-ReaAdoptium -Path $tmp
+        if ($null -eq $jdk) { return [pscustomobject]@{ Code = 1; Jdk = $null } }
+        return [pscustomobject]@{ Code = 0; Jdk = $jdk }
+    } finally {
+        Clear-ReaTempFile -Path $tmp
+    }
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -443,7 +966,7 @@ function Format-ReaInvocation {
 
 # The script body; returns the exit code.
 function Invoke-Main {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Initialize-ReaNetwork
     $script:OptYes = $script:Opt.Yes
     $script:ConsoleLevel = 'INFO'
     if ($script:Opt.Quiet) { $script:ConsoleLevel = 'WARN' }
@@ -471,6 +994,8 @@ function Invoke-Main {
         if ($null -ne $code) { return [int]$code }
         Write-ReaLog ERROR main ('unexpected error: ' + $_.Exception.Message)
         return $script:EX_STEP
+    } finally {
+        Clear-ReaTempFile
     }
 }
 

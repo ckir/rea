@@ -78,6 +78,7 @@ test:
 # Integration tests against a local fake release server (not part of check)
 test-integration:
     sh tests/integration/run.sh
+    pwsh -NoProfile -File tests/integration/run-win.ps1
 
 # The local gate, cheapest first
 check: tools-check typos license-check line-citations action-pins actionlint fmt-check shellcheck psanalyze suppressions drift tools-doc-check test
