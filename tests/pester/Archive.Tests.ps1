@@ -104,15 +104,23 @@ Describe 'archive safety: zip' {
         $e[0].Type | Should -Be 'f'
         Test-ReaArchiveSafe -Path (Join-Path $script:T 'spacel.zip') | Should -BeTrue
     }
-    It 'refuses an archive whose listing cannot be trusted (count mismatch is either an error or checked)' {
-        # .NET reads the entry count from the end record, so the entries it lists are the entries it would
-        # extract; the hidden second entry is never extracted. Either outcome is safe; the unsafe one is
-        # reporting the archive safe while extracting the hidden entry.
+    It 'mismatched entry count: the verdict is a boolean and, when safe, the hidden entry is never extracted' {
+        # .NET may read the count from the end record (then the listed entries are the extracted ones) or refuse
+        # the file. Both are safe; reporting safe and then extracting the hidden entry is not.
         $z = Join-Path $script:T 'mismatch.zip'
         $dest = Join-Path $script:T 'mismatch out'
-        if (Test-ReaArchiveSafe -Path $z) {
-            Expand-ReaArchive -Path $z -Destination $dest | Out-Null
+        $safe = @(Test-ReaArchiveSafe -Path $z)
+        $safe.Count | Should -Be 1
+        $safe[0] | Should -BeOfType [bool]
+        $listed = @(Get-ReaArchiveEntry -Path $z)
+        if ($safe[0]) {
+            $listed.Count | Should -BeGreaterThan 0
+            Expand-ReaArchive -Path $z -Destination $dest | Should -BeTrue
             Test-Path -LiteralPath (Join-Path $script:T 'evil') | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $dest 'evil') | Should -BeFalse
+        } else {
+            $safe[0] | Should -BeFalse
+            Test-Path -LiteralPath $dest | Should -BeFalse
         }
     }
 }
@@ -182,7 +190,46 @@ Describe 'entry checker on hand-written entries' {
     It 'refuses a UNC symlink target' { Test-ReaArchiveEntry -Entries @(E l 'a/link' '\\server\share') | Should -BeFalse }
     It 'allows spaces and arrows in a regular file name' { Test-ReaArchiveEntry -Entries @(E f 'dir with space/a -> b.txt') | Should -BeTrue }
     It 'refuses a dotdot component among spaces' { Test-ReaArchiveEntry -Entries @(E f 'dir with space/../../x') | Should -BeFalse }
-    It 'allows dots inside a name' { Test-ReaArchiveEntry -Entries @(E f 'a/..b/c..d/e...') | Should -BeTrue }
+    It 'allows dots inside a name' { Test-ReaArchiveEntry -Entries @(E f 'a/..b/c..d/e.f') | Should -BeTrue }
+    It 'allows ./ as the current directory' { Test-ReaArchiveEntry -Entries @((E d './'), (E f './a.txt')) | Should -BeTrue }
+    It 'refuses a colon: <p>' -ForEach @(
+        @{ p = 'a.txt:stream' }, @{ p = 'C:evil' }, @{ p = 'top/a:b' }, @{ p = 'top/C:' }
+    ) { Test-ReaArchiveEntry -Entries @(E f $p) | Should -BeFalse }
+    It 'refuses a segment ending in a dot or a space: <p>' -ForEach @(
+        @{ p = 'top/... ' }, @{ p = 'top/...' }, @{ p = 'top/a.' }, @{ p = 'top/a /b' }, @{ p = 'top/.. /b' }, @{ p = 'top/b ' }
+    ) { Test-ReaArchiveEntry -Entries @(E f $p) | Should -BeFalse }
+    It 'refuses a Windows device name as a segment stem: <p>' -ForEach @(
+        @{ p = 'top/CON' }, @{ p = 'top/con.txt' }, @{ p = 'PRN/x' }, @{ p = 'top/Aux.tar.gz' }, @{ p = 'top/NUL' },
+        @{ p = 'top/COM1' }, @{ p = 'top/com9.txt' }, @{ p = 'top/LPT1' }, @{ p = 'top/lpt9.log' }
+    ) { Test-ReaArchiveEntry -Entries @(E f $p) | Should -BeFalse }
+    It 'allows names that only look like device names: <p>' -ForEach @(
+        @{ p = 'top/console.txt' }, @{ p = 'top/COM0' }, @{ p = 'top/COM10' }, @{ p = 'top/auxiliary' }
+    ) { Test-ReaArchiveEntry -Entries @(E f $p) | Should -BeTrue }
+    It 'names the entry in the message for a colon' {
+        Mock Write-ReaLog {}
+        Test-ReaArchiveEntry -Entries @(E f 'a.txt:stream') | Out-Null
+        Should -Invoke Write-ReaLog -ParameterFilter { $Level -eq 'ERROR' -and $Message -like '*a.txt:stream*' -and $Message -like '*colon*' }
+    }
+    It 'refuses a zip and a tar holding an alternate data stream or a device name' {
+        $mk = Join-Path $script:T 'mkzip.py'
+        foreach ($case in @(@('ads', 'top/a.txt:s'), @('dev', 'top/NUL.txt'), @('dot', 'top/a.'))) {
+            $z = Join-Path $script:T ('bad-' + $case[0] + '.zip')
+            & $script:Python -I $mk $z $case[1]
+            Test-ReaArchiveSafe -Path $z | Should -BeFalse
+        }
+        $tarScript = Join-Path $script:T 'mktar.py'
+        Set-Content -LiteralPath $tarScript -Value @(
+            'import sys, tarfile, io',
+            'with tarfile.open(sys.argv[1], "w:gz") as t:',
+            '    i = tarfile.TarInfo(sys.argv[2]); i.size = 1',
+            '    t.addfile(i, io.BytesIO(b"x"))'
+        )
+        foreach ($case in @(@('ads', 'top/a.txt:s'), @('dev', 'top/con'), @('dot', 'top/a.'))) {
+            $tg = Join-Path $script:T ('bad-' + $case[0] + '.tar.gz')
+            & $script:Python -I $tarScript $tg $case[1]
+            Test-ReaArchiveSafe -Path $tg | Should -BeFalse
+        }
+    }
     It 'refuses a backslash dotdot' { Test-ReaArchiveEntry -Entries @(E f 'a\..\..\x') | Should -BeFalse }
     It 'refuses a drive letter in the middle of a path' { Test-ReaArchiveEntry -Entries @(E f 'a/C:/x') | Should -BeFalse }
     It 'refuses a UNC path' { Test-ReaArchiveEntry -Entries @(E f '\\server\share\x') | Should -BeFalse }
@@ -203,7 +250,7 @@ Describe 'Test-ReaPathInside' {
 }
 
 Describe 'extraction' {
-    It 'extracts a tar.gz with spaces in the names and keeps the execute bit' -Skip:$script:OnWindows {
+    It 'on non-Windows hosts (skipped on Windows): extracts a tar.gz with spaces in the names and keeps the execute bit' -Skip:$script:OnWindows {
         # The execute bit is a Unix concept; on Windows tar.exe has nothing to keep.
         $d = Join-Path $script:T 'extract dest'
         Expand-ReaArchive -Path (Join-Path $script:T 'clean.tar.gz') -Destination $d | Should -BeTrue
@@ -240,10 +287,125 @@ Describe 'extraction' {
         Test-Path -LiteralPath (Join-Path $script:T 'evil.txt') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $script:T 'C:\evil.txt') | Should -BeFalse
     }
+    It 'refuses to extract when the longest target path exceeds the limit, naming the length and -ToolsDir' {
+        Mock Write-ReaLog {}
+        $saved = $script:MaxPathLength
+        try {
+            $d = Join-Path $script:T 'extract long'
+            $full = [System.IO.Path]::GetFullPath($d)
+            $longest = $full.Length + 1 + 'ghidra_12.1.4_PUBLIC/dir with space/inner file.txt'.Length
+            $script:MaxPathLength = $longest - 1
+            foreach ($n in @('clean.zip', 'clean.tar.gz')) {
+                if ($n -eq 'clean.tar.gz') { $script:MaxPathLength = $full.Length + 1 + 'top/dir with space/inner file.txt'.Length - 1 }
+                Expand-ReaArchive -Path (Join-Path $script:T $n) -Destination $d | Should -BeFalse
+            }
+            Should -Invoke Write-ReaLog -ParameterFilter { $Level -eq 'ERROR' -and $Message -match 'characters' -and $Message -like '*-ToolsDir*' -and $Message -like '*C:\rea*' }
+            Test-Path -LiteralPath (Join-Path $d 'top') | Should -BeFalse
+            # exactly at the limit is accepted
+            $script:MaxPathLength = $longest
+            Expand-ReaArchive -Path (Join-Path $script:T 'clean.zip') -Destination $d | Should -BeTrue
+        } finally {
+            $script:MaxPathLength = $saved
+        }
+    }
+    It 'defaults the path limit to 240' { $script:MaxPathLength | Should -Be 240 }
     It 'fails for a missing archive and creates no directory' {
         $d = Join-Path $script:T 'never'
         Expand-ReaArchive -Path (Join-Path $script:T 'nope.tar.gz') -Destination $d | Should -BeFalse
         Test-Path -LiteralPath $d | Should -BeFalse
+    }
+}
+
+Describe 'Remove-ReaTree' {
+    BeforeEach { Mock Write-ReaLog {} }
+    It 'removes a tree but never follows a link out of it' {
+        $outside = Join-Path $script:T 'tree outside'
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'precious.txt') -Value x
+        $tree = Join-Path $script:T 'tree victim'
+        New-Item -ItemType Directory -Path (Join-Path $tree 'sub') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $tree 'sub/f.txt') -Value x
+        $link = Join-Path $tree 'sub/link'
+        if ($script:OnWindows) {
+            New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        } else {
+            New-Item -ItemType SymbolicLink -Path $link -Target $outside | Out-Null
+        }
+        Test-Path -LiteralPath (Join-Path $link 'precious.txt') | Should -BeTrue
+        Remove-ReaTree -Path $tree
+        Test-Path -LiteralPath $tree | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $outside 'precious.txt') | Should -BeTrue
+    }
+    It 'removes a link to a file and a dangling link without touching the target' {
+        if ($script:OnWindows) { Set-ItResult -Skipped -Because 'file symlinks need a privilege on Windows'; return }
+        $tree = Join-Path $script:T 'tree filelinks'
+        New-Item -ItemType Directory -Path $tree -Force | Out-Null
+        $target = Join-Path $script:T 'tree filetarget.txt'
+        Set-Content -LiteralPath $target -Value x
+        New-Item -ItemType SymbolicLink -Path (Join-Path $tree 'l1') -Target $target | Out-Null
+        New-Item -ItemType SymbolicLink -Path (Join-Path $tree 'l2') -Target (Join-Path $script:T 'does not exist') | Out-Null
+        Remove-ReaTree -Path $tree
+        Test-Path -LiteralPath $tree | Should -BeFalse
+        Test-Path -LiteralPath $target | Should -BeTrue
+    }
+    It 'removes a link given directly as the path, not its target' {
+        if ($script:OnWindows) { Set-ItResult -Skipped -Because 'covered by the junction case above'; return }
+        $outside = Join-Path $script:T 'tree outside2'
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'keep') -Value x
+        $link = Join-Path $script:T 'tree direct link'
+        New-Item -ItemType SymbolicLink -Path $link -Target $outside | Out-Null
+        Remove-ReaTree -Path $link
+        (Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
+        Test-Path -LiteralPath (Join-Path $outside 'keep') | Should -BeTrue
+    }
+    It 'clears read-only attributes and removes a file path' {
+        $tree = Join-Path $script:T 'tree readonly'
+        New-Item -ItemType Directory -Path $tree -Force | Out-Null
+        $f = Join-Path $tree 'ro.txt'
+        Set-Content -LiteralPath $f -Value x
+        Set-ItemProperty -LiteralPath $f -Name IsReadOnly -Value $true
+        Remove-ReaTree -Path $tree
+        Test-Path -LiteralPath $tree | Should -BeFalse
+        $single = Join-Path $script:T 'tree single.txt'
+        Set-Content -LiteralPath $single -Value x
+        Remove-ReaTree -Path $single
+        Test-Path -LiteralPath $single | Should -BeFalse
+    }
+    It 'is quiet about a path that does not exist' {
+        { Remove-ReaTree -Path (Join-Path $script:T 'tree nothing') } | Should -Not -Throw
+    }
+    It 'is what Clear-ReaTempFile, orphan cleanup and JDK pruning use' {
+        $outside = Join-Path $script:T 'tree outside3'
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'keep') -Value x
+        $mkLink = {
+            param($p)
+            if ($script:OnWindows) { New-Item -ItemType Junction -Path $p -Target $outside | Out-Null }
+            else { New-Item -ItemType SymbolicLink -Path $p -Target $outside | Out-Null }
+        }
+        $reg = Join-Path $script:T 'tree reg'
+        New-Item -ItemType Directory -Path $reg -Force | Out-Null
+        & $mkLink (Join-Path $reg 'l')
+        Register-ReaTempFile $reg
+        Clear-ReaTempFile
+        Test-Path -LiteralPath $reg | Should -BeFalse
+        $orph = Join-Path $script:T 'tree orph'
+        New-Item -ItemType Directory -Path (Join-Path $orph 'x.tmp.999999') -Force | Out-Null
+        & $mkLink (Join-Path $orph 'x.tmp.999999/l')
+        Remove-ReaOrphan -Dir $orph
+        Test-Path -LiteralPath (Join-Path $orph 'x.tmp.999999') | Should -BeFalse
+        $tools = Join-Path $script:T 'tree jdks'
+        foreach ($n in @('jdk-21.0.1+1', 'jdk-21.0.2+1', 'jdk-21.0.3+1')) {
+            New-Item -ItemType Directory -Path (Join-Path $tools $n) -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $tools "$n/.install-complete") -Value x
+        }
+        & $mkLink (Join-Path $tools 'jdk-21.0.1+1/l')
+        $saved = $env:JAVA_HOME
+        $env:JAVA_HOME = ''
+        try { Remove-ReaOldJdk -ToolsDir $tools } finally { $env:JAVA_HOME = $saved }
+        Test-Path -LiteralPath (Join-Path $tools 'jdk-21.0.1+1') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $outside 'keep') | Should -BeTrue
     }
 }
 
@@ -322,6 +484,41 @@ Describe 'locks' {
         { Lock-ReaDir -Dir $d } | Should -Throw
         (Get-Content -LiteralPath (Join-Path $lock 'owner') -Raw) | Should -Match ('^pid=' + $PID + ' started=y')
         @(Get-ChildItem -LiteralPath $d -Force -Filter '.lock.stale.*').Count | Should -Be 0
+    }
+    It 'puts back an ownerless lock that turned out to be fresh when moved aside, and keeps polling' {
+        $d = Join-Path $script:T 'lock putback'
+        $lock = Join-Path $d '.lock'
+        New-Item -ItemType Directory -Path $lock -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $lock 'marker') -Value 'someone else'
+        # First look (on .lock): old enough to be stale. Second look (on the moved-aside copy): it is fresh.
+        $script:AgeCalls = 0
+        Mock Test-ReaOlderThan { $script:AgeCalls++; return ($script:AgeCalls -eq 1) }
+        { Lock-ReaDir -Dir $d } | Should -Throw
+        $script:AgeCalls | Should -Be 2
+        Test-Path -LiteralPath (Join-Path $lock 'marker') | Should -BeTrue
+        @(Get-ChildItem -LiteralPath $d -Force -Filter '.lock.stale.*').Count | Should -Be 0
+        Should -Invoke Write-ReaLog -Exactly 0 -ParameterFilter { $Level -eq 'WARN' }
+    }
+    It 'still takes over an ownerless lock that is old on both looks' {
+        $d = Join-Path $script:T 'lock ownerless both'
+        $lock = Join-Path $d '.lock'
+        New-Item -ItemType Directory -Path $lock -Force | Out-Null
+        Mock Test-ReaOlderThan { return $true }
+        Lock-ReaDir -Dir $d
+        Test-Path -LiteralPath (Join-Path $lock 'owner') | Should -BeTrue
+        Unlock-ReaDir -Dir $d
+    }
+    It 'works in a tools directory whose name holds brackets' {
+        $d = Join-Path $script:T 'a[1]b'
+        Lock-ReaDir -Dir $d
+        Test-Path -LiteralPath (Join-Path $d '.lock/owner') | Should -BeTrue
+        Unlock-ReaDir -Dir $d
+        Test-Path -LiteralPath (Join-Path $d '.lock') | Should -BeFalse
+        # a second process (here: refusing) sees the lock, so creation really failed atomically
+        New-Item -ItemType Directory -Path (Join-Path $d '.lock') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $d '.lock/owner') -Value "pid=$PID started=x"
+        { Lock-ReaDir -Dir $d } | Should -Throw
+        Test-Path -LiteralPath (Join-Path $d '.lock/owner') | Should -BeTrue
     }
     It 'is reentrant in one process' {
         $d = Join-Path $script:T 'lock reentrant'
@@ -433,12 +630,7 @@ Describe 'staging and Complete-ReaInstall' {
         $final = Join-Path $t 'f'
         New-Item -ItemType Directory -Path $final -Force | Out-Null
         $s = New-ReaStaging -Dir $t -Name 'f'
-        $script:RealRemoveItem = Get-Command Remove-Item -CommandType Cmdlet
-        Mock Remove-Item {
-            # Only the removal of an existing .old directory fails; the clean-up of a leftover that is not there does not.
-            if ("$LiteralPath" -like '*.old.*' -and (Test-Path -LiteralPath $LiteralPath)) { throw 'simulated failure' }
-            & $script:RealRemoveItem -LiteralPath $LiteralPath -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        Mock Remove-ReaTree { throw 'simulated failure' } -ParameterFilter { $Path -like '*.old.*' }
         Complete-ReaInstall -Staging $s -Final $final | Should -BeTrue
         Should -Invoke Write-ReaLog -ParameterFilter { $Level -eq 'WARN' -and $Message -like '*previous install*' }
         Test-ReaInstallValid -Dir $final | Should -BeTrue

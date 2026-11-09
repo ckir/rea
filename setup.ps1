@@ -443,17 +443,62 @@ function Register-ReaTempFile {
     $script:TempFiles.Add($Path)
 }
 
+# Deletes one file, link or directory tree without ever following a link. A symlink, junction or other reparse
+# point is deleted as the link it is (its target is untouched); only real directories are descended into;
+# read-only attributes are cleared first. Throws when something cannot be deleted; a missing path is not an error.
+function Clear-ReaTreeItem {
+    param([string]$Path)
+    try {
+        $attr = [System.IO.File]::GetAttributes($Path)
+    } catch {
+        return
+    }
+    $isDir = (($attr -band [System.IO.FileAttributes]::Directory) -ne 0)
+    $isLink = (($attr -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    if ($isLink) {
+        if ($isDir) {
+            try {
+                [System.IO.Directory]::Delete($Path, $false)
+            } catch {
+                [System.IO.File]::Delete($Path)
+            }
+        } else {
+            [System.IO.File]::Delete($Path)
+        }
+        return
+    }
+    if ($attr -band [System.IO.FileAttributes]::ReadOnly) {
+        [System.IO.File]::SetAttributes($Path, ($attr -band (-bnot [System.IO.FileAttributes]::ReadOnly)))
+    }
+    if ($isDir) {
+        foreach ($child in [System.IO.Directory]::GetFileSystemEntries($Path)) {
+            Clear-ReaTreeItem -Path $child
+        }
+        [System.IO.Directory]::Delete($Path, $false)
+    } else {
+        [System.IO.File]::Delete($Path)
+    }
+}
+
+# Removes Path (a file, a link or a tree) as Clear-ReaTreeItem does; the one deletion routine of this script.
+function Remove-ReaTree {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param([string]$Path)
+    if (-not $PSCmdlet.ShouldProcess($Path, 'remove')) { return }
+    Clear-ReaTreeItem -Path $Path
+}
+
 # Removes every registered path, or only -Path; safe to call again and with an empty list. Names are literal
-# (no wildcard expansion).
+# (no wildcard expansion) and links are never followed.
 function Clear-ReaTempFile {
     param([string]$Path = '')
     if ($Path) {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+        try { Remove-ReaTree -Path $Path } catch { Write-Verbose "cannot remove $Path" }
         while ($script:TempFiles.Remove($Path)) { continue }
         return
     }
     foreach ($p in @($script:TempFiles)) {
-        Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
+        try { Remove-ReaTree -Path $p } catch { Write-Verbose "cannot remove $p" }
     }
     $script:TempFiles.Clear()
 }
@@ -965,6 +1010,8 @@ $script:LockPolls = 60
 $script:LockPollSeconds = 2
 $script:LockHeld = New-Object System.Collections.Generic.List[string]
 $script:TarExe = ''
+# The longest extracted path allowed: the classic Windows MAX_PATH of 260 less room for the tool's own files.
+$script:MaxPathLength = 240
 
 # The tools directory: -ToolsDir, else %LOCALAPPDATA%\rea-tools.
 function Get-ReaLocalAppData {
@@ -1079,6 +1126,9 @@ function Lock-ReaDir {
     while ($true) {
         $made = $false
         try {
+            # No wildcard escaping: pwsh 7 treats the path of a new item literally and an escaped path would create a
+            # directory with backticks in its name. A host that did expand brackets fails the create, and the
+            # check below then stops with 'cannot create lock' instead of locking the wrong place.
             New-Item -ItemType Directory -Path $lock -ErrorAction Stop | Out-Null
             $made = $true
         } catch {
@@ -1110,7 +1160,7 @@ function Lock-ReaDir {
             # means another process took it over first, so fall through to normal polling. The live name is
             # never deleted. Directory.Move fails when the target exists, where Move-Item would nest inside it.
             $aside = Join-Path $Dir ".lock.stale.$PID"
-            Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+            try { Remove-ReaTree -Path $aside } catch { Write-Verbose "cannot remove $aside" }
             $moved = $false
             if ([string](Get-ReaLockOwner -LockDir $lock) -eq [string]$owner) {
                 try {
@@ -1121,22 +1171,37 @@ function Lock-ReaDir {
                 }
             }
             if ($moved) {
-                if ([string](Get-ReaLockOwner -LockDir $aside) -eq [string]$owner) {
+                $tookOver = $true
+                $aboutNow = ($null -eq $owner) -and -not (Test-ReaOlderThan -Path $aside -Minutes 1)
+                if ($aboutNow) {
+                    # An ownerless lock that is fresh once moved aside was created a moment ago by a process that
+                    # has not written its owner file yet: put it back and wait like for any live lock.
+                    $tookOver = $false
+                    if (-not (Test-Path -LiteralPath $lock)) {
+                        try {
+                            [System.IO.Directory]::Move($aside, $lock)
+                        } catch {
+                            try { Remove-ReaTree -Path $aside } catch { Write-Verbose "cannot remove $aside" }
+                        }
+                    } else {
+                        try { Remove-ReaTree -Path $aside } catch { Write-Verbose "cannot remove $aside" }
+                    }
+                } elseif ([string](Get-ReaLockOwner -LockDir $aside) -eq [string]$owner) {
                     $who = 'unknown'
                     if ($null -ne $owner) { $who = $owner }
                     Write-ReaLog -Level WARN -Step tools-bin -Message "stale lock from pid $who taken over: $lock"
-                    Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+                    try { Remove-ReaTree -Path $aside } catch { Write-Verbose "cannot remove $aside" }
                 } elseif (-not (Test-Path -LiteralPath $lock)) {
                     # We moved a lock that changed owner between the check and the move: put it back.
                     try {
                         [System.IO.Directory]::Move($aside, $lock)
                     } catch {
-                        Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+                        try { Remove-ReaTree -Path $aside } catch { Write-Verbose "cannot remove $aside" }
                     }
                 } else {
-                    Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
+                    try { Remove-ReaTree -Path $aside } catch { Write-Verbose "cannot remove $aside" }
                 }
-                continue
+                if ($tookOver) { continue }
             }
         }
         $polls++
@@ -1179,7 +1244,7 @@ function Remove-ReaOrphan {
         if ($PSCmdlet.ShouldProcess($item.FullName, 'remove orphan')) {
             Write-ReaLog -Level INFO -Step cleanup -Message "removing orphan ($why): $($item.FullName)"
             try {
-                Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+                Remove-ReaTree -Path $item.FullName
             } catch {
                 Write-ReaLog -Level WARN -Step cleanup -Message "could not remove orphan: $($item.FullName)"
             }
@@ -1339,6 +1404,26 @@ function Test-ReaLinkEscape {
     return $false
 }
 
+# True when no segment of Path ends in a dot or a space (Windows drops them, so `.. ` and `a.` name other things
+# than they say) or has a Windows device name as its stem (CON, PRN, AUX, NUL, COM1-9, LPT1-9, with or without
+# an extension). A lone . segment is the current directory and fine. Sets Reason on a refusal.
+function Test-ReaSegmentsPortable {
+    param([string]$Path, [ref]$Reason)
+    foreach ($seg in ($Path -split '/')) {
+        if ($seg -eq '' -or $seg -eq '.') { continue }
+        if ($seg.EndsWith('.') -or $seg.EndsWith(' ')) {
+            $Reason.Value = 'segment ends with a dot or a space'
+            return $false
+        }
+        $stem = $seg.Split('.')[0].TrimEnd(' ')
+        if ($stem -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+            $Reason.Value = 'Windows device name'
+            return $false
+        }
+    }
+    return $true
+}
+
 # True when every entry stays inside the archive root: no absolute path (leading / or \, a drive letter, UNC), no
 # .. component (a backslash is a separator), no path below a symlink made earlier or later in the same archive,
 # no link whose target leaves the root. Fails closed on an empty list. Logs the first offending entry.
@@ -1359,8 +1444,10 @@ function Test-ReaArchiveEntry {
             $why = 'absolute path'
         } elseif (@($p -split '/') -contains '..') {
             $why = 'parent-directory component'
-        } elseif (@($p -split '/' | Where-Object { $_ -match '^[A-Za-z]:' }).Count -gt 0) {
-            $why = 'drive letter'
+        } elseif ($p.Contains(':')) {
+            $why = 'colon in the name (drive letter or alternate data stream)'
+        } elseif (-not (Test-ReaSegmentsPortable -Path $p -Reason ([ref]$why))) {
+            $null = $why
         } elseif ($e.Type -eq 'l') {
             $dir = ''
             if ($p -match '/[^/]*/?$') { $dir = [regex]::Replace($p, '/[^/]*/?$', '') }
@@ -1396,6 +1483,29 @@ function Test-ReaArchiveSafe {
     return (Test-ReaArchiveEntry -Entries $entries)
 }
 
+# True when the longest path the archive would create under Destination is within $script:MaxPathLength; else
+# logs the length and the way out (a shorter -ToolsDir) and returns $false. An archive that cannot be listed fails.
+function Test-ReaPathLengthOk {
+    param([string]$Path, [string]$Destination)
+    $entries = @(Get-ReaArchiveEntry -Path $Path)
+    if ($entries.Count -eq 0) {
+        Write-ReaLog -Level ERROR -Step archive -Message "cannot list archive: $Path"
+        return $false
+    }
+    $root = [System.IO.Path]::GetFullPath($Destination).TrimEnd('/', '\')
+    $longest = 0
+    $which = ''
+    foreach ($e in $entries) {
+        $len = $root.Length + 1 + ([string]$e.Path).TrimEnd('/', '\').Length
+        if ($len -gt $longest) { $longest = $len; $which = [string]$e.Path }
+    }
+    if ($longest -gt $script:MaxPathLength) {
+        Write-ReaLog -Level ERROR -Step archive -Message "the longest path to extract would be $longest characters (limit $script:MaxPathLength): $root/$which. Pass a shorter -ToolsDir, for example C:\rea"
+        return $false
+    }
+    return $true
+}
+
 # PRECONDITION: the caller has run Test-ReaArchiveSafe on this same, already verified file. A zip is extracted
 # entry by entry: a directory entry is created, never extracted; for a file the parent directory is created
 # first and ExtractToFile is told not to overwrite, after the resolved target is checked to be inside the
@@ -1408,6 +1518,7 @@ function Expand-ReaArchive {
     } catch {
         return $false
     }
+    if (-not (Test-ReaPathLengthOk -Path $Path -Destination $Destination)) { return $false }
     if ($Path -notmatch '\.zip$') {
         $r = Invoke-ReaCommand -Step archive -FilePath (Get-ReaTarExe) -ArgumentList @('-xzf', $Path, '-C', $Destination, '--no-same-owner')
         return ($r.ExitCode -eq 0)
@@ -1453,7 +1564,7 @@ function New-ReaStaging {
     param([string]$Dir, [string]$Name)
     $path = Join-Path $Dir "$Name.tmp.$PID"
     if (-not $PSCmdlet.ShouldProcess($path, 'create staging directory')) { return }
-    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    try { Remove-ReaTree -Path $path } catch { Write-Verbose "cannot remove $path" }
     [System.IO.Directory]::CreateDirectory($path) | Out-Null
     Register-ReaTempFile $path
     return $path
@@ -1473,7 +1584,9 @@ function Complete-ReaInstall {
         Write-ReaLog -Level ERROR -Step install -Message "cannot mark the install complete: $Staging"
         return $false
     }
-    Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $old) {
+        try { Remove-ReaTree -Path $old } catch { Write-ReaLog -Level WARN -Step install -Message "could not remove a leftover: $old" }
+    }
     $hadFinal = Test-Path -LiteralPath $Final
     if ($hadFinal) {
         try {
@@ -1499,7 +1612,7 @@ function Complete-ReaInstall {
     Clear-ReaTempFile -Path $Staging
     if ($hadFinal) {
         try {
-            Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction Stop
+            Remove-ReaTree -Path $old
         } catch {
             Write-ReaLog -Level WARN -Step install -Message "could not remove the previous install: $old"
         }
@@ -1573,7 +1686,7 @@ function Remove-ReaOldJdk {
         if ($PSCmdlet.ShouldProcess($full, 'remove old JDK')) {
             Write-ReaLog -Level INFO -Step jdk -Message "removing old JDK: $full"
             try {
-                Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+                Remove-ReaTree -Path $full
             } catch {
                 Write-ReaLog -Level WARN -Step jdk -Message "could not remove: $full"
             }
