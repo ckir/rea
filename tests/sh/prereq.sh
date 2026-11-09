@@ -290,10 +290,10 @@ run_step pf-clean "$P" step_preflight || true
 if [ ! -e "$T/tools dir/jdk-21.0.1+1.tmp.999999" ] && [ ! -e "$T/bin dir/agent-profile.tmp.999999" ]; then t_ok; else t_fail "orphans in both directories are removed"; fi
 
 # --- no sha256sum and no shasum: exit 4 at preflight, not exit 5 after a download ---
-Pn=$(mkpath pf-nosha curl tar unzip)
-rm -f "$Pn/sha256sum" "$Pn/shasum"
+P_nosha=$(mkpath pf-nosha curl tar unzip)
+rm -f "$P_nosha/sha256sum" "$P_nosha/shasum"
 rc=0
-run_step pf-nosha "$Pn" step_preflight || rc=$?
+run_step pf-nosha "$P_nosha" step_preflight || rc=$?
 assert_eq 4 "$rc" "no sha256sum and no shasum: exit 4"
 assert_match 'sha256sum' "$(logtext pf-nosha)" "the missing hash tool is named"
 Ps=$(mkpath pf-shasum-only curl tar unzip)
