@@ -1,0 +1,125 @@
+[
+  {
+    "name": "just",
+    "why": "Task runner and the single entry point for the local gate: every check is a recipe, and lefthook and CI call the recipes, so the lists cannot drift.",
+    "install": "Linux: `snap install --classic just` or `cargo binstall -y just` · macOS: `brew install just` · Windows: `scoop install just`",
+    "in_path": "just",
+    "config": "`justfile`",
+    "just": "—",
+    "gates": "everything: local gate, pre-push hook and CI all route through the recipes it defines"
+  },
+  {
+    "name": "lefthook",
+    "why": "Git hooks. pre-push runs the same recipes as `just check`, in parallel; there is no pre-commit hook. Needs `lefthook install` once per clone (`just setup`).",
+    "install": "Linux: release `.deb`/`.rpm` from github.com/evilmartians/lefthook/releases · macOS: `brew install lefthook` · Windows: `scoop install lefthook`",
+    "in_path": "lefthook",
+    "config": "`lefthook.yml`",
+    "just": "`setup`",
+    "gates": "local pre-push"
+  },
+  {
+    "name": "shellcheck",
+    "why": "Lints every shell file as POSIX `sh` (`shellcheck -s sh`), the portability guard for `setup.sh`.",
+    "install": "Linux: `apt install shellcheck` · macOS: `brew install shellcheck` · Windows: `scoop install shellcheck`",
+    "in_path": "shellcheck",
+    "config": "—",
+    "just": "`shellcheck`",
+    "gates": "`just check`; CI gates job"
+  },
+  {
+    "name": "shfmt",
+    "why": "Formats and checks shell files in the POSIX dialect (`-ln posix -i 2 -ci`); a hard gate.",
+    "install": "Linux: `snap install shfmt` · macOS: `brew install shfmt` · Windows: `scoop install shfmt`",
+    "in_path": "shfmt",
+    "config": "—",
+    "just": "`fmt-check`, `fmt`",
+    "gates": "`just check`; CI gates job"
+  },
+  {
+    "name": "pwsh",
+    "why": "PowerShell 7, used to run PSScriptAnalyzer and Pester from the justfile.",
+    "install": "Linux: https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux · macOS: `brew install powershell` · Windows: `winget install Microsoft.PowerShell`",
+    "in_path": "pwsh",
+    "config": "—",
+    "just": "`psanalyze`, `test`",
+    "gates": "`just check`; CI gates and matrix jobs"
+  },
+  {
+    "name": "PSScriptAnalyzer",
+    "why": "PowerShell module that lints `*.ps1`, with `PSUseCompatibleSyntax` targeting Windows PowerShell 5.1. Pinned to 1.25.0.",
+    "install": "`pwsh -c \"Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser\"` (any platform)",
+    "file_exists": [
+      "~/.local/share/powershell/Modules/PSScriptAnalyzer",
+      "~/Documents/PowerShell/Modules/PSScriptAnalyzer"
+    ],
+    "config": "`scripts/psanalyze.ps1`",
+    "just": "`psanalyze`",
+    "gates": "`just check`; CI gates job"
+  },
+  {
+    "name": "Pester",
+    "why": "PowerShell test framework, major version 5 or newer, for `tests/pester/`.",
+    "install": "`pwsh -c \"Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force\"` (any platform)",
+    "file_exists": [
+      "~/.local/share/powershell/Modules/Pester",
+      "~/Documents/PowerShell/Modules/Pester"
+    ],
+    "config": "`tests/pester/`",
+    "just": "`test`",
+    "gates": "`just check`; CI gates and matrix jobs"
+  },
+  {
+    "name": "typos",
+    "why": "Spell-checks source and prose.",
+    "install": "Linux: `cargo binstall -y typos-cli` · macOS: `brew install typos-cli` · Windows: `scoop install typos`",
+    "in_path": "typos",
+    "config": "`_typos.toml`",
+    "just": "`typos`",
+    "gates": "`just check`; CI gates job"
+  },
+  {
+    "name": "actionlint",
+    "why": "Lints GitHub Actions workflow syntax.",
+    "install": "Linux and macOS: `go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` or `brew install actionlint` · Windows: `scoop install actionlint`",
+    "in_path": "actionlint",
+    "config": "—",
+    "just": "`actionlint`",
+    "gates": "`just check`; CI gates job"
+  },
+  {
+    "name": "addlicense",
+    "why": "Checks that every source file carries `header.txt`.",
+    "install": "`go install github.com/google/addlicense@v1.2.0` (any platform)",
+    "in_path": "addlicense",
+    "config": "`header.txt`",
+    "just": "`license-check`",
+    "gates": "`just check`; CI gates job"
+  },
+  {
+    "name": "jq",
+    "why": "Reads `.claude/recommended-tools.json` for `tools-check` and `tools-doc-check`.",
+    "install": "Linux: `apt install jq` · macOS: `brew install jq` · Windows: `scoop install jq`",
+    "in_path": "jq",
+    "config": "—",
+    "just": "`tools-check`, `tools-doc-check`",
+    "gates": "`just check`; CI gates job"
+  },
+  {
+    "name": "python3",
+    "why": "Test-only: serves the fake release server used by `test-integration`.",
+    "install": "Linux: `apt install python3` · macOS: `brew install python` · Windows: `winget install Python.Python.3`",
+    "in_path": "python3",
+    "config": "`tests/integration/`",
+    "just": "`test-integration`",
+    "gates": "CI matrix job (Ubuntu)"
+  },
+  {
+    "name": "dash",
+    "why": "Test-only, Linux: the strict POSIX shell the shell tests run under, alongside bash.",
+    "install": "Linux: `apt install dash` (preinstalled on Debian and Ubuntu)",
+    "in_path": "dash",
+    "config": "—",
+    "just": "`test`",
+    "gates": "`just check`; CI"
+  }
+]

@@ -1,0 +1,39 @@
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+# https://lefthook.dev
+# Run `lefthook install` once per clone to activate.
+#
+# Every command goes through `just` so the hook and CI cannot drift apart: the recipe is the single
+# definition of what the check is. There is no pre-commit hook, so commits stay fast.
+
+pre-push:
+  parallel: true
+  commands:
+    tools-check:
+      run: just tools-check
+    typos:
+      run: just typos
+    license-check:
+      run: just license-check
+    line-citations:
+      run: just line-citations
+    action-pins:
+      run: just action-pins
+    actionlint:
+      run: just actionlint
+    fmt-check:
+      run: just fmt-check
+    shellcheck:
+      run: just shellcheck
+    psanalyze:
+      run: just psanalyze
+    suppressions:
+      run: just suppressions
+    tools-doc-check:
+      run: just tools-doc-check
+    test:
+      run: just test
