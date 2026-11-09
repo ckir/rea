@@ -309,17 +309,21 @@ SAVED_HOME=$HOME
 HOME=$T/homedir
 mkdir -p "$HOME"
 OPT_FOLDER=$HOME
+export OPT_FOLDER
 rc=0
 run_step pf-home "$P" step_preflight || rc=$?
 assert_eq 0 "$rc" "folder = home: the run continues"
 assert_match 'WARN +\[preflight\].*home directory.*permissions' "$(logtext pf-home)" "folder = home: WARN names the risk"
 OPT_FOLDER=$HOME/
+export OPT_FOLDER
 run_step pf-home2 "$P" step_preflight || true
 assert_match 'WARN +\[preflight\].*home directory' "$(logtext pf-home2)" "folder = home with a trailing slash: WARN"
 OPT_FOLDER=$HOME/project
+export OPT_FOLDER
 run_step pf-home3 "$P" step_preflight || true
 assert_eq 0 "$(grep -c 'home directory' "$T/pf-home3.log")" "folder below home: no WARN"
 OPT_FOLDER=$PWD
+export OPT_FOLDER
 HOME=$SAVED_HOME
 
 t_done
