@@ -7,6 +7,10 @@
 # Tests for the setup.ps1 core: logging, redaction, platform, validation, versions. They mirror
 # tests/sh/core.sh assertion for assertion.
 
+BeforeDiscovery {
+    $script:OnWindows = ([System.IO.Path]::DirectorySeparatorChar -eq '\')
+}
+
 BeforeAll {
     $env:REA_SETUP_NO_MAIN = '1'
     $script:SetupPath = (Resolve-Path (Join-Path $PSScriptRoot '../../setup.ps1')).Path
@@ -368,18 +372,32 @@ Describe 'Invoke-Main' {
         }
     }
 
-    It 'runs the preflight and writes one log file' {
+    It 'runs preflight then prereq and writes one log file (steps mocked, same on every OS)' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
+        $savedLogDir = $script:Opt.LogDir
+        $savedLog = $script:LogFile
+        try {
+            $script:Opt.LogDir = $dir
+            $script:Calls = New-Object System.Collections.Generic.List[string]
+            Mock Invoke-ReaStepPreflight { $script:Calls.Add('preflight') }
+            Mock Invoke-ReaStepPrereq { $script:Calls.Add('prereq') }
+            Invoke-Main | Should -Be 0
+            ($script:Calls -join ',') | Should -Be 'preflight,prereq'
+            @(Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').Count | Should -Be 1
+        } finally {
+            $script:Opt.LogDir = $savedLogDir
+            $script:LogFile = $savedLog
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'a real run off Windows fails at the fixed-NTFS check and still logs the invocation' -Skip:$script:OnWindows {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         try {
             $r = Invoke-Setup -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
             $r.Output | Should -Match 'platform: windows'
-            if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
-                $r.Code | Should -Be 0
-            } else {
-                # Off Windows the preflight stops at the fixed-NTFS check (exit 1); the steps are tested in Prereq.Tests.ps1.
-                $r.Code | Should -Be 1
-                $r.Output | Should -Match 'fixed NTFS'
-            }
+            $r.Code | Should -Be 1
+            $r.Output | Should -Match 'fixed NTFS'
             $text = [System.IO.File]::ReadAllText((Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').FullName)
             $text | Should -Match '(?m)invoked: -DryRun -LogDir=.* -Yes\s*$'
             @(Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').Count | Should -Be 1

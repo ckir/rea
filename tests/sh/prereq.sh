@@ -59,6 +59,15 @@ run_step() {
   ) >/dev/null 2>&1
 }
 
+# assert_none_other LOGNAME TOOL: the log reports no tool other than TOOL as missing
+assert_none_other() {
+  if grep -E 'ERROR \[prereq\] [a-z]+ not found' "$T/$1.log" | grep -vq "\] $2 not found"; then
+    t_fail "$1: another tool is reported missing"
+  else
+    t_ok
+  fi
+}
+
 logtext() {
   cat "$T/$1.log"
 }
@@ -122,19 +131,22 @@ P=$(mkpath noagy node npx claude ps)
 rc=0
 run_step agy-missing "$P" step_prereq || rc=$?
 assert_eq 4 "$rc" "missing agy: exit 4"
-assert_match 'agy' "$(logtext agy-missing)" "the log names agy"
+assert_match 'ERROR \[prereq\] agy not found; ' "$(logtext agy-missing)" "the log says agy not found"
+assert_none_other agy-missing agy
 
 P=$(mkpath noclaude node npx agy ps)
 rc=0
 run_step claude-missing "$P" step_prereq || rc=$?
 assert_eq 4 "$rc" "missing claude: exit 4"
-assert_match 'claude' "$(logtext claude-missing)" "the log names claude"
+assert_match 'ERROR \[prereq\] claude not found; ' "$(logtext claude-missing)" "the log says claude not found"
+assert_none_other claude-missing claude
 
 P=$(mkpath nonpx node claude agy ps)
 rc=0
 run_step npx-missing "$P" step_prereq || rc=$?
 assert_eq 4 "$rc" "missing npx: exit 4"
-assert_match 'npx' "$(logtext npx-missing)" "the log names npx"
+assert_match 'ERROR \[prereq\] npx not found; ' "$(logtext npx-missing)" "the log says npx not found"
+assert_none_other npx-missing npx
 
 # --check-upstream skips claude, agy and wt
 P=$(mkpath upstream node npx ps)
@@ -194,6 +206,11 @@ fi
 
 # --- step_preflight ---
 P=$(mkpath pf curl tar unzip)
+HAVE_UNZIP=1
+if [ ! -e "$P/unzip" ]; then
+  HAVE_UNZIP=0
+  printf 'skip: no system unzip: the unzip ZIP_TOOL case is skipped\n' >&2
+fi
 rc=0
 (
   UNAME_S=Linux
@@ -234,7 +251,11 @@ probe_vars() {
 
 CONSOLE_LEVEL=ERROR
 export CONSOLE_LEVEL
-assert_eq "$T/tools dir|$T/bin dir|unzip|ok" "$(probe_vars pf-vars "$P")" "TOOLS_DIR, BIN_DIR, ZIP_TOOL and the summary"
+if [ "$HAVE_UNZIP" -eq 1 ]; then
+  assert_eq "$T/tools dir|$T/bin dir|unzip|ok" "$(probe_vars pf-vars "$P")" "TOOLS_DIR, BIN_DIR, ZIP_TOOL and the summary"
+else
+  assert_match "^$T/tools dir\|$T/bin dir\|[a-z]+\|ok$" "$(probe_vars pf-vars "$P")" "TOOLS_DIR, BIN_DIR and the summary"
+fi
 
 P2=$(mkpath pf-bsd curl tar)
 printf '#!/bin/sh\nexit 0\n' >"$P2/bsdtar"

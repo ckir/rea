@@ -1410,7 +1410,8 @@ step_preflight() {
   return 0
 }
 
-# summary_set ID VALUE / summary_get ID: the per-step outcome behind SUMMARY_<id> for the final summary
+# summary_set ID VALUE / summary_get ID: set and read SUMMARY_<id> through eval, because a plain assignment of
+# SUMMARY_<id> trips shellcheck SC2034 (never read in this file) and lint suppressions are banned
 summary_set() {
   eval "SUMMARY_$1=\$2"
 }

@@ -45,6 +45,75 @@ Describe 'Test-ReaNativeExecutable' {
     }
 }
 
+Describe 'Resolve-ReaExecutable (unmocked)' {
+    BeforeAll {
+        $script:SavedPath = $env:PATH
+        $script:PathSep = [System.IO.Path]::PathSeparator
+        # mkdirs a scratch PATH directory holding the named files (executable on Unix)
+        function script:New-PathDir {
+            param([string]$Label, [string[]]$Files)
+            $d = Join-Path $script:T ($Label + ' ' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $d | Out-Null
+            foreach ($f in $Files) {
+                $fp = Join-Path $d $f
+                Set-Content -LiteralPath $fp -Value '#!/bin/sh'
+                if (-not $script:OnWindows) { & chmod 755 $fp }
+            }
+            return $d
+        }
+    }
+    AfterEach { $env:PATH = $script:SavedPath }
+
+    It 'returns $null when the command is absent' {
+        $d = New-PathDir -Label 'empty' -Files @()
+        $env:PATH = $d
+        Resolve-ReaExecutable -Name 'rea-no-such-tool-xyz' | Should -BeNullOrEmpty
+    }
+    It 'returns the path as a string when the command exists' -Skip:$script:OnWindows {
+        $d = New-PathDir -Label 'hit' -Files @('rea-fake-tool')
+        $env:PATH = $d + $script:PathSep + $script:SavedPath
+        $r = Resolve-ReaExecutable -Name 'rea-fake-tool'
+        $r | Should -BeOfType [string]
+        $r | Should -Be (Join-Path $d 'rea-fake-tool')
+    }
+    It 'on a non-Windows host an extensionless claude is not a native exe, so the step refuses it with exit 4' -Skip:$script:OnWindows {
+        $d = New-PathDir -Label 'noext' -Files @('claude')
+        $env:PATH = $d
+        $r = Resolve-ReaExecutable -Name 'claude'
+        $r | Should -Be (Join-Path $d 'claude')
+        Test-ReaNativeExecutable $r | Should -BeFalse
+    }
+    It 'Windows only: claude.exe wins over claude.cmd in the same directory' -Skip:(-not $script:OnWindows) {
+        $d = New-PathDir -Label 'both' -Files @('claude.cmd', 'claude.exe')
+        $env:PATH = $d
+        Resolve-ReaExecutable -Name 'claude' | Should -Be (Join-Path $d 'claude.exe')
+    }
+    It 'Windows only: a lone claude.cmd resolves to the cmd, which the step refuses' -Skip:(-not $script:OnWindows) {
+        $d = New-PathDir -Label 'cmdonly' -Files @('claude.cmd')
+        $env:PATH = $d
+        $r = Resolve-ReaExecutable -Name 'claude'
+        $r | Should -Be (Join-Path $d 'claude.cmd')
+        Test-ReaNativeExecutable $r | Should -BeFalse
+    }
+    It 'Windows only: a claude.cmd earlier on PATH than claude.exe is rejected by the step with exit 4' -Skip:(-not $script:OnWindows) {
+        $first = New-PathDir -Label 'first' -Files @('claude.cmd')
+        $second = New-PathDir -Label 'second' -Files @('claude.exe')
+        $env:PATH = $first + $script:PathSep + $second + $script:PathSep + $script:SavedPath
+        $script:LogFile = Join-Path $script:T 'order.log'
+        $script:ConsoleLevel = 'ERROR'
+        $script:Opt.CheckUpstream = $false
+        $script:NodeVersion = 'v24.22.2'
+        $script:NodeExit = 0
+        Mock Invoke-ReaCommand { return [pscustomobject]@{ ExitCode = 0; Stdout = 'v24.22.2'; Stderr = '' } }
+        $real = ${function:Resolve-ReaExecutable}
+        Mock Resolve-ReaExecutable { if ($Name -eq 'claude') { return (& $real -Name $Name) } return (Join-Path $script:BinWin 'node.cmd') }
+        try {
+            Get-Code { Invoke-ReaStepPrereq } | Should -Be 4
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match ([regex]::Escape("agent-profile refuses npm .cmd shims"))
+        } finally { $script:LogFile = $null }
+    }
+}
+
 Describe 'Invoke-ReaStepPrereq' {
     BeforeEach {
         $script:LogFile = Join-Path $script:T ('prereq-' + [guid]::NewGuid().ToString('N') + '.log')
