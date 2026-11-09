@@ -3548,7 +3548,7 @@ function Test-ReaUpstreamGhidra {
 }
 
 # Checks that what the pins assume still holds upstream: one ok or FAIL line per expectation, all of them even
-# after a failure. Returns the exit status of the first failing one, 0 when all hold. Fetches no archive and
+# after a failure. Returns EX_VERIFY when any fails (whatever the cause, spec: exit 5 if any expectation breaks), 0 when all hold. Fetches no archive and
 # writes nothing.
 function Test-ReaUpstream {
     $platform = Get-ReaPlatform
@@ -3563,19 +3563,17 @@ function Test-ReaUpstream {
                 default { $null = Get-ReaRuntimeSupportedGhidra }
             }
         } catch {
-            $code = $_.Exception.Data['ReaCode']
-            if ($null -eq $code) {
-                $code = $script:EX_STEP
+            if ($null -eq $_.Exception.Data['ReaCode']) {
                 Write-ReaLog ERROR check-upstream ('unexpected error: ' + $_.Exception.Message)
             }
             Write-ReaOutput "FAIL $name"
-            if ($first -eq 0) { $first = [int]$code }
+            $first = $script:EX_VERIFY
         }
     }
     return $first
 }
 
-# Replaces the install steps with -CheckUpstream: stops with the status of the first failing expectation.
+# Replaces the install steps with -CheckUpstream: stops with exit 5 when any expectation fails.
 function Invoke-ReaStepCheckUpstream {
     $code = Test-ReaUpstream
     if ($code -ne 0) {

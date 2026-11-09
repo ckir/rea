@@ -105,7 +105,7 @@ HEX64=0000000000000000000000000000000000000000000000000000000000000000
 # mk_up NAME [CASE]: builds the files and the scenario of a fake world in which every upstream expectation
 # holds, except as CASE says, starts the server and sets BASE. CASES: policy-new (rea supports 12.2.0),
 # policy-404, policy-noconst, npm-nover, len-bad (Content-Length one short), head405 (HEAD refused, the ranged
-# GET answers the length), evil (the Ghidra redirect leaves the allow-list), ap-badsum, cl-two, jdk-diff.
+# GET answers the length), evil (the Ghidra redirect leaves the allow-list), ap-badsum, cl-two, jdk-diff, ap-gone (the latest-release page answers 410: unreachable upstream).
 mk_up() {
   mu_name=$1
   mu_case=${2:-ok}
@@ -127,6 +127,7 @@ mk_up() {
   mu_cl="$FIX/github-release-clavity.json"
   mu_jdksum="$FIX/sidecar-temurin.sha256.txt"
   mu_gh='{"status":200,"body_file":"blob","content_length":569649598}'
+  mu_aplatest='{"status":302,"location":"{base}/r/aiprofiles/releases/tag/v0.1.2"}'
   mu_ghhop='{"status":302,"location":"{base}/dl/ghidra.zip"}'
   mu_pol='{"status":200,"body_file":"policy.ts"}'
   case "$mu_case" in
@@ -140,10 +141,11 @@ mk_up() {
     ap-badsum) mu_apsum=ap-bad.sha256 ;;
     cl-two) mu_cl="$mu_dir/cl-two.json" ;;
     jdk-diff) mu_jdksum="$mu_dir/jdk-diff.sha256" ;;
+    ap-gone) mu_aplatest='{"status":410}' ;;
     ok) ;;
   esac
   scn_start "$mu_dir/scenario.json"
-  scn_ent /github.com/ckir/aiprofiles/releases/latest '{"status":302,"location":"{base}/r/aiprofiles/releases/tag/v0.1.2"}'
+  scn_ent /github.com/ckir/aiprofiles/releases/latest "$mu_aplatest"
   scn_ent "/github.com/ckir/aiprofiles/releases/latest/download/$AP_ASSET" '{"status":302,"location":"{base}/dl/ap.tgz"}'
   scn_ent "/github.com/ckir/aiprofiles/releases/latest/download/$AP_ASSET.sha256" '{"status":302,"location":"{base}/dl/ap.sha256"}'
   scn_ent /dl/ap.tgz '{"status":200,"body_file":"blob"}'
@@ -258,7 +260,7 @@ for p in "/github.com/ckir/aiprofiles/releases/latest/download/$AP_ASSET" /dl/ap
 done
 
 # --- step_check_upstream: one expectation fails, the others are still printed ---
-for uc in policy-new:rea_supported_ghidra:5 len-bad:ghidra:5 evil:ghidra:5 ap-badsum:agent-profile:5 cl-two:clavity-ls:5 jdk-diff:adoptium:5 policy-404:rea_supported_ghidra:5 policy-noconst:rea_supported_ghidra:5 npm-nover:rea_supported_ghidra:5; do
+for uc in policy-new:rea_supported_ghidra:5 len-bad:ghidra:5 evil:ghidra:5 ap-badsum:agent-profile:5 cl-two:clavity-ls:5 jdk-diff:adoptium:5 ap-gone:agent-profile:5 policy-404:rea_supported_ghidra:5 policy-noconst:rea_supported_ghidra:5 npm-nover:rea_supported_ghidra:5; do
   uc_case=${uc%%:*}
   uc_rest=${uc#*:}
   uc_name=${uc_rest%%:*}

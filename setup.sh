@@ -2937,7 +2937,8 @@ cu_ghidra() {
 }
 
 # cu_run NAME FUNCTION: runs one expectation in a subshell (die exits only that), printing FAIL NAME when it
-# fails; the first failing status is kept in CU_FIRST
+# fails. Whatever the cause (a broken expectation, an unreachable or unreadable upstream), a failure is a
+# verification failure: CU_FIRST becomes EX_VERIFY, the exit status of the run (spec: exit 5 if any expectation breaks).
 cu_run() {
   cr_rc=0
   (
@@ -2946,15 +2947,13 @@ cu_run() {
   ) || cr_rc=$?
   if [ "$cr_rc" -ne 0 ]; then
     printf 'FAIL %s\n' "$1"
-    if [ "$CU_FIRST" -eq 0 ]; then
-      CU_FIRST=$cr_rc
-    fi
+    CU_FIRST=$EX_VERIFY
   fi
 }
 
 # step_check_upstream: replaces the install steps with --check-upstream. Checks that what the pins assume still
 # holds upstream, one `ok` or `FAIL` line per expectation on stdout, all of them even after a failure; exits
-# with the status of the first failing one. Fetches no archive and writes nothing but the log.
+# with EX_VERIFY when any fails. Fetches no archive and writes nothing but the log.
 step_check_upstream() {
   CU_FIRST=0
   cu_run agent-profile cu_agent_profile

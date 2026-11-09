@@ -6,9 +6,7 @@
 
 # Weekly drift check: do the pins in setup.sh and setup.ps1 still match what the upstream releases publish?
 # --check-upstream fetches no archive and writes nothing; it prints one ok or FAIL line per expectation and
-# exits 5 when one fails. Every runner uses the Node that its image ships: the prerequisite check of both
-# scripts needs Node at the supported floor (it exits 4 below it), so a run that fails there means the image's
-# Node is too old, not that upstream drifted. No actions/setup-node is pinned in ci.yml to reuse here.
+# exits 5 when one fails. Node is installed because both scripts require it at the supported floor in prereq.
 
 name: Canary
 
@@ -32,6 +30,9 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
       - name: Check upstream (POSIX)
         if: runner.os != 'Windows'
         run: sh setup.sh --check-upstream --yes

@@ -80,6 +80,7 @@ BeforeAll {
             'evil' { $head[$script:PIN_GHIDRA_URL] = @{ Status = 302; Location = 'https://evil.example/ghidra.zip' } }
             'ap-badsum' { $http["$script:ApUrl.sha256"] = $script:FBadSum }
             'cl-two' { $http['https://api.github.com/repos/ckir/clavity/releases/latest'] = $script:FClTwo }
+            'ap-gone' { $head.Remove('https://github.com/ckir/aiprofiles/releases/latest') }
             'jdk-diff' { $http["$script:JdkBase.sha256.txt"] = $script:FJdkOther }
         }
         $script:Http = $http
@@ -201,6 +202,7 @@ Describe 'check-upstream' {
             @{ case = 'ap-badsum'; name = 'agent-profile' }
             @{ case = 'cl-two'; name = 'clavity-ls' }
             @{ case = 'jdk-diff'; name = 'adoptium' }
+            @{ case = 'ap-gone'; name = 'agent-profile' }
         ) {
             Set-UpWorld $case
             (Test-ReaUpstream) | Should -Be 5
