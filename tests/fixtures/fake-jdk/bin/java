@@ -1,0 +1,50 @@
+#!/bin/sh
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+# Test stub for a JDK's java. It runs no Java; it prints what the files next to bin/ say, so a test copies
+# this directory and writes them:
+#   banner  the text of -version (default: a Temurin 21.0.13 64-bit banner)
+#   arch    the os.arch value of -XshowSettings:properties (default: amd64)
+#   stream  out to print on stdout instead of stderr
+#   fail    when present the stub exits 1 without output
+# Only shell built-ins are used, so the stub runs under any PATH.
+here=${0%/*}
+home=$here/..
+if [ -e "$home/fail" ]; then
+  exit 1
+fi
+arch=amd64
+if [ -f "$home/arch" ]; then
+  read -r arch <"$home/arch"
+fi
+emit() {
+  if [ -f "$home/stream" ]; then
+    printf '%s\n' "$1"
+  else
+    printf '%s\n' "$1" >&2
+  fi
+}
+banner() {
+  if [ -f "$home/banner" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      emit "$line"
+    done <"$home/banner"
+  else
+    emit 'openjdk version "21.0.13" 2026-10-21 LTS'
+    emit 'OpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)'
+    emit 'OpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)'
+  fi
+}
+for a in "$@"; do
+  if [ "$a" = -XshowSettings:properties ]; then
+    emit 'Property settings:'
+    emit "    os.arch = $arch"
+    emit '    os.name = Linux'
+  fi
+done
+banner
+exit 0

@@ -2065,6 +2065,305 @@ function Unlock-ReaToolsDir {
     Unlock-ReaDir -Dir $script:ToolsDir
 }
 
+# --- step jdk ---
+
+# Test seams: a scriptblock standing in for the run of java (param($Path, $Arguments); returns ExitCode, Stdout and
+# Stderr like Invoke-ReaCommand), and the JAVA_HOME the step picked.
+$script:JavaRunner = $null
+$script:JavaHomeSelected = ''
+
+# The file name of a JDK program on this OS (java.exe on Windows).
+function Get-ReaJdkExe {
+    param([string]$Name)
+    if (Test-ReaWindowsHost) { return "$Name.exe" }
+    return $Name
+}
+
+# Runs java with Arguments through the test seam or Invoke-ReaCommand; $null when it cannot be started.
+function Invoke-ReaJava {
+    param([string]$Path, [string[]]$Arguments)
+    try {
+        if ($script:JavaRunner) {
+            return (& $script:JavaRunner $Path $Arguments)
+        }
+        return (Invoke-ReaCommand -Step jdk -FilePath $Path -ArgumentList $Arguments)
+    } catch {
+        return $null
+    }
+}
+
+# Valid is $true when Dir is a full 64-bit JDK of at least PIN_JDK_MAJOR for this host's architecture; otherwise
+# Reason says why. Dir is the JDK home. The only programs run are Dir's java, with -version and
+# -XshowSettings:properties -version. Arch defaults to the host's.
+function Test-ReaJdkValid {
+    param([string]$Dir, [string]$Arch = '')
+    if (-not $Arch) { $Arch = [string](Get-ReaPlatform).Arch }
+    $javaName = Get-ReaJdkExe 'java'
+    $javacName = Get-ReaJdkExe 'javac'
+    $java = Join-Path (Join-Path $Dir 'bin') $javaName
+    $javac = Join-Path (Join-Path $Dir 'bin') $javacName
+    if (-not (Test-Path -LiteralPath $java -PathType Leaf)) {
+        return [pscustomobject]@{ Valid = $false; Reason = "no bin/$javaName in $Dir" }
+    }
+    if (-not (Test-Path -LiteralPath $javac -PathType Leaf)) {
+        return [pscustomobject]@{ Valid = $false; Reason = "no bin/$javacName in $Dir (a JRE, not a JDK)" }
+    }
+    $r = Invoke-ReaJava -Path $java -Arguments @('-version')
+    if ($null -eq $r -or $r.ExitCode -ne 0) {
+        return [pscustomobject]@{ Valid = $false; Reason = "java -version failed in $Dir" }
+    }
+    $text = (([string]$r.Stderr) + "`n" + ([string]$r.Stdout)) -replace "`r", ''
+    $m = [regex]::Match($text, '(?m)^.*version "([0-9]+)(?:\.([0-9]+))?')
+    if (-not $m.Success) {
+        $first = ($text -split "`n" | Where-Object { $_ } | Select-Object -First 1)
+        return [pscustomobject]@{ Valid = $false; Reason = "cannot read the version from: $first" }
+    }
+    $major = [int]$m.Groups[1].Value
+    if ($major -eq 1 -and $m.Groups[2].Success) { $major = [int]$m.Groups[2].Value }
+    $need = [int]$script:PIN_JDK_MAJOR
+    if ($major -lt $need) {
+        return [pscustomobject]@{ Valid = $false; Reason = "major $major < $need" }
+    }
+    if ($text -cnotmatch '64-Bit') {
+        return [pscustomobject]@{ Valid = $false; Reason = 'not a 64-bit JDK (the banner has no 64-Bit)' }
+    }
+    $s = Invoke-ReaJava -Path $java -Arguments @('-XshowSettings:properties', '-version')
+    if ($null -eq $s -or $s.ExitCode -ne 0) {
+        return [pscustomobject]@{ Valid = $false; Reason = "java -XshowSettings:properties failed in $Dir" }
+    }
+    $settings = (([string]$s.Stderr) + "`n" + ([string]$s.Stdout)) -replace "`r", ''
+    $a = [regex]::Match($settings, '(?m)^\s*os\.arch\s*=\s*(\S+)')
+    if (-not $a.Success) {
+        return [pscustomobject]@{ Valid = $false; Reason = "cannot read os.arch from $Dir" }
+    }
+    $got = $a.Groups[1].Value
+    if ($got -eq 'amd64' -or $got -eq 'x86_64') { $got = 'x64' }
+    if ($got -eq 'arm64') { $got = 'aarch64' }
+    if ($got -cne $Arch) {
+        return [pscustomobject]@{ Valid = $false; Reason = "architecture $got does not match this host ($Arch)" }
+    }
+    return [pscustomobject]@{ Valid = $true; Reason = '' }
+}
+
+# The JAVA_HOME of an install at Dir: Dir\Contents\Home on macOS (Os 'mac') when it exists, else Dir.
+function Get-ReaJdkHomeCandidate {
+    param([string]$Dir, [string]$Os = 'windows')
+    $mac = Join-Path (Join-Path $Dir 'Contents') 'Home'
+    if ($Os -eq 'mac' -and (Test-Path -LiteralPath $mac -PathType Container)) { return $mac }
+    return $Dir
+}
+
+# The embedded pin of a platform as Release, Url, Sha256, SidecarUrl and Bytes (empty); $null when there is none.
+function Get-ReaJdkFallback {
+    param([string]$Os, [string]$Arch)
+    switch ("$Os-$Arch") {
+        'linux-x64' { $pin = $script:PIN_JDK_FALLBACK_LINUX_X64 }
+        'mac-x64' { $pin = $script:PIN_JDK_FALLBACK_MAC_X64 }
+        'mac-aarch64' { $pin = $script:PIN_JDK_FALLBACK_MAC_AARCH64 }
+        'windows-x64' { $pin = $script:PIN_JDK_FALLBACK_WINDOWS_X64 }
+        default { return $null }
+    }
+    $at = $pin.IndexOf(':')
+    $url = $script:PIN_JDK_FALLBACK_URL_BASE + $pin.Substring(0, $at)
+    return [pscustomobject]@{
+        Release    = $script:PIN_JDK_FALLBACK_RELEASE
+        Url        = $url
+        Sha256     = $pin.Substring($at + 1)
+        SidecarUrl = $url + '.sha256.txt'
+        Bytes      = ''
+    }
+}
+
+# The JDK to install for Os and Arch: the Adoptium answer, or the embedded pin (with a WARN) when the API cannot
+# be reached.
+function Resolve-ReaJdkRelease {
+    param([string]$Os, [string]$Arch)
+    $r = Resolve-ReaAdoptium -Os $Os -Arch $Arch
+    if ($r.Code -eq 0) { return $r.Jdk }
+    if ($r.Code -ne 2) {
+        Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "the Adoptium answer for $Os $Arch failed validation"
+    }
+    $fallback = Get-ReaJdkFallback -Os $Os -Arch $Arch
+    if ($null -eq $fallback) {
+        Stop-Rea -Code $script:EX_PLATFORM -Step jdk -Message "no JDK build for $Os $Arch"
+    }
+    Write-ReaLog WARN jdk "Adoptium API unreachable; installing the embedded fallback $script:PIN_JDK_FALLBACK_RELEASE, possibly outdated"
+    return $fallback
+}
+
+# Stops with exit 1 and the shortfall when Path has less than Mb megabytes free.
+function Assert-ReaFreeMb {
+    param([string]$Path, [int]$Mb)
+    $have = Get-ReaFreeMb -Path $Path
+    if ($have -lt $Mb) {
+        Stop-Rea -Code $script:EX_STEP -Step disk -Message "not enough free space at ${Path}: need $Mb MB, have $have MB (short by $($Mb - $have) MB)"
+    }
+}
+
+# Installs the latest Temurin JDK (or the embedded fallback) into ToolsDir\jdk-<release> and returns its home; a
+# read-only run only logs what it would fetch and returns $null. The work happens in a staging directory beside
+# the final one; the archive lives there as .download.<pid> and goes right after the extract.
+function Install-ReaJdk {
+    $platform = Get-ReaPlatform
+    $tools = $script:ToolsDir
+    Assert-ReaFreeMb -Path $tools -Mb 600
+    $jdk = Resolve-ReaJdkRelease -Os $platform.Os -Arch $platform.Arch
+    $size = 'unknown'
+    if ($jdk.Bytes) { $size = $jdk.Bytes }
+    Write-ReaLog INFO jdk "resolved $($jdk.Release): $($jdk.Url) ($size bytes)"
+    if ($script:Opt.DryRun -or $script:Opt.CheckUpstream) {
+        Write-ReaLog INFO jdk 'read-only run, nothing installed'
+        $script:Summary['jdk'] = "$($jdk.Release) (not installed: read-only run)"
+        return $null
+    }
+    $release = $jdk.Release
+    try {
+        [System.IO.Directory]::CreateDirectory($tools) | Out-Null
+    } catch {
+        Stop-Rea -Code $script:EX_STEP -Step jdk -Message "cannot create directory: $tools"
+    }
+    $final = Join-Path $tools $release
+    $work = New-ReaStaging -Dir $tools -Name "$release.work"
+    $stage = $null
+    try {
+        $ext = '.tar.gz'
+        if ($jdk.Url -match '\.zip$') { $ext = '.zip' }
+        $archive = Join-Path $work ('.download.' + $PID + $ext)
+        if ($jdk.SidecarUrl) {
+            $side = Join-Path $work 'sidecar'
+            $got = $false
+            $resolved = Resolve-ReaRedirect -Url $jdk.SidecarUrl
+            if ($resolved.Code -eq 0) { $got = Invoke-ReaHttpGet -Url $resolved.Url -Destination $side }
+            if ($got) {
+                $hash = Get-ReaSidecarSha256 -Path $side
+                if (-not $hash) {
+                    Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "the checksum file of $release holds no SHA-256: $($jdk.SidecarUrl)"
+                }
+                if ($hash -cne $jdk.Sha256) {
+                    Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "checksum mismatch for ${release}: the API says $($jdk.Sha256), the sidecar says $hash"
+                }
+            } else {
+                Write-ReaLog WARN jdk "the checksum sidecar of $release is unreachable; relying on the SHA-256 from the release listing"
+            }
+        }
+        if (-not (Get-ReaDownload -Url $jdk.Url -Destination $archive -Sha256 $jdk.Sha256)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "cannot download and verify $release from $($jdk.Url)"
+        }
+        if (-not (Test-ReaArchiveSafe -Path $archive)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "the archive of $release is not safe to extract"
+        }
+        $extract = Join-Path $work 'x'
+        if (-not (Expand-ReaArchive -Path $archive -Destination $extract)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "cannot extract the archive of $release"
+        }
+        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+        $items = @(Get-ChildItem -LiteralPath $extract -Force)
+        $ok = ($items.Count -eq 1)
+        if ($ok) {
+            $item = $items[0]
+            $isLink = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            $ok = ($item.Name -ceq $release) -and $item.PSIsContainer -and (-not $isLink)
+        }
+        if (-not $ok) {
+            Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "the archive of $release must hold exactly one top directory, $release (found $($items.Count) entries)"
+        }
+        $stage = New-ReaStaging -Dir $tools -Name $release
+        [System.IO.Directory]::Delete($stage)
+        try {
+            Move-Item -LiteralPath $items[0].FullName -Destination $stage -ErrorAction Stop
+        } catch {
+            Stop-Rea -Code $script:EX_STEP -Step jdk -Message "cannot move the extracted JDK into $stage"
+        }
+        Clear-ReaTempFile -Path $work
+        $check = Test-ReaJdkValid -Dir (Get-ReaJdkHomeCandidate -Dir $stage -Os $platform.Os) -Arch $platform.Arch
+        if (-not $check.Valid) {
+            Stop-Rea -Code $script:EX_VERIFY -Step jdk -Message "the downloaded $release is not a usable JDK: $($check.Reason)"
+        }
+        if (-not (Complete-ReaInstall -Staging $stage -Final $final)) {
+            Stop-Rea -Code $script:EX_STEP -Step jdk -Message "cannot move $release into place: $final"
+        }
+    } finally {
+        Clear-ReaTempFile -Path $work
+        if ($stage) { Clear-ReaTempFile -Path $stage }
+    }
+    $jdkHome = Get-ReaJdkHomeCandidate -Dir $final -Os $platform.Os
+    $script:JavaHomeSelected = $jdkHome
+    Write-ReaLog INFO jdk "installed $release in $(Get-ReaShortPath $final)"
+    Remove-ReaOldJdk -ToolsDir $tools -InUse @($jdkHome)
+    $script:Summary['jdk'] = "$release installed: $jdkHome"
+    return $jdkHome
+}
+
+# The value of -JavaHome when it was given on the command line, else ''. The parameter defaults to the JAVA_HOME
+# environment variable, so only the bound parameters tell the two apart.
+function Get-ReaJavaHomeFlag {
+    if ($script:Bound.ContainsKey('JavaHome')) { return [string]$script:Opt.JavaHome }
+    return ''
+}
+
+# Sets JavaHomeSelected and Summary['jdk']. Precedence: -JavaHome (invalid: exit 1), the JAVA_HOME environment
+# variable (invalid: WARN and go on), the newest valid install in the tools directory, a new install.
+function Select-ReaJdk {
+    param(
+        [string]$FlagHome = (Get-ReaJavaHomeFlag),
+        [string]$EnvHome = $env:JAVA_HOME
+    )
+    $script:JavaHomeSelected = ''
+    $os = [string](Get-ReaPlatform).Os
+    if ($FlagHome) {
+        $candidate = Get-ReaJdkHomeCandidate -Dir $FlagHome -Os $os
+        $check = Test-ReaJdkValid -Dir $candidate
+        if (-not $check.Valid) {
+            Stop-Rea -Code $script:EX_STEP -Step jdk -Message "-JavaHome $FlagHome is not a usable JDK: $($check.Reason)"
+        }
+        $script:JavaHomeSelected = $candidate
+        Write-ReaLog INFO jdk "using -JavaHome: $(Get-ReaShortPath $candidate)"
+        $script:Summary['jdk'] = "reused -JavaHome: $candidate"
+        return
+    }
+    if ($EnvHome) {
+        $candidate = Get-ReaJdkHomeCandidate -Dir $EnvHome -Os $os
+        $check = Test-ReaJdkValid -Dir $candidate
+        if ($check.Valid) {
+            $script:JavaHomeSelected = $candidate
+            Write-ReaLog INFO jdk "using JAVA_HOME: $(Get-ReaShortPath $candidate)"
+            $script:Summary['jdk'] = "reused JAVA_HOME: $candidate"
+            return
+        }
+        Write-ReaLog WARN jdk "JAVA_HOME $EnvHome is not a usable JDK ($($check.Reason)); ignoring it"
+    }
+    $best = ''
+    if (Test-Path -LiteralPath $script:ToolsDir -PathType Container) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $script:ToolsDir -Directory -Force | Where-Object { $_.Name -like 'jdk-[0-9]*' })) {
+            if ($d.Name -like '*.tmp.*' -or $d.Name -like '*.old.*') { continue }
+            if (-not (Test-ReaInstallValid -Dir $d.FullName)) {
+                Write-ReaLog DEBUG jdk "ignoring $($d.Name): no .install-complete"
+                continue
+            }
+            $check = Test-ReaJdkValid -Dir (Get-ReaJdkHomeCandidate -Dir $d.FullName -Os $os)
+            if (-not $check.Valid) {
+                Write-ReaLog WARN jdk "ignoring the install $($d.Name): $($check.Reason)"
+                continue
+            }
+            if ((-not $best) -or (Test-ReaJdkNewer -A $d.Name -B $best)) { $best = $d.Name }
+        }
+    }
+    if ($best) {
+        $script:JavaHomeSelected = Get-ReaJdkHomeCandidate -Dir (Join-Path $script:ToolsDir $best) -Os $os
+        Write-ReaLog INFO jdk "reusing $best in $(Get-ReaShortPath $script:ToolsDir)"
+        $script:Summary['jdk'] = "reused ${best}: $($script:JavaHomeSelected)"
+        return
+    }
+    $installed = Install-ReaJdk
+    if ($installed) { $script:JavaHomeSelected = [string]$installed }
+}
+
+# Picks or installs the JDK that Ghidra and rea run with. Runs under the lock Invoke-ReaStepToolsBin took.
+function Invoke-ReaStepJdk {
+    Select-ReaJdk
+    Write-ReaLog INFO jdk 'ok'
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -2114,6 +2413,7 @@ function Invoke-Main {
         Invoke-ReaStepPreflight
         Invoke-ReaStepPrereq
         Invoke-ReaStepToolsBin
+        Invoke-ReaStepJdk
         Unlock-ReaToolsDir
         return $script:EX_OK
     } catch {

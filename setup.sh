@@ -1695,6 +1695,245 @@ tools_lock_release() {
   lock_release "$TOOLS_DIR"
 }
 
+# --- step jdk ---
+
+# jdk_exe NAME: the file name of a JDK program on this OS (java.exe on Windows)
+jdk_exe() {
+  if [ "${OS:-}" = windows ]; then
+    printf '%s.exe\n' "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# jdk_valid DIR: 0 when DIR is a full 64-bit JDK of at least PIN_JDK_MAJOR for this host's architecture;
+# otherwise prints the reason on stdout and returns 1. The only programs it runs are DIR's java, with
+# -version and -XshowSettings:properties -version. DIR is the JDK home (on macOS .../Contents/Home).
+jdk_valid() {
+  jv_dir=$1
+  jv_java="$jv_dir/bin/$(jdk_exe java)"
+  jv_javac="$jv_dir/bin/$(jdk_exe javac)"
+  if [ ! -f "$jv_java" ] || [ ! -x "$jv_java" ]; then
+    echo "no executable bin/$(jdk_exe java) in $jv_dir"
+    return 1
+  fi
+  if [ ! -f "$jv_javac" ]; then
+    echo "no bin/$(jdk_exe javac) in $jv_dir (a JRE, not a JDK)"
+    return 1
+  fi
+  jv_out=$("$jv_java" -version 2>&1) || {
+    echo "java -version failed in $jv_dir"
+    return 1
+  }
+  jv_out=$(printf '%s\n' "$jv_out" | tr -d '\r')
+  jv_ver=$(printf '%s\n' "$jv_out" | sed -n -E 's/^.*version "([0-9]+)(\.([0-9]+))?.*$/\1 \3/p' | head -n 1)
+  jv_major=${jv_ver%% *}
+  case "$jv_major" in
+    '' | *[!0-9]*)
+      echo "cannot read the version from: $(printf '%s\n' "$jv_out" | head -n 1)"
+      return 1
+      ;;
+  esac
+  if [ "$jv_major" -eq 1 ]; then
+    jv_major=${jv_ver#* }
+    case "$jv_major" in
+      '' | *[!0-9]*) jv_major=1 ;;
+    esac
+  fi
+  if [ "$jv_major" -lt "$PIN_JDK_MAJOR" ]; then
+    echo "major $jv_major < $PIN_JDK_MAJOR"
+    return 1
+  fi
+  if ! printf '%s\n' "$jv_out" | grep -q '64-Bit'; then
+    echo "not a 64-bit JDK (the banner has no 64-Bit)"
+    return 1
+  fi
+  jv_set=$("$jv_java" -XshowSettings:properties -version 2>&1) || {
+    echo "java -XshowSettings:properties failed in $jv_dir"
+    return 1
+  }
+  jv_arch=$(printf '%s\n' "$jv_set" | tr -d '\r' | sed -n -E 's/^[[:space:]]*os\.arch[[:space:]]*=[[:space:]]*([^[:space:]]+).*$/\1/p' | head -n 1)
+  case "$jv_arch" in
+    amd64 | x86_64) jv_arch=x64 ;;
+    aarch64 | arm64) jv_arch=aarch64 ;;
+    '')
+      echo "cannot read os.arch from $jv_dir"
+      return 1
+      ;;
+  esac
+  if [ "$jv_arch" != "$ARCH" ]; then
+    echo "architecture $jv_arch does not match this host ($ARCH)"
+    return 1
+  fi
+  return 0
+}
+
+# jdk_home_candidate DIR: the JAVA_HOME of an install at DIR: DIR/Contents/Home on macOS when it exists
+jdk_home_candidate() {
+  if [ "${OS:-}" = mac ] && [ -d "$1/Contents/Home" ]; then
+    printf '%s\n' "$1/Contents/Home"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# jdk_fallback OS ARCH: sets JDK_RELEASE, JDK_URL, JDK_SHA256, JDK_SIDECAR_URL and JDK_BYTES from the embedded
+# pin of that platform; returns 1 when there is none
+jdk_fallback() {
+  case "$1-$2" in
+    linux-x64) jf_pin=$PIN_JDK_FALLBACK_LINUX_X64 ;;
+    mac-x64) jf_pin=$PIN_JDK_FALLBACK_MAC_X64 ;;
+    mac-aarch64) jf_pin=$PIN_JDK_FALLBACK_MAC_AARCH64 ;;
+    windows-x64) jf_pin=$PIN_JDK_FALLBACK_WINDOWS_X64 ;;
+    *) return 1 ;;
+  esac
+  JDK_RELEASE=$PIN_JDK_FALLBACK_RELEASE
+  JDK_URL="$PIN_JDK_FALLBACK_URL_BASE${jf_pin%%:*}"
+  JDK_SHA256=${jf_pin#*:}
+  JDK_SIDECAR_URL="$JDK_URL.sha256.txt"
+  JDK_BYTES=""
+  return 0
+}
+
+# jdk_resolve: sets JDK_RELEASE, JDK_URL, JDK_SHA256, JDK_SIDECAR_URL and JDK_BYTES for OS and ARCH: the
+# Adoptium answer, or the embedded pin (with a WARN) when the API cannot be reached
+jdk_resolve() {
+  jr_rc=0
+  adoptium_resolve "$OS" "$ARCH" || jr_rc=$?
+  case "$jr_rc" in
+    0) return 0 ;;
+    2)
+      jdk_fallback "$OS" "$ARCH" || die "$EX_PLATFORM" jdk "no JDK build for $OS $ARCH"
+      log WARN jdk "Adoptium API unreachable; installing the embedded fallback $PIN_JDK_FALLBACK_RELEASE, possibly outdated"
+      ;;
+    *) die "$EX_VERIFY" jdk "the Adoptium answer for $OS $ARCH failed validation" ;;
+  esac
+}
+
+# jdk_fail STAGE MSG [CODE]: removes STAGE (and the archive in it) and dies, EX_VERIFY unless CODE is given
+jdk_fail() {
+  rm -rf -- "$1"
+  die "${3:-$EX_VERIFY}" jdk "$2"
+}
+
+# jdk_install: installs the latest Temurin JDK (or the embedded fallback) into TOOLS_DIR/jdk-<release> and
+# sets JAVA_HOME_SELECTED; a read-only run only logs what it would fetch. The work happens in a staging
+# directory beside the final one; the archive lives there as .download.$$ and goes right after the extract.
+jdk_install() {
+  require_free_mb "$TOOLS_DIR" 600
+  jdk_resolve
+  log INFO jdk "resolved $JDK_RELEASE: $JDK_URL (${JDK_BYTES:-unknown} bytes)"
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log INFO jdk "read-only run, nothing installed"
+    summary_set jdk "$JDK_RELEASE (not installed: read-only run)"
+    return 0
+  fi
+  mkdir -p -- "$TOOLS_DIR" || die "$EX_STEP" jdk "cannot create directory: $TOOLS_DIR"
+  ji_final="$TOOLS_DIR/$JDK_RELEASE"
+  ji_work=$(staging_new "$TOOLS_DIR" "$JDK_RELEASE.work") || die "$EX_STEP" jdk "cannot create a staging directory in $TOOLS_DIR"
+  register_tmp "$ji_work"
+  case "$JDK_URL" in
+    *.zip) ji_ext=.zip ;;
+    *) ji_ext=.tar.gz ;;
+  esac
+  ji_archive="$ji_work/.download.$$$ji_ext"
+  if [ -n "$JDK_SIDECAR_URL" ]; then
+    ji_sc=$(resolve_redirects "$JDK_SIDECAR_URL") || ji_sc=""
+    if [ -n "$ji_sc" ] && http_get "$ji_sc" "$ji_work/sidecar"; then
+      ji_hash=$(sidecar_sha256 "$ji_work/sidecar") || jdk_fail "$ji_work" "the checksum file of $JDK_RELEASE holds no SHA-256: $JDK_SIDECAR_URL"
+      [ "$ji_hash" = "$JDK_SHA256" ] || jdk_fail "$ji_work" "checksum mismatch for $JDK_RELEASE: the API says $JDK_SHA256, the sidecar says $ji_hash"
+    else
+      log WARN jdk "the checksum sidecar of $JDK_RELEASE is unreachable; relying on the SHA-256 from the release listing"
+    fi
+  fi
+  download_verified "$JDK_URL" "$ji_archive" "$JDK_SHA256" || jdk_fail "$ji_work" "cannot download and verify $JDK_RELEASE from $JDK_URL"
+  archive_check_safe "$ji_archive" || jdk_fail "$ji_work" "the archive of $JDK_RELEASE is not safe to extract"
+  archive_extract "$ji_archive" "$ji_work/x" || jdk_fail "$ji_work" "cannot extract the archive of $JDK_RELEASE"
+  rm -f "$ji_archive"
+  ji_count=0
+  ji_found=""
+  for ji_e in "$ji_work"/x/* "$ji_work"/x/.[!.]* "$ji_work"/x/..?*; do
+    if [ -e "$ji_e" ] || [ -L "$ji_e" ]; then
+      ji_count=$((ji_count + 1))
+      ji_found=$ji_e
+    fi
+  done
+  if [ "$ji_count" -ne 1 ] || [ "${ji_found##*/}" != "$JDK_RELEASE" ] || [ -L "$ji_found" ] || [ ! -d "$ji_found" ]; then
+    jdk_fail "$ji_work" "the archive of $JDK_RELEASE must hold exactly one top directory, $JDK_RELEASE (found $ji_count entries)"
+  fi
+  ji_stage=$(staging_new "$TOOLS_DIR" "$JDK_RELEASE") || jdk_fail "$ji_work" "cannot create a staging directory in $TOOLS_DIR" "$EX_STEP"
+  register_tmp "$ji_stage"
+  rmdir "$ji_stage" || jdk_fail "$ji_work" "cannot prepare the staging directory $ji_stage" "$EX_STEP"
+  mv -- "$ji_found" "$ji_stage" || jdk_fail "$ji_work" "cannot move the extracted JDK into $ji_stage" "$EX_STEP"
+  rm -rf -- "$ji_work"
+  ji_home=$(jdk_home_candidate "$ji_stage")
+  ji_why=$(jdk_valid "$ji_home") || jdk_fail "$ji_stage" "the downloaded $JDK_RELEASE is not a usable JDK: $ji_why"
+  install_commit "$ji_stage" "$ji_final" || jdk_fail "$ji_stage" "cannot move $JDK_RELEASE into place: $ji_final" "$EX_STEP"
+  JAVA_HOME_SELECTED=$(jdk_home_candidate "$ji_final")
+  log INFO jdk "installed $JDK_RELEASE in $(abbrev_home "$ji_final")"
+  prune_jdks "$TOOLS_DIR"
+  summary_set jdk "$JDK_RELEASE installed: $JAVA_HOME_SELECTED"
+  return 0
+}
+
+# jdk_select: sets JAVA_HOME_SELECTED and SUMMARY_jdk. Precedence: --java-home (invalid: dies EX_STEP), the
+# JAVA_HOME environment variable (invalid: WARN and go on), the newest valid install in TOOLS_DIR, a new install.
+jdk_select() {
+  JAVA_HOME_SELECTED=""
+  if [ -n "${OPT_JAVA_HOME:-}" ]; then
+    js_home=$(jdk_home_candidate "$OPT_JAVA_HOME")
+    js_why=$(jdk_valid "$js_home") || die "$EX_STEP" jdk "--java-home $OPT_JAVA_HOME is not a usable JDK: $js_why"
+    JAVA_HOME_SELECTED=$js_home
+    log INFO jdk "using --java-home: $(abbrev_home "$js_home")"
+    summary_set jdk "reused --java-home: $JAVA_HOME_SELECTED"
+    return 0
+  fi
+  if [ -n "${JAVA_HOME:-}" ]; then
+    js_home=$(jdk_home_candidate "$JAVA_HOME")
+    if js_why=$(jdk_valid "$js_home"); then
+      JAVA_HOME_SELECTED=$js_home
+      log INFO jdk "using JAVA_HOME: $(abbrev_home "$js_home")"
+      summary_set jdk "reused JAVA_HOME: $JAVA_HOME_SELECTED"
+      return 0
+    fi
+    log WARN jdk "JAVA_HOME $JAVA_HOME is not a usable JDK ($js_why); ignoring it"
+  fi
+  js_best=""
+  for js_d in "$TOOLS_DIR"/jdk-[0-9]*; do
+    [ -d "$js_d" ] || continue
+    js_n=${js_d##*/}
+    case "$js_n" in
+      *.tmp.* | *.old.*) continue ;;
+    esac
+    install_valid "$js_d" || {
+      log DEBUG jdk "ignoring $js_n: no .install-complete"
+      continue
+    }
+    js_why=$(jdk_valid "$(jdk_home_candidate "$js_d")") || {
+      log WARN jdk "ignoring the install $js_n: $js_why"
+      continue
+    }
+    if [ -z "$js_best" ] || jdk_newer "$js_n" "$js_best"; then
+      js_best=$js_n
+    fi
+  done
+  if [ -n "$js_best" ]; then
+    JAVA_HOME_SELECTED=$(jdk_home_candidate "$TOOLS_DIR/$js_best")
+    log INFO jdk "reusing $js_best in $(abbrev_home "$TOOLS_DIR")"
+    summary_set jdk "reused $js_best: $JAVA_HOME_SELECTED"
+    return 0
+  fi
+  jdk_install
+}
+
+# step_jdk: picks or installs the JDK that Ghidra and rea run with. Runs under the lock step_tools_bin took.
+# Sets JAVA_HOME_SELECTED and SUMMARY_jdk.
+step_jdk() {
+  jdk_select
+  log INFO jdk "ok"
+  return 0
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -1723,6 +1962,7 @@ main() {
   step_preflight
   step_prereq
   step_tools_bin
+  step_jdk
   tools_lock_release
 }
 
