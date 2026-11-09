@@ -17,6 +17,8 @@ The scenario maps a path to a list of responses, consumed in order, one per GET:
   {"status": 200, "body_file": "/abs/or/scenario-relative/file", "truncate": N}
   {"status": 302, "location": "{base}/next"}       ({base} becomes http://127.0.0.1:PORT)
   {"status": 200, "head_status": 405}               (HEAD answers 405; GET answers 200)
+  {"status": 200, "body_file": "f", "hang_after": N} (GET sends N body bytes of the promised length, then stalls
+                                                       for 30 seconds)
 A HEAD request is answered from the next unconsumed response without consuming or counting it, so a
 resolve step does not use up the responses meant for the download. A path whose list is exhausted, or
 that is not in the scenario, answers 410.
@@ -28,6 +30,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 
 class State:
@@ -77,6 +80,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if head:
             return
         cut = spec.get("truncate")
+        stall = spec.get("hang_after")
+        if stall is not None:
+            self.wfile.write(body[:stall])
+            self.wfile.flush()
+            time.sleep(30)
+            return
         self.wfile.write(body if cut is None else body[:cut])
         self.wfile.flush()
         self.close_connection = True

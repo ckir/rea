@@ -41,6 +41,7 @@ CONSOLE_LEVEL=${CONSOLE_LEVEL:-INFO}
 LOG_FILE=${LOG_FILE:-/dev/null}
 OS=""
 ARCH=""
+TMP_FILES=""
 
 usage() {
   cat <<'EOF'
@@ -131,6 +132,36 @@ run_cmd() {
   fi
   rm -f "$rc_err"
   return "$rc"
+}
+
+# --- temporary files ---
+
+# register_tmp PATH: remembers PATH (a file or a directory) for cleanup_tmp. One path per line, so a name
+# containing a newline is not supported.
+register_tmp() {
+  TMP_FILES="${TMP_FILES}${TMP_FILES:+
+}$1"
+}
+
+# cleanup_tmp: removes every registered path; safe to call again, and with an empty list. Later steps that
+# create locks or staging directories register them here rather than adding their own traps.
+cleanup_tmp() {
+  ct_list=$TMP_FILES
+  TMP_FILES=""
+  [ -n "$ct_list" ] || return 0
+  printf '%s\n' "$ct_list" | while IFS= read -r ct_path; do
+    if [ -n "$ct_path" ]; then
+      rm -rf -- "$ct_path"
+    fi
+  done
+  return 0
+}
+
+# install_traps: cleanup on normal exit and on INT and TERM (exit codes 130 and 143)
+install_traps() {
+  trap cleanup_tmp EXIT
+  trap 'cleanup_tmp; exit 130' INT
+  trap 'cleanup_tmp; exit 143' TERM
 }
 
 # log_open: creates the log directory and file, keeps the newest 20, prints the file path
@@ -376,6 +407,7 @@ ALLOWED_SCHEMES=https
 ALLOWED_HOSTS=$PIN_ALLOWED_HOSTS
 RETRY_WAITS="2 4 8 16"
 CURL="curl"
+SLEEP="sleep"
 
 # url_scheme URL: the lower-cased scheme; fails when there is no scheme://
 url_scheme() {
@@ -422,6 +454,14 @@ url_allowed() {
     fi
   done
   return 1
+}
+
+# url_path_safe URL: 1 when the URL has a dot-dot path segment (plain or percent-encoded) or a backslash
+url_path_safe() {
+  case "$1" in
+    */../* | */.. | */..\?* | *%2[eE]* | *\\*) return 1 ;;
+  esac
+  return 0
 }
 
 # net_proto: the value for curl --proto, https only unless ALLOWED_SCHEMES lists http (tests)
@@ -488,16 +528,22 @@ http_get() {
     return 1
   }
   hg_hdr=$(mktemp "${TMPDIR:-/tmp}/rea-setup-hdr.XXXXXX") || return 1
+  register_tmp "$hg_hdr"
   hg_cfg=$(mktemp "${TMPDIR:-/tmp}/rea-setup-cfg.XXXXXX") || {
     rm -f "$hg_hdr"
     return 1
   }
+  register_tmp "$hg_cfg"
   hg_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || {
     rm -f "$hg_hdr" "$hg_cfg"
     return 1
   }
+  register_tmp "$hg_err"
   if [ -n "${GITHUB_TOKEN:-}" ] && [ "$(url_host "$hg_url")" = api.github.com ]; then
-    printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" >"$hg_cfg"
+    case "$GITHUB_TOKEN" in
+      *[!A-Za-z0-9_.-]*) log WARN net "GITHUB_TOKEN ignored: unexpected characters" ;;
+      *) printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" >"$hg_cfg" ;;
+    esac
   fi
   hg_total=0
   for hg_w in $RETRY_WAITS; do
@@ -508,6 +554,7 @@ http_get() {
   for hg_wait in $RETRY_WAITS; do
     hg_attempt=$((hg_attempt + 1))
     hg_rc=0
+    : >"$hg_hdr"
     hg_code=$("$CURL" -sS -K "$hg_cfg" --proto "$(net_proto)" --tlsv1.2 --speed-limit 1024 --speed-time 60 \
       --connect-timeout 20 -D "$hg_hdr" -o "$hg_dest" -w '%{http_code}' "$@" "$hg_url" 2>"$hg_err") || hg_rc=$?
     log DEBUG net "GET $hg_url -> ${hg_code:-000} (curl exit $hg_rc, attempt $hg_attempt of $hg_total)"
@@ -533,14 +580,17 @@ http_get() {
     [ "$hg_retry" -eq 1 ] || break
     [ "$hg_attempt" -lt "$hg_total" ] || break
     hg_ra=$(sed -n 's/^[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$hg_hdr" | tail -n 1)
-    if [ -n "$hg_ra" ] && [ "$hg_ra" -gt "$hg_wait" ]; then
+    if [ "${#hg_ra}" -gt 6 ]; then
+      hg_ra=""
+    fi
+    if [ -n "$hg_ra" ] && [ "$hg_ra" -gt "$hg_wait" ] 2>/dev/null; then
       hg_wait=$hg_ra
     fi
     if [ "$hg_wait" -gt 120 ]; then
       hg_wait=120
     fi
     log DEBUG net "retrying in ${hg_wait}s"
-    sleep "$hg_wait"
+    "$SLEEP" "$hg_wait"
   done
   rm -f "$hg_hdr" "$hg_cfg" "$hg_err"
   if [ "$hg_result" -ne 0 ]; then
@@ -578,6 +628,7 @@ download_verified() {
     return 1
   }
   dv_tmp="$2.tmp.$$"
+  register_tmp "$dv_tmp"
   http_get "$dv_final" "$dv_tmp" || {
     rm -f "$dv_tmp"
     return 1
@@ -663,6 +714,10 @@ adoptium_parse() {
     return 1
   }
   url_allowed "$JDK_URL" || return 1
+  url_path_safe "$JDK_URL" || {
+    log ERROR net "unexpected JDK download path: $JDK_URL"
+    return 1
+  }
   [ "$(url_host "$JDK_URL")" = github.com ] || return 1
   case "${JDK_URL#*://*/}" in
     adoptium/temurin21-binaries/?*) ;;
@@ -675,6 +730,7 @@ adoptium_parse() {
   printf '%s\n' "$JDK_BYTES" | grep -Eq '^[0-9]+$' || return 1
   if [ -n "$JDK_SIDECAR_URL" ]; then
     url_allowed "$JDK_SIDECAR_URL" || return 1
+    url_path_safe "$JDK_SIDECAR_URL" || return 1
   fi
   return 0
 }
@@ -710,6 +766,7 @@ log_config() {
 
 main() {
   unset UNAME_S UNAME_M
+  install_traps
   parse_args "$@"
   CONSOLE_LEVEL=$OPT_CONSOLE_LEVEL
   LOG_FILE=$(log_open)

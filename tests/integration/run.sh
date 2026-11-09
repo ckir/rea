@@ -30,8 +30,8 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 # The fake server and curl both stay on loopback; ignore any proxy configured for this machine.
-NO_PROXY=127.0.0.1
-no_proxy=127.0.0.1
+NO_PROXY=127.0.0.1,api.github.com
+no_proxy=127.0.0.1,api.github.com
 export NO_PROXY no_proxy
 
 # Payloads: 4096 bytes of text; its checksum is the oracle for the download scenarios.
@@ -61,6 +61,13 @@ cat >"$TMP/scenario.json" <<JSON
   "/i0": [{"status": 302, "location": "{base}/i1"}],
   "/i1": [{"status": 302, "location": "{base}/i2"}],
   "/i2": [{"status": 200, "body_file": "payload.bin"}],
+  "/k0": [{"status": 302, "location": "{base}/k1"}],
+  "/k1": [{"status": 302, "location": "{base}/k2"}],
+  "/k2": [{"status": 302, "location": "{base}/k3"}],
+  "/k3": [{"status": 302, "location": "{base}/k4"}],
+  "/k4": [{"status": 302, "location": "{base}/k5"}],
+  "/k5": [{"status": 200, "body_file": "payload.bin"}],
+  "/slow": [{"status": 200, "body_file": "payload.bin", "hang_after": 100}, {"status": 200, "body_file": "payload.bin", "hang_after": 100}],
   "/j": [{"status": 200, "body_file": "payload.bin"}, {"status": 200, "body_file": "payload.bin"}]
 }
 JSON
@@ -84,9 +91,15 @@ BASE=http://127.0.0.1:$PORT
 ALLOWED_SCHEMES="https http"
 ALLOWED_HOSTS="127.0.0.1"
 RETRY_WAITS="0 0 0 0"
+SLEEP=rec_sleep
 LOG_FILE=$TMP/log
 CONSOLE_LEVEL=ERROR
-log DEBUG test "server $BASE schemes=$ALLOWED_SCHEMES hosts=$ALLOWED_HOSTS waits=$RETRY_WAITS console=$CONSOLE_LEVEL log=$LOG_FILE"
+log DEBUG test "server $BASE schemes=$ALLOWED_SCHEMES hosts=$ALLOWED_HOSTS waits=$RETRY_WAITS sleep=$SLEEP console=$CONSOLE_LEVEL log=$LOG_FILE"
+
+# rec_sleep N: records the pause (what http_get decided to wait) instead of taking it
+rec_sleep() {
+  echo "$1" >>"$TMP/sleeps"
+}
 
 # others DIR NAME: lists what is in DIR besides NAME (a glob, so odd file names are safe)
 others() {
@@ -129,12 +142,11 @@ assert_eq 1 "$(http_get_rc "$BASE/b" "$TMP/b.out")" "b: returns 1"
 assert_eq 4 "$(count_of /b)" "b: four requests"
 scenario_end
 
-# (c) 429 with Retry-After: 1 then 200: honoured
+# (c) 429 with Retry-After: 1 then 200: the pause is the server's value (recorded, not slept)
 scenario_start "c Retry-After honoured"
-c_start=$(date +%s)
+: >"$TMP/sleeps"
 assert_status 0 "c: http_get" http_get "$BASE/c" "$TMP/c.out"
-c_elapsed=$(($(date +%s) - c_start))
-assert_eq 1 "$([ "$c_elapsed" -ge 1 ] && echo 1 || echo 0)" "c: waited at least 1s (took ${c_elapsed}s)"
+assert_eq "1" "$(cat "$TMP/sleeps")" "c: one pause of 1 second"
 assert_eq 2 "$(count_of /c)" "c: two requests"
 scenario_end
 
@@ -181,6 +193,11 @@ assert_eq "$BASE/i2" "$(resolve_redirects "$BASE/i0" 2>/dev/null)" "i: final URL
 assert_eq 0 "$(count_of /i2)" "i: the final body was never fetched"
 scenario_end
 
+# (k) exactly five redirects is allowed (six, in scenario f, is not)
+scenario_start "k five redirects resolve"
+assert_eq "$BASE/k5" "$(resolve_redirects "$BASE/k0" 2>/dev/null)" "k: final URL after 5 hops"
+scenario_end
+
 # (j) download_verified: right checksum installs the file (upper case accepted), wrong one removes it
 scenario_start "j checksum verification"
 mkdir "$TMP/jj"
@@ -191,6 +208,67 @@ assert_eq "$PAYLOAD_SHA" "$(sha256_file "$TMP/jj/ok")" "j: content"
 assert_eq "" "$(others "$TMP/jj" ok)" "j: no temporary left"
 assert_status 1 "j: wrong checksum" download_verified "$BASE/j" "$TMP/jj/bad" "0000000000000000000000000000000000000000000000000000000000000000"
 assert_eq "" "$(others "$TMP/jj" ok)" "j: wrong checksum leaves nothing"
+scenario_end
+
+# (l) SIGTERM during a transfer leaves nothing behind, token-bearing curl config included.
+# The child sources setup.sh, installs the traps and starts the transfer against a response that stalls after
+# 100 bytes; api.github.com is mapped to the fake server with --resolve so the token is really written.
+mkdir "$TMP/priv" "$TMP/sig1" "$TMP/sig2"
+cat >"$TMP/child.sh" <<'CHILD'
+. "$1/setup.sh"
+ALLOWED_SCHEMES="https http"
+ALLOWED_HOSTS="127.0.0.1 api.github.com"
+RETRY_WAITS="0 0 0 0"
+LOG_FILE=/dev/null
+install_traps
+case "$2" in
+  http_get) register_tmp "$4/out" && GITHUB_TOKEN=ghp_SigtermTestToken0123 http_get "http://api.github.com:$3/slow" "$4/out" --resolve "api.github.com:$3:127.0.0.1" ;;
+  download) download_verified "http://127.0.0.1:$3/slow" "$4/file" 0000000000000000000000000000000000000000000000000000000000000000 ;;
+esac
+exit 0
+CHILD
+
+# sigterm_case MODE DESTDIR PATTERN: runs the child, waits for PATTERN (a file curl writes once the transfer is running), SIGTERMs
+sigterm_case() {
+  TMPDIR=$TMP/priv sh "$TMP/child.sh" "$ROOT" "$1" "$PORT" "$2" >/dev/null 2>&1 &
+  sg_pid=$!
+  sg_tries=0
+  sg_seen=""
+  while [ -z "$sg_seen" ] && [ "$sg_tries" -lt 100 ]; do
+    for sg_f in $3; do
+      [ -e "$sg_f" ] && sg_seen=$sg_f
+    done
+    [ -n "$sg_seen" ] || sleep 0.1
+    sg_tries=$((sg_tries + 1))
+  done
+  SG_SEEN=$sg_seen
+  SG_PRIV=$(others "$TMP/priv" '')
+  # Like a terminal's Ctrl-C reaching the whole group: the shell first (its trap waits for the transfer),
+  # then the transfer processes under it.
+  sg_kids=""
+  for sg_k in $(pgrep -P "$sg_pid"); do
+    sg_kids="$sg_kids $sg_k $(pgrep -P "$sg_k")"
+  done
+  kill -TERM "$sg_pid" 2>/dev/null
+  for sg_k in $sg_kids; do kill -TERM "$sg_k" 2>/dev/null; done
+  SG_RC=0
+  wait "$sg_pid" || SG_RC=$?
+}
+
+scenario_start "l SIGTERM during http_get with a token"
+sigterm_case http_get "$TMP/sig1" "$TMP/sig1/out"
+assert_match 'rea-setup-cfg' "$SG_PRIV" "l: the token-bearing config existed while the transfer ran"
+assert_eq 143 "$SG_RC" "l: the child exited 143"
+assert_eq "" "$(others "$TMP/priv" '')" "l: nothing left in TMPDIR"
+assert_eq "" "$(others "$TMP/sig1" '')" "l: nothing left at the destination"
+scenario_end
+
+scenario_start "m SIGTERM during download_verified"
+sigterm_case download "$TMP/sig2" "$TMP/sig2/file.tmp.*"
+assert_match 'file\.tmp\.' "$SG_SEEN" "m: the partial download existed while the transfer ran"
+assert_eq 143 "$SG_RC" "m: the child exited 143"
+assert_eq "" "$(others "$TMP/priv" '')" "m: nothing left in TMPDIR"
+assert_eq "" "$(others "$TMP/sig2" '')" "m: no DEST and no DEST.tmp.*"
 scenario_end
 
 t_done

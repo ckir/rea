@@ -24,6 +24,8 @@ assert_status 1 "backslash refused" url_allowed 'https://github.com\@evil.exampl
 assert_status 1 "no scheme refused" url_allowed github.com/x
 assert_status 0 "uppercase host allowed" url_allowed HTTPS://GitHub.com/x
 assert_status 0 "port allowed" url_allowed https://github.com:443/x
+assert_status 1 "trailing-dot host refused" url_allowed https://github.com./x
+assert_status 0 "upper-case host allowed" url_allowed https://GITHUB.com/x
 assert_status 1 "suffix host refused" url_allowed https://github.com.evil.example/x
 assert_eq api.github.com "$(url_host 'https://api.github.com/repos/a/b?x=1')" "url_host"
 assert_eq github.com "$(url_host 'https://u:p@GitHub.com:8443/x')" "url_host strips userinfo, port and case"
@@ -71,8 +73,10 @@ printf '[]\n' >"$TMP/empty.json"
 assert_status 1 "adoptium empty list" adoptium_parse "$TMP/empty.json"
 
 # --- stub CURL: a function standing in for the curl binary ---
-# Answers from the file named by STUB_PLAN (one "code[:exit]" per call), writes the request count to
-# STUB_COUNT, copies the -K config file (where the Authorization header goes) to STUB_CFG and the URL to STUB_URL.
+# Answers from the file named by STUB_PLAN (one "code[:exit[:retry-after]]" per call), writes the request count
+# to STUB_COUNT, copies the -K config file (where the Authorization header goes) to STUB_CFG and the URL to
+# STUB_URL. A call that exits non-zero writes no header file, like curl failing before any response.
+# STUB_BODY, when set, is the file copied to the -o target.
 stub_curl() {
   sc_n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0)
   sc_n=$((sc_n + 1))
@@ -100,26 +104,43 @@ stub_curl() {
   echo "$1" >"$STUB_URL"
   if [ -n "$sc_cfg" ]; then cat "$sc_cfg" >"$STUB_CFG"; fi
   sc_line=$(sed -n "${sc_n}p" "$STUB_PLAN")
-  sc_code=${sc_line%%:*}
-  sc_rc=0
-  case "$sc_line" in *:*) sc_rc=${sc_line#*:} ;; esac
-  [ -n "$sc_hdr" ] && printf 'HTTP/1.1 %s\r\nRetry-After: 0\r\n\r\n' "$sc_code" >"$sc_hdr"
-  [ -n "$sc_out" ] && echo body >"$sc_out"
+  sc_code="" sc_rc="" sc_ra=""
+  IFS=: read -r sc_code sc_rc sc_ra <<EOF
+$sc_line
+EOF
+  sc_rc=${sc_rc:-0}
+  if [ "$sc_rc" -eq 0 ] && [ -n "$sc_hdr" ]; then
+    {
+      printf 'HTTP/1.1 %s\r\n' "$sc_code"
+      if [ -n "$sc_ra" ]; then printf 'Retry-After: %s\r\n' "$sc_ra"; fi
+      printf '\r\n'
+    } >"$sc_hdr"
+  fi
+  if [ -n "$sc_out" ]; then
+    if [ -n "${STUB_BODY:-}" ]; then cp "$STUB_BODY" "$sc_out"; else echo body >"$sc_out"; fi
+  fi
   printf '%s' "$sc_code"
   return "$sc_rc"
+}
+# stub_sleep N: records the pause instead of taking it
+stub_sleep() {
+  echo "$1" >>"$STUB_SLEEPS"
 }
 STUB_COUNT=$TMP/stub.count
 STUB_CFG=$TMP/stub.cfg
 STUB_URL=$TMP/stub.url
 STUB_PLAN=$TMP/stub.plan
+STUB_SLEEPS=$TMP/stub.sleeps
+SLEEP=stub_sleep
 CURL=stub_curl
 RETRY_WAITS="0 0 0 0"
 LOG_FILE=$TMP/log
 CONSOLE_LEVEL=ERROR
-log DEBUG test "stub transport: curl=$CURL waits=$RETRY_WAITS console=$CONSOLE_LEVEL"
+log DEBUG test "stub transport: curl=$CURL waits=$RETRY_WAITS console=$CONSOLE_LEVEL sleep=$SLEEP"
 
 stub_reset() {
-  rm -f "$STUB_COUNT" "$STUB_CFG" "$STUB_URL" "$LOG_FILE"
+  rm -f "$STUB_COUNT" "$STUB_CFG" "$STUB_URL" "$STUB_SLEEPS" "$LOG_FILE"
+  STUB_BODY=""
   printf '%s\n' "$@" >"$STUB_PLAN"
 }
 
@@ -164,4 +185,110 @@ stub_reset 200
 GITHUB_TOKEN=$tok http_get 'https://api.github.com/x?access_token=Zq9' "$TMP/out" 2>/dev/null
 assert_eq 0 "$(grep -c 'Zq9' "$LOG_FILE")" "query string absent from the log"
 
+# --- Retry-After handling: the recorded pauses ---
+sleeps() { tr '\n' ' ' <"$STUB_SLEEPS" 2>/dev/null | sed 's/ $//'; }
+RETRY_WAITS="3 3"
+stub_reset 503 200
+http_get https://github.com/a "$TMP/out"
+assert_eq "3" "$(sleeps)" "no Retry-After: base wait"
+stub_reset 503::1 200
+http_get https://github.com/a "$TMP/out"
+assert_eq "3" "$(sleeps)" "Retry-After below the base wait: base wait"
+stub_reset 503::10 200
+http_get https://github.com/a "$TMP/out"
+assert_eq "10" "$(sleeps)" "Retry-After above the base wait is honoured"
+stub_reset 503::500 200
+http_get https://github.com/a "$TMP/out"
+assert_eq "120" "$(sleeps)" "Retry-After capped at 120"
+stub_reset 503::99999999999999999999 200
+assert_eq "" "$(http_get https://github.com/a "$TMP/out" 2>&1)" "overflowing Retry-After prints nothing"
+stub_reset 503::99999999999999999999 200
+http_get https://github.com/a "$TMP/out" 2>/dev/null
+assert_eq "3" "$(sleeps)" "overflowing Retry-After: base wait"
+stub_reset 503::abc 200
+http_get https://github.com/a "$TMP/out" 2>/dev/null
+assert_eq "3" "$(sleeps)" "non-numeric Retry-After: base wait"
+RETRY_WAITS="0 0 0"
+stub_reset 503::7 000:7 200
+http_get https://github.com/a "$TMP/out"
+assert_eq "7 0" "$(sleeps)" "a stale header file is not reused by the next attempt"
+RETRY_WAITS="0 0 0 0"
+
+# --- GITHUB_TOKEN must be plain token characters ---
+for badtok in 'abc"def' 'abc def' 'abc
+header = "X-Evil: 1"' 'abc\def' "abc\$def"; do
+  stub_reset 200
+  GITHUB_TOKEN=$badtok http_get https://api.github.com/x "$TMP/out" 2>/dev/null
+  assert_eq "" "$(cat "$STUB_CFG" 2>/dev/null)" "unsafe token is not sent"
+  assert_match 'GITHUB_TOKEN ignored: unexpected characters' "$(cat "$LOG_FILE")" "unsafe token warned about"
+  assert_eq 0 "$(grep -c 'Evil' "$LOG_FILE")" "unsafe token value not logged"
+done
+stub_reset 200
+GITHUB_TOKEN=github_pat_11AA-bb.cc_DD http_get https://api.github.com/x "$TMP/out"
+assert_match 'Bearer github_pat_11AA-bb.cc_DD' "$(cat "$STUB_CFG")" "fine-grained token shape is sent"
+
+# --- adoptium_parse refuses a dot-dot path segment ---
+sed 's#temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",#temurin21-binaries/../../evil/releases/x.tar.gz",#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot.json"
+assert_status 1 "adoptium dot-dot in link" adoptium_parse "$TMP/dotdot.json"
+sed 's#temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",#temurin21-binaries/%2e%2e/evil/x.tar.gz",#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot2.json"
+assert_status 1 "adoptium encoded dot-dot in link" adoptium_parse "$TMP/dotdot2.json"
+sed 's#temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sha256.txt#temurin21-binaries/../x.sha256.txt#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot3.json"
+assert_status 1 "adoptium dot-dot in sidecar link" adoptium_parse "$TMP/dotdot3.json"
+
+# --- GitHub parsing halves, offline ---
+stub_tag_curl() { printf '%s' "$STUB_LOCATION"; }
+CURL=stub_tag_curl
+STUB_LOCATION=https://github.com/ckir/clavity/releases/tag/clavity-v31
+assert_eq clavity-v31 "$(github_latest_tag ckir/clavity)" "latest tag from redirect"
+STUB_LOCATION=https://github.com/ckir/clavity/releases
+assert_status 1 "no tag in redirect" github_latest_tag ckir/clavity
+STUB_LOCATION=""
+assert_status 1 "no redirect" github_latest_tag ckir/clavity
+CURL=stub_curl
+stub_reset 200
+STUB_BODY=$FIX/github-release-clavity.json
+assert_eq "clavity-ls-linux-x64-0.17.0.tar.gz
+clavity-ls-linux-x64-0.17.0.tar.gz.sha256
+clavity-ls-win-x64-0.17.0.tar.gz
+clavity-ls-win-x64-0.17.0.tar.gz.sha256" "$(github_release_assets ckir/clavity)" "release assets from the API fixture"
+assert_match 'repos/ckir/clavity/releases/latest$' "$(cat "$STUB_URL")" "API URL"
+cat >"$TMP/expanded.html" <<'HTML'
+<a href="/ckir/clavity/releases/download/clavity-v31/clavity-ls-win-x64-0.17.0.tar.gz" rel="nofollow">x</a>
+<a href="/ckir/clavity/releases/download/clavity-v31/clavity-ls-win-x64-0.17.0.tar.gz.sha256" rel="nofollow">y</a>
+<a href="/ckir/clavity/releases/download/clavity-v30/old.tar.gz">z</a>
+<a href="/other/repo/releases/download/clavity-v31/foreign.tar.gz">w</a>
+HTML
+stub_reset 200
+STUB_BODY=$TMP/expanded.html
+assert_eq "clavity-ls-win-x64-0.17.0.tar.gz
+clavity-ls-win-x64-0.17.0.tar.gz.sha256" "$(github_release_assets_scrape ckir/clavity clavity-v31)" "scraped assets: this repo and tag only"
+stub_reset 404
+assert_status 1 "assets API failure" github_release_assets ckir/clavity
+
+# --- temp-file registry ---
+TMP_FILES=""
+mkdir "$TMP/reg" "$TMP/reg/dir with space"
+: >"$TMP/reg/plain"
+: >"$TMP/reg/with space.tmp.1"
+: >"$TMP/reg/dir with space/inner"
+register_tmp "$TMP/reg/plain"
+register_tmp "$TMP/reg/with space.tmp.1"
+register_tmp "$TMP/reg/dir with space"
+register_tmp "$TMP/reg/never-created"
+: >"$TMP/reg/keep"
+cleanup_tmp
+assert_eq "keep" "$(ls "$TMP/reg")" "cleanup_tmp removes registered paths, including a name with a space, and nothing else"
+assert_status 0 "cleanup_tmp is idempotent" cleanup_tmp
+assert_eq "" "$TMP_FILES" "registry emptied"
+cleanup_tmp
+assert_status 0 "empty registry is fine" cleanup_tmp
+
+# http_get registers its private files (the token-bearing config among them)
+TMPDIR=$TMP/priv
+mkdir "$TMPDIR"
+stub_reset 200
+http_get https://github.com/a "$TMP/out"
+assert_match 'rea-setup-cfg\.' "$TMP_FILES" "http_get registers its curl config"
+cleanup_tmp
+assert_eq "" "$(ls "$TMPDIR")" "nothing left in TMPDIR"
 t_done
