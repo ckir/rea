@@ -2687,6 +2687,230 @@ function Invoke-ReaStepProfile {
     Write-ReaLog INFO profile 'ok'
 }
 
+# --- steps rea-setup and rea-doctor ---
+
+$script:HintReaGhidraLine = 'rea 6.8.0 accepts Ghidra 12.1.x; if rea now requires another line, update the pins block (PIN_GHIDRA_*)'
+$script:NoteMacDecompiler = 'build it as rea docs/installation.md describes (sections "Missing macOS native decompiler" and "macOS arm64 native decompiler")'
+$script:ReaEnvironmentNames = @('CLAUDE_CONFIG_DIR', 'GHIDRA_INSTALL_DIR', 'JAVA_HOME')
+
+# True when Text is a JSON object; Doc receives it.
+function Test-ReaJsonObject {
+    param([AllowEmptyString()][string]$Json, [ref]$Doc)
+    $parsed = $null
+    try {
+        if ($Json -and $Json.Trim()) { $parsed = ConvertFrom-Json -InputObject $Json }
+    } catch {
+        $parsed = $null
+    }
+    if ($parsed -is [System.Management.Automation.PSCustomObject]) {
+        if ($null -ne $Doc) { $Doc.Value = $parsed }
+        return $true
+    }
+    return $false
+}
+
+# Stops with exit 1 unless the profile directory, the Ghidra directory and the JDK are known and the profile
+# directory is not the shared .claude (defence in depth: the setup must never write there).
+function Assert-ReaEnvironmentReady {
+    param([string]$Step)
+    if (-not $script:ClaudeConfigDirSelected) {
+        Stop-Rea -Code $script:EX_STEP -Step $Step -Message 'no profile directory was selected (ClaudeConfigDirSelected is empty)'
+    }
+    if (Test-ReaProfileDirShared -Dir $script:ClaudeConfigDirSelected) {
+        Stop-Rea -Code $script:EX_STEP -Step $Step -Message "refusing to run rea with the shared Claude directory: $($script:ClaudeConfigDirSelected)"
+    }
+    if (-not $script:GhidraDirSelected) {
+        Stop-Rea -Code $script:EX_STEP -Step $Step -Message 'no Ghidra directory was selected (GhidraDirSelected is empty)'
+    }
+    if (-not $script:JavaHomeSelected) {
+        Stop-Rea -Code $script:EX_STEP -Step $Step -Message 'no JDK was selected (JavaHomeSelected is empty)'
+    }
+}
+
+# Runs `npx -y <PIN_REA_SPEC> ArgumentList` with CLAUDE_CONFIG_DIR, GHIDRA_INSTALL_DIR and JAVA_HOME set for that
+# child only: the environment variables are set, the child runs, and the previous values (absent included) come
+# back in finally. Returns what Invoke-ReaCommand returns.
+function Invoke-ReaEnvironmentCommand {
+    param([string]$Step, [string[]]$ArgumentList = @())
+    $exe = Resolve-ReaExecutable -Name 'npx'
+    if (-not $exe) {
+        Stop-Rea -Code $script:EX_PREREQ -Step $Step -Message "npx not found; it ships with Node; $script:HintNode"
+    }
+    $values = @{
+        'CLAUDE_CONFIG_DIR'  = $script:ClaudeConfigDirSelected
+        'GHIDRA_INSTALL_DIR' = $script:GhidraDirSelected
+        'JAVA_HOME'          = $script:JavaHomeSelected
+    }
+    $saved = @{}
+    foreach ($name in $script:ReaEnvironmentNames) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+    try {
+        foreach ($name in $script:ReaEnvironmentNames) {
+            [Environment]::SetEnvironmentVariable($name, [string]$values[$name], 'Process')
+        }
+        return (Invoke-ReaCommand -Step $Step -FilePath $exe -ArgumentList (@('-y', $script:PIN_REA_SPEC) + $ArgumentList))
+    } finally {
+        foreach ($name in $script:ReaEnvironmentNames) {
+            if ($null -eq $saved[$name]) {
+                Remove-Item -LiteralPath "Env:\$name" -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable($name, [string]$saved[$name], 'Process')
+            }
+        }
+    }
+}
+
+# True only for the boolean true: PowerShell compares the string 'true' equal to $true, JSON "true" is not true.
+function Test-ReaJsonTrue {
+    param($Value)
+    return (($Value -is [bool]) -and $Value)
+}
+
+# True when the doctor answer has healthy true; false, a missing field and text that is not a JSON object are all false.
+function Test-ReaDoctorHealthy {
+    param([AllowEmptyString()][string]$Json)
+    $doc = $null
+    if (-not (Test-ReaJsonObject -Json $Json -Doc ([ref]$doc))) { return $false }
+    return (Test-ReaJsonTrue $doc.healthy)
+}
+
+# The names of the scope_checks of a doctor answer whose ok is not true.
+function Get-ReaDoctorFailing {
+    param([AllowEmptyString()][string]$Json)
+    $doc = $null
+    if (-not (Test-ReaJsonObject -Json $Json -Doc ([ref]$doc))) { return @() }
+    return @(@($doc.scope_checks) | Where-Object { $null -ne $_ -and -not (Test-ReaJsonTrue $_.ok) } | ForEach-Object { [string]$_.name })
+}
+
+# The ghidra provider of a doctor answer: Available (bool), Version ('-' when there is none) and Failing (the names
+# of its checks whose ok is not true). A missing ghidra provider is unavailable with the check name
+# ghidra_provider_missing; text that is not a JSON object gives $null.
+function Get-ReaGhidraStatus {
+    param([AllowEmptyString()][string]$Json)
+    $doc = $null
+    if (-not (Test-ReaJsonObject -Json $Json -Doc ([ref]$doc))) { return $null }
+    $provider = @($doc.providerInspections) | Where-Object { $null -ne $_ -and $_.id -eq 'ghidra' } | Select-Object -First 1
+    if ($null -eq $provider) {
+        return [pscustomobject]@{ Available = $false; Version = '-'; Failing = @('ghidra_provider_missing') }
+    }
+    $version = '-'
+    if ($provider.providerVersion) { $version = [string]$provider.providerVersion }
+    $failing = @(@($provider.checks) | Where-Object { $null -ne $_ -and -not (Test-ReaJsonTrue $_.ok) } | ForEach-Object { [string]$_.name })
+    return [pscustomobject]@{ Available = (Test-ReaJsonTrue $provider.available); Version = $version; Failing = $failing }
+}
+
+# rea doctor ArgumentList through Invoke-ReaEnvironmentCommand. Exit 0 and 1 (unhealthy) are both answers; any other
+# exit code, and an answer that is not a JSON object, stop with exit 5 and the end of stderr. Returns the text.
+function Invoke-ReaDoctorRun {
+    param([string]$Step, [string[]]$ArgumentList)
+    $run = Invoke-ReaEnvironmentCommand -Step $Step -ArgumentList (@('doctor') + $ArgumentList)
+    $tail = [string]$run.Stderr
+    if ($tail.Length -gt 1000) { $tail = $tail.Substring($tail.Length - 1000) }
+    $tail = $tail.Trim()
+    $label = 'rea doctor ' + ($ArgumentList -join ' ')
+    $unused = $null
+    if ($run.ExitCode -ne 0 -and $run.ExitCode -ne 1) {
+        Stop-Rea -Code $script:EX_VERIFY -Step $Step -Message "$label exited $($run.ExitCode): $tail"
+    }
+    if (-not (Test-ReaJsonObject -Json ([string]$run.Stdout) -Doc ([ref]$unused))) {
+        Stop-Rea -Code $script:EX_VERIFY -Step $Step -Message "$label printed output that is not a JSON object (exit $($run.ExitCode)): $tail"
+    }
+    return [string]$run.Stdout
+}
+
+# Registers rea in the profile with `rea setup`. A dry run of rea first (stdout at DEBUG), then the real setup unless
+# -DryRun; the profile's .claude.json must then hold mcpServers.rea. It never touches the .claude.json of the home
+# directory: CLAUDE_CONFIG_DIR points rea at the profile.
+function Invoke-ReaStepReaSetup {
+    if ($script:Opt.CheckUpstream) {
+        Write-ReaLog INFO rea-setup 'skip (-CheckUpstream)'
+        $script:Summary['rea_setup'] = 'skipped: -CheckUpstream'
+        return
+    }
+    if ($script:Opt.DryRun -and (-not $script:ClaudeConfigDirSelected -or -not $script:GhidraDirSelected -or -not $script:JavaHomeSelected)) {
+        Write-ReaLog INFO rea-setup 'skip (read-only run: no profile, Ghidra or JDK was selected, so rea has no environment to run in)'
+        $script:Summary['rea_setup'] = 'skipped: read-only run'
+        return
+    }
+    Assert-ReaEnvironmentReady -Step rea-setup
+    $dry = Invoke-ReaEnvironmentCommand -Step rea-setup -ArgumentList @('setup', '--client', 'claude_code', '--dry-run')
+    $out = [string]$dry.Stdout
+    if ($out.Length -gt 4000) { $out = $out.Substring(0, 4000) }
+    Write-ReaLog DEBUG rea-setup ('rea setup dry-run output: ' + $out.Trim())
+    if ($dry.ExitCode -ne 0) {
+        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "rea setup --dry-run exited $($dry.ExitCode): $(([string]$dry.Stderr).Trim())"
+    }
+    if ($script:Opt.DryRun) {
+        Write-ReaLog INFO rea-setup ('skip (read-only run): rea setup would register rea in ' + (Get-ReaShortPath $script:ClaudeConfigDirSelected))
+        $script:Summary['rea_setup'] = 'not run: read-only run'
+        return
+    }
+    $setupArgs = @('setup', '--client', 'claude_code', '--yes')
+    if ($script:Opt.InstallHopper) { $setupArgs += '--install-hopper' }
+    $run = Invoke-ReaEnvironmentCommand -Step rea-setup -ArgumentList $setupArgs
+    if ($run.ExitCode -ne 0) {
+        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "rea setup exited $($run.ExitCode): $(([string]$run.Stderr).Trim())"
+    }
+    $cfg = Join-Path $script:ClaudeConfigDirSelected '.claude.json'
+    if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) {
+        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "rea setup left no .claude.json in $($script:ClaudeConfigDirSelected)"
+    }
+    $doc = $null
+    $registered = $false
+    if (Test-ReaJsonObject -Json ([System.IO.File]::ReadAllText($cfg)) -Doc ([ref]$doc)) {
+        $registered = ($null -ne $doc.mcpServers) -and ($doc.mcpServers.rea -is [System.Management.Automation.PSCustomObject])
+    }
+    if (-not $registered) {
+        Stop-Rea -Code $script:EX_STEP -Step rea-setup -Message "$cfg has no mcpServers.rea after rea setup"
+    }
+    $script:Summary['rea_setup'] = "registered rea in $($script:ClaudeConfigDirSelected)"
+    Write-ReaLog INFO rea-setup 'ok'
+}
+
+# rea doctor for the client scope (healthy, else exit 5 naming the failing scope_checks), then for the ghidra provider.
+# A Ghidra that is not available is exit 5, except on macOS when only native_decompiler fails: that is a WARN with the
+# recipe pointer and a warn summary (the official archive has no macOS native decompiler), reported on every run.
+# Skipped by -DryRun and -CheckUpstream.
+function Invoke-ReaStepReaDoctor {
+    if ($script:Opt.CheckUpstream) {
+        Write-ReaLog INFO rea-doctor 'skip (-CheckUpstream)'
+        $script:Summary['rea_doctor'] = 'skipped: -CheckUpstream'
+        return
+    }
+    if ($script:Opt.DryRun) {
+        Write-ReaLog INFO rea-doctor 'skip (-DryRun): nothing was registered to check'
+        $script:Summary['rea_doctor'] = 'skipped: -DryRun'
+        return
+    }
+    Assert-ReaEnvironmentReady -Step rea-doctor
+    $client = Invoke-ReaDoctorRun -Step rea-doctor -ArgumentList @('--client', 'claude_code', '--skill', '--json')
+    if (-not (Test-ReaDoctorHealthy -Json $client)) {
+        $names = (Get-ReaDoctorFailing -Json $client) -join ' '
+        if (-not $names) { $names = 'none listed (healthy is not true)' }
+        Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea doctor reports the Claude Code setup unhealthy; failing checks: $names"
+    }
+    $ghidra = Invoke-ReaDoctorRun -Step rea-doctor -ArgumentList @('--provider', 'ghidra', '--json')
+    $status = Get-ReaGhidraStatus -Json $ghidra
+    $names = ($status.Failing -join ',')
+    Write-ReaLog DEBUG rea-doctor ("ghidra provider: available={0} version={1} failing={2}" -f $status.Available, $status.Version, $names)
+    if ($status.Available) {
+        $script:Summary['rea_doctor'] = "ok: ghidra $($status.Version)"
+        Write-ReaLog INFO rea-doctor 'ok'
+        return
+    }
+    if (([string](Get-ReaPlatform).Os) -eq 'mac' -and $names -eq 'native_decompiler') {
+        Write-ReaLog WARN rea-doctor "rea reports the native decompiler of $($script:GhidraDirSelected) missing; $script:NoteMacDecompiler. rea cannot decompile until then; continuing"
+        $script:Summary['rea_doctor'] = "warn: ghidra installed but not usable by rea until the native decompiler is built ($($script:GhidraDirSelected))"
+        return
+    }
+    if ($status.Failing -contains 'version') {
+        Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea reports the Ghidra provider unavailable; failing checks: $names. $script:HintReaGhidraLine"
+    }
+    if (-not $names) { $names = 'none listed' }
+    Stop-Rea -Code $script:EX_VERIFY -Step rea-doctor -Message "rea reports the Ghidra provider unavailable; failing checks: $names"
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -2740,6 +2964,8 @@ function Invoke-Main {
         Invoke-ReaStepGhidra
         Unlock-ReaToolsDir
         Invoke-ReaStepProfile
+        Invoke-ReaStepReaSetup
+        Invoke-ReaStepReaDoctor
         return $script:EX_OK
     } catch {
         $code = $_.Exception.Data['ReaCode']

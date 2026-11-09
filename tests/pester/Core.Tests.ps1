@@ -372,7 +372,7 @@ Describe 'Invoke-Main' {
         }
     }
 
-    It 'runs preflight, prereq, tools-bin, jdk, ghidra, the lock release and profile and writes one log file (steps mocked, same on every OS)' {
+    It 'runs preflight, prereq, tools-bin, jdk, ghidra, the lock release, profile, rea-setup and rea-doctor and writes one log file (steps mocked, same on every OS)' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         $savedLogDir = $script:Opt.LogDir
         $savedLog = $script:LogFile
@@ -386,8 +386,10 @@ Describe 'Invoke-Main' {
             Mock Invoke-ReaStepGhidra { $script:Calls.Add('ghidra') }
             Mock Unlock-ReaToolsDir { $script:Calls.Add('unlock') }
             Mock Invoke-ReaStepProfile { $script:Calls.Add('profile') }
+            Mock Invoke-ReaStepReaSetup { $script:Calls.Add('rea-setup') }
+            Mock Invoke-ReaStepReaDoctor { $script:Calls.Add('rea-doctor') }
             Invoke-Main | Should -Be 0
-            ($script:Calls -join ',') | Should -Be 'preflight,prereq,tools-bin,jdk,ghidra,unlock,profile'
+            ($script:Calls -join ',') | Should -Be 'preflight,prereq,tools-bin,jdk,ghidra,unlock,profile,rea-setup,rea-doctor'
             @(Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').Count | Should -Be 1
         } finally {
             $script:Opt.LogDir = $savedLogDir

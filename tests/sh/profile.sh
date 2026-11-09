@@ -286,7 +286,7 @@ assert_match 'ERROR +\[profile\] agent-profile not found on PATH' "$(logtext s10
 home_empty "stub tests"
 
 # --- main: the profile step runs after the lock release ---
-assert_eq "step_ghidra tools_lock_release step_profile" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (step_ghidra|tools_lock_release|step_profile)$' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: step_profile runs last, after the tools lock is released"
+assert_eq "step_ghidra tools_lock_release step_profile" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (step_ghidra|tools_lock_release|step_profile)$' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: step_profile runs after the tools lock is released"
 
 # --- the REAL agent-profile (the O6 experiment as a test) ---
 if [ -z "$REAL_AP" ]; then

@@ -1,7 +1,16 @@
 #!/bin/sh
 # Test stub. Answers --version, -V and -v with STUB_<name>_VERSION (hyphens in the command name become
 # underscores, so agent-profile reads STUB_agent_profile_VERSION) and exits with STUB_<name>_EXIT (default 0).
+#
+# Any other call is a recorded call when STUB_NPX_LOG is set: call number n (counted in $STUB_NPX_LOG.n) appends
+# its argument list, one line, to $STUB_NPX_LOG, and the three variables rea cares about (CLAUDE_CONFIG_DIR,
+# GHIDRA_INSTALL_DIR and JAVA_HOME, as "n: NAME=value"; a variable that is not set is not listed) to
+# $STUB_NPX_LOG.env; then it prints the file named by STUB_NPX_FILE_<n> and exits with STUB_NPX_EXIT_<n>
+# (default 0). STUB_NPX_CONFIG_<n> names a file copied to $CLAUDE_CONFIG_DIR/.claude.json (what a real setup
+# writes) and STUB_NPX_STDERR_<n> is a line for stderr. An unrecorded call exits with STUB_<name>_EXIT.
 n=$(basename "$0" | tr '-' '_')
+v=""
+rc=0
 eval "v=\${STUB_${n}_VERSION:-}"
 eval "rc=\${STUB_${n}_EXIT:-0}"
 case "${1:-}" in
@@ -10,6 +19,30 @@ case "${1:-}" in
       if [ "$n" = node ]; then v=v24.22.2; else v=1.0.0; fi
     fi
     printf '%s\n' "$v"
+    exit "$rc"
     ;;
 esac
+if [ -n "${STUB_NPX_LOG:-}" ]; then
+  c=0
+  if [ -r "$STUB_NPX_LOG.n" ]; then
+    c=$(cat "$STUB_NPX_LOG.n")
+  fi
+  c=$((c + 1))
+  printf '%s\n' "$c" >"$STUB_NPX_LOG.n"
+  printf '%s\n' "$*" >>"$STUB_NPX_LOG"
+  env | grep -E '^(CLAUDE_CONFIG_DIR|GHIDRA_INSTALL_DIR|JAVA_HOME)=' | sed "s/^/$c: /" >>"$STUB_NPX_LOG.env" || :
+  eval "f=\${STUB_NPX_FILE_$c:-}"
+  eval "rc=\${STUB_NPX_EXIT_$c:-0}"
+  eval "g=\${STUB_NPX_CONFIG_$c:-}"
+  eval "e=\${STUB_NPX_STDERR_$c:-}"
+  if [ -n "$g" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    cp "$g" "$CLAUDE_CONFIG_DIR/.claude.json"
+  fi
+  if [ -n "$e" ]; then
+    printf '%s\n' "$e" >&2
+  fi
+  if [ -n "$f" ]; then
+    cat "$f"
+  fi
+fi
 exit "$rc"

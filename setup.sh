@@ -112,7 +112,8 @@ die() {
 }
 
 # run_cmd STEP cmd...: logs the argument list, exit code and duration; stdout goes to the file named by
-# RUN_STDOUT, stderr to the log (bounded to 4000 characters on failure). Returns the command's exit code.
+# RUN_STDOUT, stderr to the log (bounded to 4000 characters on failure) and its last 1000 bytes to
+# RUN_STDERR_TAIL. Returns the command's exit code.
 run_cmd() {
   rc_step=$1
   shift
@@ -127,6 +128,7 @@ run_cmd() {
   "$@" >"$RUN_STDOUT" 2>"$rc_err" || rc=$?
   rc_secs=$(($(date +%s) - rc_start))
   log DEBUG "$rc_step" "exit $rc after ${rc_secs}s"
+  RUN_STDERR_TAIL=$(tail -c 1000 "$rc_err")
   if [ "$rc" -ne 0 ]; then
     log DEBUG "$rc_step" "stderr: $(head -c 4000 "$rc_err")"
   fi
@@ -2227,6 +2229,166 @@ step_profile() {
   return 0
 }
 
+# --- steps rea-setup and rea-doctor ---
+
+HINT_REA_GHIDRA_LINE='rea 6.8.0 accepts Ghidra 12.1.x; if rea now requires another line, update the pins block (PIN_GHIDRA_*)'
+NOTE_MAC_DECOMPILER='build it as rea docs/installation.md describes (sections "Missing macOS native decompiler" and "macOS arm64 native decompiler")'
+
+# rea_env_ready STEP: the three directories rea needs are known and the profile directory is not the shared
+# ~/.claude; dies EX_STEP otherwise (defence in depth: the setup must never write in the shared profile).
+rea_env_ready() {
+  [ -n "${CLAUDE_CONFIG_DIR_SELECTED:-}" ] || die "$EX_STEP" "$1" "no profile directory was selected (CLAUDE_CONFIG_DIR_SELECTED is empty)"
+  if profile_dir_shared "$CLAUDE_CONFIG_DIR_SELECTED"; then
+    die "$EX_STEP" "$1" "refusing to run rea with the shared Claude directory: $CLAUDE_CONFIG_DIR_SELECTED"
+  fi
+  [ -n "${GHIDRA_DIR_SELECTED:-}" ] || die "$EX_STEP" "$1" "no Ghidra directory was selected (GHIDRA_DIR_SELECTED is empty)"
+  [ -n "${JAVA_HOME_SELECTED:-}" ] || die "$EX_STEP" "$1" "no JDK was selected (JAVA_HOME_SELECTED is empty)"
+  return 0
+}
+
+# rea_env_run STEP ARGS...: runs `npx -y $PIN_REA_SPEC ARGS...` through run_cmd with CLAUDE_CONFIG_DIR,
+# GHIDRA_INSTALL_DIR and JAVA_HOME set for that child only. Returns its exit code; stdout is in RUN_STDOUT.
+rea_env_run() {
+  re_step=$1
+  shift
+  run_cmd "$re_step" env "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR_SELECTED" "GHIDRA_INSTALL_DIR=$GHIDRA_DIR_SELECTED" \
+    "JAVA_HOME=$JAVA_HOME_SELECTED" npx -y "$PIN_REA_SPEC" "$@"
+}
+
+# rea_json_object FILE: succeeds when FILE holds a JSON object
+rea_json_object() {
+  [ "$(json_query "$1" '(d!==null&&typeof d==="object"&&!Array.isArray(d))' 2>/dev/null)" = true ]
+}
+
+# rea_doctor_healthy FILE: succeeds when the doctor answer in FILE has healthy true; anything else (false,
+# missing, not JSON) fails
+rea_doctor_healthy() {
+  [ "$(json_query "$1" 'd.healthy===true' 2>/dev/null)" = true ]
+}
+
+# rea_doctor_failing FILE: the names of the scope_checks whose ok is not true, one per line
+rea_doctor_failing() {
+  json_query "$1" '(d.scope_checks||[]).filter(c=>c&&c.ok!==true).map(c=>c.name)' 2>/dev/null
+}
+
+# rea_ghidra_status FILE: prints `available providerVersion failing-check-names` for the ghidra provider of a
+# doctor answer: available is true or false, the version is - when there is none, the names are comma separated
+# and absent when nothing fails. A missing ghidra provider reads as unavailable with the check name
+# ghidra_provider_missing.
+rea_ghidra_status() {
+  json_query "$1" '(()=>{const p=(d.providerInspections||[]).find(x=>x&&x.id==="ghidra");if(!p)return "false - ghidra_provider_missing";const f=(p.checks||[]).filter(c=>c&&c.ok!==true).map(c=>c.name).join(",");return String(p.available===true)+" "+(p.providerVersion||"-")+(f?" "+f:"")})()'
+}
+
+# rea_doctor_run STEP ARGS...: rea doctor ARGS... through rea_env_run; exit 0 and 1 (unhealthy) are both
+# answers, any other exit code, and an answer that is not a JSON object, die EX_VERIFY with the end of stderr.
+# The answer file is left in RD_JSON for the caller to remove.
+rea_doctor_run() {
+  rr_step=$1
+  shift
+  rr_rc=0
+  rea_env_run "$rr_step" doctor "$@" || rr_rc=$?
+  RD_JSON=$RUN_STDOUT
+  case "$rr_rc" in
+    0 | 1) ;;
+    *) die "$EX_VERIFY" "$rr_step" "rea doctor $* exited $rr_rc: $RUN_STDERR_TAIL" ;;
+  esac
+  rea_json_object "$RD_JSON" || die "$EX_VERIFY" "$rr_step" "rea doctor $* printed output that is not a JSON object (exit $rr_rc): $RUN_STDERR_TAIL"
+  return 0
+}
+
+# step_rea_setup: registers rea in the profile with `rea setup`. A dry run of rea first (stdout at DEBUG), then
+# the real setup unless --dry-run; --install-hopper is passed on when asked. The profile's .claude.json must then
+# hold mcpServers.rea. It never touches ~/.claude.json: CLAUDE_CONFIG_DIR points rea at the profile.
+step_rea_setup() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log INFO rea-setup "skip (--check-upstream)"
+    summary_set rea_setup "skipped: --check-upstream"
+    return 0
+  fi
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ] && { [ -z "${CLAUDE_CONFIG_DIR_SELECTED:-}" ] || [ -z "${GHIDRA_DIR_SELECTED:-}" ] || [ -z "${JAVA_HOME_SELECTED:-}" ]; }; then
+    log INFO rea-setup "skip (read-only run: no profile, Ghidra or JDK was selected, so rea has no environment to run in)"
+    summary_set rea_setup "skipped: read-only run"
+    return 0
+  fi
+  rea_env_ready rea-setup
+  rs_rc=0
+  rea_env_run rea-setup setup --client claude_code --dry-run || rs_rc=$?
+  log DEBUG rea-setup "rea setup dry-run output: $(head -c 4000 "$RUN_STDOUT")"
+  rm -f "$RUN_STDOUT"
+  [ "$rs_rc" -eq 0 ] || die "$EX_STEP" rea-setup "rea setup --dry-run exited $rs_rc: $RUN_STDERR_TAIL"
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    log INFO rea-setup "skip (read-only run): rea setup would register rea in $(abbrev_home "$CLAUDE_CONFIG_DIR_SELECTED")"
+    summary_set rea_setup "not run: read-only run"
+    return 0
+  fi
+  if [ "${OPT_INSTALL_HOPPER:-0}" -eq 1 ]; then
+    rea_env_run rea-setup setup --client claude_code --yes --install-hopper || rs_rc=$?
+  else
+    rea_env_run rea-setup setup --client claude_code --yes || rs_rc=$?
+  fi
+  rm -f "$RUN_STDOUT"
+  [ "$rs_rc" -eq 0 ] || die "$EX_STEP" rea-setup "rea setup exited $rs_rc: $RUN_STDERR_TAIL"
+  rs_cfg=$CLAUDE_CONFIG_DIR_SELECTED/.claude.json
+  [ -f "$rs_cfg" ] || die "$EX_STEP" rea-setup "rea setup left no .claude.json in $CLAUDE_CONFIG_DIR_SELECTED"
+  rs_reg=$(json_query "$rs_cfg" '(d&&d.mcpServers&&d.mcpServers.rea&&typeof d.mcpServers.rea==="object")?"yes":"no"' 2>/dev/null) || rs_reg=unreadable
+  [ "$rs_reg" = yes ] || die "$EX_STEP" rea-setup "$rs_cfg has no mcpServers.rea after rea setup ($rs_reg)"
+  summary_set rea_setup "registered rea in $CLAUDE_CONFIG_DIR_SELECTED"
+  log INFO rea-setup "ok"
+  return 0
+}
+
+# step_rea_doctor: rea doctor for the client scope (healthy, else EX_VERIFY naming the failing scope_checks),
+# then for the ghidra provider. A Ghidra that is not available is EX_VERIFY, except on macOS when only
+# native_decompiler fails: that is a WARN with the recipe pointer and SUMMARY_rea_doctor=warn (the official
+# archive has no macOS native decompiler), reported on every run. Skipped by --dry-run and --check-upstream.
+step_rea_doctor() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log INFO rea-doctor "skip (--check-upstream)"
+    summary_set rea_doctor "skipped: --check-upstream"
+    return 0
+  fi
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    log INFO rea-doctor "skip (--dry-run): nothing was registered to check"
+    summary_set rea_doctor "skipped: --dry-run"
+    return 0
+  fi
+  rea_env_ready rea-doctor
+  rea_doctor_run rea-doctor --client claude_code --skill --json
+  rd_file=$RD_JSON
+  if ! rea_doctor_healthy "$rd_file"; then
+    rd_names=$(rea_doctor_failing "$rd_file" | tr '\n' ' ')
+    rm -f "$rd_file"
+    die "$EX_VERIFY" rea-doctor "rea doctor reports the Claude Code setup unhealthy; failing checks: ${rd_names:-none listed (healthy is not true)}"
+  fi
+  rm -f "$rd_file"
+  rea_doctor_run rea-doctor --provider ghidra --json
+  rd_file=$RD_JSON
+  rd_status=$(rea_ghidra_status "$rd_file") || rd_status=""
+  rm -f "$rd_file"
+  rd_avail=${rd_status%% *}
+  rd_rest=${rd_status#* }
+  rd_ver=${rd_rest%% *}
+  rd_names=""
+  case "$rd_rest" in
+    *" "*) rd_names=${rd_rest#* } ;;
+  esac
+  log DEBUG rea-doctor "ghidra provider: available=$rd_avail version=$rd_ver failing=${rd_names:-none}"
+  if [ "$rd_avail" = true ]; then
+    summary_set rea_doctor "ok: ghidra $rd_ver"
+    log INFO rea-doctor "ok"
+    return 0
+  fi
+  if [ "$OS" = mac ] && [ "$rd_names" = native_decompiler ]; then
+    log WARN rea-doctor "rea reports the native decompiler of $GHIDRA_DIR_SELECTED missing; $NOTE_MAC_DECOMPILER. rea cannot decompile until then; continuing"
+    summary_set rea_doctor "warn: ghidra installed but not usable by rea until the native decompiler is built ($GHIDRA_DIR_SELECTED)"
+    return 0
+  fi
+  case ",$rd_names," in
+    *,version,*) die "$EX_VERIFY" rea-doctor "rea reports the Ghidra provider unavailable; failing checks: $rd_names. $HINT_REA_GHIDRA_LINE" ;;
+  esac
+  die "$EX_VERIFY" rea-doctor "rea reports the Ghidra provider unavailable; failing checks: ${rd_names:-none listed}"
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -2259,6 +2421,8 @@ main() {
   step_ghidra
   tools_lock_release
   step_profile
+  step_rea_setup
+  step_rea_doctor
 }
 
 if [ "${REA_SETUP_NO_MAIN:-}" != 1 ]; then
