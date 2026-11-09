@@ -777,7 +777,7 @@ Describe 'Move-ReaItemRetry' {
     BeforeEach {
         Mock Write-ReaLog {}
         $script:Naps = New-Object System.Collections.ArrayList
-        Mock Invoke-ReaSleepMs { [void]$script:Naps.Add($Milliseconds) }
+        Mock Invoke-ReaSleepMillisecond { [void]$script:Naps.Add($Milliseconds) }
         $script:Src = Join-Path $script:T ('mv src ' + [guid]::NewGuid().ToString('N'))
         $script:Dst = Join-Path $script:T ('mv dst ' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:Src | Out-Null

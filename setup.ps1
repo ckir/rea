@@ -508,7 +508,7 @@ function Invoke-ReaSleep {
 }
 
 # Pauses of a fraction of a second between the retries of a move; one function so tests can replace it.
-function Invoke-ReaSleepMs {
+function Invoke-ReaSleepMillisecond {
     param([int]$Milliseconds)
     Start-Sleep -Milliseconds $Milliseconds
 }
@@ -525,7 +525,7 @@ function Move-ReaItemRetry {
         } catch {
             if ($i -ge $Attempts) { throw }
             Write-ReaLog DEBUG move ("move failed (attempt $i of ${Attempts}): " + $_.Exception.Message)
-            Invoke-ReaSleepMs -Milliseconds ([Math]::Min(2000, 500 + 150 * ($i - 1)))
+            Invoke-ReaSleepMillisecond -Milliseconds ([Math]::Min(2000, 500 + 150 * ($i - 1)))
         }
     }
 }
