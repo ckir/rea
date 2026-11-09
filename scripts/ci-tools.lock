@@ -6,3 +6,4 @@ actionlint=1.7.12
 addlicense=1.2.0
 pester=5.9.0
 psscriptanalyzer=1.25.0
+lefthook=2.1.17

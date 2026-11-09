@@ -6,17 +6,8 @@
 
 Describe 'Pester harness' {
     BeforeAll {
-        # Like tests/sh/harness.sh, this file tests the harness alone, so it declares that setup.ps1 need not
-        # exist yet; the value is restored in AfterAll so no other test file inherits it.
-        $script:savedNoSource = $env:TEST_NO_SOURCE
-        $env:TEST_NO_SOURCE = '1'
-        if ($env:TEST_NO_SOURCE -ne '1') {
-            . "$PSScriptRoot/../../setup.ps1"
-        }
-    }
-
-    AfterAll {
-        $env:TEST_NO_SOURCE = $script:savedNoSource
+        # This file tests the harness alone, so it never sources setup.ps1 (it need not exist yet). Files that
+        # test setup.ps1 begin with: $env:REA_SETUP_NO_MAIN = '1'; . "$PSScriptRoot/../../setup.ps1"
     }
 
     It 'runs under Pester 5 or newer' {
