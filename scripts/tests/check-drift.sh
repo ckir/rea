@@ -46,6 +46,14 @@ case_ "a host outside the allow list fails" 1 "s#github.com/NationalSecurityAgen
 case_ "empty ps1 pin list fails" 1 "" "s/pins begin/pins start/" "exactly one"
 case_ "empty sh pin list fails" 1 "s/pins end/pins stop/" "" "exactly one"
 
+case_ "version 0.1.0 passes" 0 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1.0/" "" "pins identical"
+case_ "a two-part version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = '0.1'/" "not X.Y.Z"
+case_ "a v-prefixed version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=v0.1.0/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = 'v0.1.0'/" "not X.Y.Z"
+case_ "a four-part version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1.0.1/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = '0.1.0.1'/" "not X.Y.Z"
+case_ "a suffixed version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1.0-rc1/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = '0.1.0-rc1'/" "not X.Y.Z"
+case_ "a bad version in setup.sh only fails" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1/" "" "pins differ"
+case_ "a bad version in setup.ps1 only fails" 1 "" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = '0.1'/" "pins differ"
+case_ "an empty version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = ''/" "not X.Y.Z"
 case_ "a pin only in ps1 fails" 1 "" "/pins begin/a\\
 \$script:PIN_EXTRA = 'x'" "pins differ"
 case_ "a pin only in sh fails" 1 "/pins begin/a\\

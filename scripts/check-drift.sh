@@ -11,7 +11,7 @@
 #   setup.sh   PIN_<NAME>=<value>               (a value with spaces is quoted)
 #   setup.ps1  $script:PIN_<NAME> = '<value>'
 # Both lists are reduced to sorted NAME=<value> lines (one pair of surrounding quotes stripped) and diffed.
-# Then: PIN_GHIDRA_SHA256 is 64 lower-case hex, and every https://<host>/ inside any pin value names a host
+# Then: PIN_SCRIPT_VERSION is X.Y.Z (digits only, the whole value), PIN_GHIDRA_SHA256 is 64 lower-case hex, and every https://<host>/ inside any pin value names a host
 # listed in PIN_ALLOWED_HOSTS. An empty list on either side is an error, not a pass.
 #
 # Usage: sh scripts/check-drift.sh [setup.sh [setup.ps1]]   (the paths default to the repository root)
@@ -60,6 +60,19 @@ if ! diff "$tmp/sh.pins" "$tmp/ps.pins" >"$tmp/diff"; then
   cat "$tmp/diff" >&2
   exit 1
 fi
+
+ver=$(sed -n 's/^PIN_SCRIPT_VERSION=//p' "$tmp/sh.pins")
+case "$ver" in
+  '' | *[!0-9.]* | .* | *. | *..* | *.*.*.*)
+    echo "drift: PIN_SCRIPT_VERSION is not X.Y.Z: '$ver'" >&2
+    exit 1
+    ;;
+  *.*.*) ;;
+  *)
+    echo "drift: PIN_SCRIPT_VERSION is not X.Y.Z: '$ver'" >&2
+    exit 1
+    ;;
+esac
 
 sha=$(sed -n 's/^PIN_GHIDRA_SHA256=//p' "$tmp/sh.pins")
 if ! printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{64}$'; then

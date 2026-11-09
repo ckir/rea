@@ -6,7 +6,7 @@
     "in_path": "just",
     "config": "`justfile`",
     "just": "—",
-    "gates": "everything: local gate, pre-push hook and CI all route through the recipes it defines"
+    "gates": "everything: the local gate (`just check`: tools-check, typos, license-check, line-citations, action-pins, actionlint, fmt-check, shellcheck, psanalyze, suppressions, drift, tools-doc-check, test), the pre-push hook, CI and the release workflow all route through the recipes it defines"
   },
   {
     "name": "lefthook",
@@ -24,7 +24,7 @@
     "in_path": "shellcheck",
     "config": "—",
     "just": "`shellcheck`",
-    "gates": "`just check`; CI gates job"
+    "gates": "`just check`; CI gates and release jobs"
   },
   {
     "name": "shfmt",
@@ -33,7 +33,7 @@
     "in_path": "shfmt",
     "config": "—",
     "just": "`fmt-check`, `fmt`",
-    "gates": "`just check`; CI gates job"
+    "gates": "`just check`; CI gates and release jobs"
   },
   {
     "name": "pwsh",
@@ -42,7 +42,7 @@
     "in_path": "pwsh",
     "config": "—",
     "just": "`psanalyze`, `test`",
-    "gates": "`just check`; CI gates and matrix jobs"
+    "gates": "`just check`; CI gates, release and matrix jobs"
   },
   {
     "name": "PSScriptAnalyzer",
@@ -54,7 +54,7 @@
     ],
     "config": "`scripts/psanalyze.ps1`",
     "just": "`psanalyze`",
-    "gates": "`just check`; CI gates job"
+    "gates": "`just check`; CI gates and release jobs"
   },
   {
     "name": "Pester",
@@ -66,7 +66,7 @@
     ],
     "config": "`tests/pester/`",
     "just": "`test`",
-    "gates": "`just check`; CI gates and matrix jobs"
+    "gates": "`just check`; CI gates, release and matrix jobs"
   },
   {
     "name": "typos",
@@ -75,7 +75,7 @@
     "in_path": "typos",
     "config": "`_typos.toml`",
     "just": "`typos`",
-    "gates": "`just check`; CI gates job"
+    "gates": "`just check`; CI gates and release jobs"
   },
   {
     "name": "actionlint",
@@ -84,7 +84,7 @@
     "in_path": "actionlint",
     "config": "—",
     "just": "`actionlint`",
-    "gates": "`just check`; CI gates job"
+    "gates": "`just check`; CI gates and release jobs"
   },
   {
     "name": "addlicense",
@@ -93,7 +93,7 @@
     "in_path": "addlicense",
     "config": "`header.txt`",
     "just": "`license-check`",
-    "gates": "`just check`; CI gates job"
+    "gates": "`just check`; CI gates and release jobs"
   },
   {
     "name": "jq",
@@ -102,7 +102,7 @@
     "in_path": "jq",
     "config": "—",
     "just": "`tools-check`, `tools-doc-check`",
-    "gates": "`just check`; CI gates job"
+    "gates": "`just check`; CI gates and release jobs"
   },
   {
     "name": "python3",
@@ -120,6 +120,6 @@
     "in_path": "dash",
     "config": "—",
     "just": "`test`",
-    "gates": "`just check`; CI"
+    "gates": "`just check`; CI gates and release jobs"
   }
 ]
