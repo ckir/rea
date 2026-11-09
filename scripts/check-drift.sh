@@ -73,6 +73,10 @@ if [ -z "$hosts" ]; then
   exit 1
 fi
 bad=0
+if grep -v '^PIN_ALLOWED_HOSTS=' "$tmp/sh.pins" | grep -Eq 'http://'; then
+  echo "drift: a pin holds an http:// URL; only https:// is allowed" >&2
+  exit 1
+fi
 grep -v '^PIN_ALLOWED_HOSTS=' "$tmp/sh.pins" | grep -Eo 'https://[^/ ]+/' | sort -u >"$tmp/urls" || true
 while IFS= read -r url; do
   host=${url#https://}

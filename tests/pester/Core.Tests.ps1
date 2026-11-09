@@ -84,13 +84,23 @@ Describe 'Write-ReaLog format' {
     It 'keeps going with a warning when the log directory cannot be created' {
         $blocker = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         Set-Content -LiteralPath $blocker -Value 'file'
+        Mock Write-ReaWarning { }
         try {
-            $r = Open-ReaLog -Directory (Join-Path $blocker 'sub') 3>&1 2>$null
-            @($r | Where-Object { $_ }) | Should -BeNullOrEmpty
+            $r = Open-ReaLog -Directory (Join-Path $blocker 'sub')
+            $r | Should -BeNullOrEmpty
             $script:LogFile | Should -BeNullOrEmpty
+            Should -Invoke Write-ReaWarning -Exactly 1 -ParameterFilter { $Message -like 'warning: cannot create a log file in *; continuing without one' }
         } finally {
             Remove-Item -LiteralPath $blocker -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    It 'warns once and drops the log when an append fails' {
+        Mock Write-ReaWarning { }
+        $script:LogFile = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-missing-" + [guid]::NewGuid().ToString('N') + '/x.log')
+        Write-ReaLog -Level DEBUG -Step x -Message hi
+        $script:LogFile | Should -BeNullOrEmpty
+        Should -Invoke Write-ReaWarning -Exactly 1 -ParameterFilter { $Message -eq 'warning: cannot write the log file; continuing without one' }
     }
 
     It 'keeps only the newest 20 logs' {
@@ -182,6 +192,32 @@ Describe 'Get-ReaPlatform' {
     It 'reads the runtime architecture by default' {
         (Get-ReaPlatform).Arch | Should -Not -BeNullOrEmpty
     }
+    It 'falls back to the environment when RuntimeInformation is unavailable' {
+        Mock Get-ReaRuntimeArchitecture { throw 'no RuntimeInformation' }
+        Mock Get-ReaEnvArchitecture { 'ARM64' }
+        (Get-ReaPlatform).Arch | Should -Be 'aarch64'
+    }
+}
+
+Describe 'Get-ReaEnvArchitecture' {
+    It 'maps AMD64 to X64' {
+        Get-ReaEnvArchitecture -Wow64 '' -Native 'AMD64' | Should -Be 'X64'
+    }
+    It 'maps ARM64 to Arm64' {
+        Get-ReaEnvArchitecture -Wow64 '' -Native 'ARM64' | Should -Be 'Arm64'
+    }
+    It 'lets ARCHITEW6432 win for a 32-bit process on 64-bit Windows' {
+        Get-ReaEnvArchitecture -Wow64 'AMD64' -Native 'x86' | Should -Be 'X64'
+        Get-ReaEnvArchitecture -Wow64 'ARM64' -Native 'x86' | Should -Be 'Arm64'
+    }
+    It 'passes native x86 through, so the caller reports it unsupported' {
+        (Get-ReaPlatform -Architecture (Get-ReaEnvArchitecture -Wow64 '' -Native 'x86')).Arch | Should -Be 'x86'
+    }
+    It 'returns an unsupported marker when both variables are empty' {
+        $a = Get-ReaEnvArchitecture -Wow64 '' -Native ''
+        $a | Should -Be 'unknown'
+        (Get-ReaPlatform -Architecture $a).Arch | Should -Be 'unknown'
+    }
 }
 
 Describe 'Test-ReaProfileName' {
@@ -238,6 +274,20 @@ Describe 'Stop-Rea and Read-ReaConfirm' {
         $err | Should -Not -BeNullOrEmpty
         $err.Exception.Data['ReaCode'] | Should -Be 4
     }
+    It 'still throws with -Confirm:$true' {
+        $err = $null
+        try { Stop-Rea -Code 4 -Step prereq -Message 'nope' -Confirm:$true } catch { $err = $_ }
+        $err.Exception.Data['ReaCode'] | Should -Be 4
+    }
+    It 'still throws with $ConfirmPreference Low' {
+        $saved = $ConfirmPreference
+        $err = $null
+        try {
+            $ConfirmPreference = 'Low'
+            Stop-Rea -Code 4 -Step prereq -Message 'nope'
+        } catch { $err = $_ } finally { $ConfirmPreference = $saved }
+        $err.Exception.Data['ReaCode'] | Should -Be 4
+    }
     It 'confirms without asking under -Yes' {
         $script:OptYes = $true
         try { Read-ReaConfirm -Prompt 'Proceed?' | Should -BeTrue } finally { $script:OptYes = $false }
@@ -248,6 +298,28 @@ Describe 'Stop-Rea and Read-ReaConfirm' {
         $err = $null
         try { Read-ReaConfirm -Prompt 'Proceed?' } catch { $err = $_ }
         $err.Exception.Data['ReaCode'] | Should -Be 2
+    }
+}
+
+Describe 'Format-ReaInvocation' {
+    It 'lists names and values, switches by name only' {
+        Format-ReaInvocation @{ ProfileName = 'x'; Yes = [switch]$true } | Should -Be '-ProfileName=x -Yes'
+    }
+    It 'is empty without parameters' {
+        Format-ReaInvocation @{} | Should -Be '(no parameters)'
+    }
+    It 'is redacted by the log writer' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $log = Open-ReaLog -Directory $dir
+            Write-ReaLog -Level DEBUG -Step x -Message ('invoked: ' + (Format-ReaInvocation @{ ApiToken = 'abc'; Yes = [switch]$true }))
+            $text = [System.IO.File]::ReadAllText($log)
+            $text | Should -Match 'invoked: .*-ApiToken=<redacted>'
+            $text | Should -Not -Match 'abc'
+        } finally {
+            $script:LogFile = $null
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -302,6 +374,8 @@ Describe 'Invoke-Main' {
             $r = Invoke-Setup -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
             $r.Code | Should -Be 0
             $r.Output | Should -Match 'platform: windows'
+            $text = [System.IO.File]::ReadAllText((Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').FullName)
+            $text | Should -Match '(?m)invoked: -DryRun -LogDir=.* -Yes\s*$'
             @(Get-ChildItem -LiteralPath $dir -Filter 'setup-*.log').Count | Should -Be 1
         } finally {
             Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue

@@ -45,4 +45,12 @@ case_ "a bad sha fails on both sides" 1 "s/^PIN_GHIDRA_SHA256=dd/PIN_GHIDRA_SHA2
 case_ "a host outside the allow list fails" 1 "s#github.com/NationalSecurityAgency#evil.example/NationalSecurityAgency#" "s#github.com/NationalSecurityAgency#evil.example/NationalSecurityAgency#" "not in PIN_ALLOWED_HOSTS"
 case_ "empty ps1 pin list fails" 1 "" "s/pins begin/pins start/" "exactly one"
 case_ "empty sh pin list fails" 1 "s/pins end/pins stop/" "" "exactly one"
+
+case_ "a pin only in ps1 fails" 1 "" "/pins begin/a\\
+\$script:PIN_EXTRA = 'x'" "pins differ"
+case_ "a pin only in sh fails" 1 "/pins begin/a\\
+PIN_EXTRA=x" "" "pins differ"
+case_ "a duplicated marker fails" 1 "/pins end/a\\
+# --- pins end ---" "" "exactly one"
+case_ "an http URL in a pin fails" 1 "s#^PIN_AGENT_PROFILE_REPO=.*#PIN_AGENT_PROFILE_REPO=http://github.com/x/#" "s#^\\(.script:PIN_AGENT_PROFILE_REPO = \\).*#\\1'http://github.com/x/'#" "http://"
 exit "$failures"

@@ -75,6 +75,8 @@ $script:Opt = [pscustomobject]@{
     LogDir        = $LogDir
 }
 
+$script:Bound = $PSBoundParameters
+
 $script:ConsoleLevel = 'INFO'
 $script:LogFile = $null
 $script:OptYes = $false
@@ -162,6 +164,12 @@ function Convert-ReaHomeText {
     return [regex]::Replace($Text, $pattern, '${1}%USERPROFILE%', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 }
 
+# Prints a warning on stderr; one function so tests can capture it.
+function Write-ReaWarning {
+    param([string]$Message)
+    [Console]::Error.WriteLine($Message)
+}
+
 # The file always gets the line; stderr gets it when LEVEL >= the console level.
 function Write-ReaLog {
     param(
@@ -175,7 +183,7 @@ function Write-ReaLog {
             [System.IO.File]::AppendAllText($script:LogFile, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
         } catch {
             $script:LogFile = $null
-            [Console]::Error.WriteLine('warning: cannot write the log file; continuing without one')
+            Write-ReaWarning 'warning: cannot write the log file; continuing without one'
         }
     }
     if (Test-ReaLogVisible -Level $Level) {
@@ -186,7 +194,7 @@ function Write-ReaLog {
 # Logs ERROR with the log path, then throws; Invoke-Main turns the exception into the exit code (a function
 # cannot exit the host, so Stop-Rea is the die counterpart).
 function Stop-Rea {
-    [CmdletBinding(SupportsShouldProcess = $true)]
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'None')]
     param(
         [int]$Code,
         [string]$Step,
@@ -267,7 +275,7 @@ function Open-ReaLog {
         New-Item -ItemType Directory -Path $Directory -Force | Out-Null
         [System.IO.File]::AppendAllText($file, '', (New-Object System.Text.UTF8Encoding $false))
     } catch {
-        [Console]::Error.WriteLine("warning: cannot create a log file in $(Get-ReaShortPath $Directory); continuing without one")
+        Write-ReaWarning "warning: cannot create a log file in $(Get-ReaShortPath $Directory); continuing without one"
         $script:LogFile = $null
         return $null
     }
@@ -282,11 +290,39 @@ function Open-ReaLog {
 
 # --- platform ---
 
-# @{ Os = 'windows'; Arch = 'x64' | 'aarch64' | <other, lower-cased> }. Architecture is for tests.
+# The OS architecture as RuntimeInformation names it (X64, Arm64, X86, ...). That type needs .NET Framework
+# 4.7.1; on an older one this throws and Get-ReaPlatform falls back to the environment.
+function Get-ReaRuntimeArchitecture {
+    return [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+}
+
+# The OS architecture from PROCESSOR_ARCHITEW6432 (set for a 32-bit process on 64-bit Windows, and then the
+# real one) else PROCESSOR_ARCHITECTURE: X64, Arm64, another value lower-cased, or 'unknown' when both are empty.
+function Get-ReaEnvArchitecture {
+    param(
+        [AllowEmptyString()][string]$Wow64 = $env:PROCESSOR_ARCHITEW6432,
+        [AllowEmptyString()][string]$Native = $env:PROCESSOR_ARCHITECTURE
+    )
+    $raw = $Wow64
+    if (-not $raw) { $raw = $Native }
+    if (-not $raw) { return 'unknown' }
+    switch ($raw.ToLowerInvariant()) {
+        'amd64' { return 'X64' }
+        'arm64' { return 'Arm64' }
+        default { return $raw.ToLowerInvariant() }
+    }
+}
+
+# @{ Os = 'windows'; Arch = 'x64' | 'aarch64' | <anything else, lower-cased: unsupported> }. Architecture is for
+# tests.
 function Get-ReaPlatform {
     param([string]$Architecture = '')
     if (-not $Architecture) {
-        $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        try {
+            $Architecture = Get-ReaRuntimeArchitecture
+        } catch {
+            $Architecture = Get-ReaEnvArchitecture
+        }
     }
     switch ($Architecture.ToLowerInvariant()) {
         'x64' { $arch = 'x64' }
@@ -390,6 +426,21 @@ function Write-ReaConfig {
     Write-ReaLog DEBUG preflight ("options: tools_dir={0} bin_dir={1} hopper={2} yes={3} dry_run={4} no_launch={5} check_upstream={6}" -f $script:Opt.ToolsDir, $script:Opt.BinDir, $script:Opt.InstallHopper, $script:Opt.Yes, $script:Opt.DryRun, $script:Opt.NoLaunch, $script:Opt.CheckUpstream)
 }
 
+# The bound parameters as '-Name=value' ('-Name' for a switch), sorted by name.
+function Format-ReaInvocation {
+    param([hashtable]$Parameters)
+    if ($Parameters.Count -eq 0) { return '(no parameters)' }
+    $parts = foreach ($key in ($Parameters.Keys | Sort-Object)) {
+        $value = $Parameters[$key]
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            "-$key"
+        } else {
+            "-$key=$value"
+        }
+    }
+    return ($parts -join ' ')
+}
+
 # The script body; returns the exit code.
 function Invoke-Main {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -401,7 +452,7 @@ function Invoke-Main {
         Open-ReaLog -Directory $script:Opt.LogDir | Out-Null
         Write-ReaLog DEBUG preflight "script version $script:PIN_SCRIPT_VERSION sha256 n/a"
         Write-ReaLog DEBUG preflight ('PowerShell ' + $PSVersionTable.PSVersion.ToString())
-        Write-ReaLog DEBUG preflight ('invoked: ' + $MyInvocation.Line)
+        Write-ReaLog DEBUG preflight ('invoked: ' + (Format-ReaInvocation $script:Bound))
         Write-ReaConfig
         if ($script:Opt.InstallHopper) {
             Stop-Rea -Code $script:EX_USAGE -Step args -Message '-InstallHopper is not available on Windows'
