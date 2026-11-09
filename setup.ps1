@@ -2364,6 +2364,188 @@ function Invoke-ReaStepJdk {
     Write-ReaLog INFO jdk 'ok'
 }
 
+# --- step ghidra ---
+
+# The Ghidra the step picked, and whether it is the official archive (installed, about to be, or reused from the
+# tools directory).
+$script:GhidraDirSelected = ''
+$script:GhidraOfficial = $false
+
+# The application.version of Dir\Ghidra\application.properties (tolerant of CRLF, blanks and other properties);
+# '' when the file or the property is absent.
+function Get-ReaGhidraVersion {
+    param([string]$Dir)
+    $file = Join-Path (Join-Path $Dir 'Ghidra') 'application.properties'
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return '' }
+    foreach ($line in [System.IO.File]::ReadAllLines($file)) {
+        $m = [regex]::Match($line, '^\s*application\.version\s*=\s*(\S*)\s*$')
+        if ($m.Success) { return $m.Groups[1].Value }
+    }
+    return ''
+}
+
+# Valid is $true when Dir holds a Ghidra of the 12.1 line (12.1 or 12.1.N); otherwise Reason says why.
+function Test-ReaGhidraValid {
+    param([string]$Dir)
+    $ver = Get-ReaGhidraVersion -Dir $Dir
+    if (-not $ver) {
+        return [pscustomobject]@{ Valid = $false; Reason = 'no application.version in Ghidra/application.properties' }
+    }
+    if ($ver -match '^12\.1(\.[0-9]+)?$') { return [pscustomobject]@{ Valid = $true; Reason = '' } }
+    return [pscustomobject]@{ Valid = $false; Reason = "version $ver is not in the 12.1 line" }
+}
+
+# Installs the pinned Ghidra into ToolsDir\<top directory> and returns its path; a read-only run only logs what it
+# would fetch and returns $null. The work happens in a staging directory beside the final one (a short name, for
+# the Windows path limit); the archive lives there as .download.<pid>.zip and goes right after the extract. The
+# digest is the one embedded in this script, never one fetched.
+function Install-ReaGhidra {
+    $tools = $script:ToolsDir
+    $topDir = $script:PIN_GHIDRA_TOPDIR
+    $version = $script:PIN_GHIDRA_VERSION
+    $final = Join-Path $tools $topDir
+    Assert-ReaFreeMb -Path $tools -Mb 1500
+    Write-ReaLog INFO ghidra "will install Ghidra $version from $script:PIN_GHIDRA_URL ($script:PIN_GHIDRA_ZIP_BYTES bytes) into $(Get-ReaShortPath $final)"
+    $script:GhidraOfficial = $true
+    if ($script:Opt.DryRun -or $script:Opt.CheckUpstream) {
+        Write-ReaLog INFO ghidra 'read-only run, nothing installed'
+        $script:Summary['ghidra'] = "$version (not installed: read-only run)"
+        return $null
+    }
+    try {
+        [System.IO.Directory]::CreateDirectory($tools) | Out-Null
+    } catch {
+        Stop-Rea -Code $script:EX_STEP -Step ghidra -Message "cannot create directory: $tools"
+    }
+    $work = New-ReaStaging -Dir $tools -Name 'ghidra.work'
+    $stage = $null
+    try {
+        $archive = Join-Path $work ('.download.' + $PID + '.zip')
+        if (-not (Get-ReaDownload -Url $script:PIN_GHIDRA_URL -Destination $archive -Sha256 $script:PIN_GHIDRA_SHA256)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message "cannot download and verify Ghidra $version from $script:PIN_GHIDRA_URL"
+        }
+        $size = (Get-Item -LiteralPath $archive -Force).Length
+        if ([string]$size -ne [string]$script:PIN_GHIDRA_ZIP_BYTES) {
+            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message "the Ghidra archive is $size bytes, expected $script:PIN_GHIDRA_ZIP_BYTES"
+        }
+        if (-not (Test-ReaArchiveSafe -Path $archive)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message 'the Ghidra archive is not safe to extract'
+        }
+        $extract = Join-Path $work 'x'
+        if (-not (Expand-ReaArchive -Path $archive -Destination $extract)) {
+            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message 'cannot extract the Ghidra archive (the longest path in it is 149 characters beyond the extraction directory: a -ToolsDir of at most 64 characters stays under the 240 limit)'
+        }
+        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+        $items = @(Get-ChildItem -LiteralPath $extract -Force)
+        $ok = ($items.Count -eq 1)
+        if ($ok) {
+            $item = $items[0]
+            $isLink = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            $ok = ($item.Name -ceq $topDir) -and $item.PSIsContainer -and (-not $isLink)
+        }
+        if (-not $ok) {
+            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message "the Ghidra archive must hold exactly one top directory, $topDir (found $($items.Count) entries)"
+        }
+        $stage = New-ReaStaging -Dir $tools -Name $topDir
+        [System.IO.Directory]::Delete($stage)
+        try {
+            Move-Item -LiteralPath $items[0].FullName -Destination $stage -ErrorAction Stop
+        } catch {
+            Stop-Rea -Code $script:EX_STEP -Step ghidra -Message "cannot move the extracted Ghidra into $stage"
+        }
+        Clear-ReaTempFile -Path $work
+        $got = Get-ReaGhidraVersion -Dir $stage
+        if ($got -cne $version) {
+            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message "the downloaded Ghidra reports version '$got', expected $version"
+        }
+        if (-not (Complete-ReaInstall -Staging $stage -Final $final)) {
+            Stop-Rea -Code $script:EX_STEP -Step ghidra -Message "cannot move Ghidra into place: $final"
+        }
+    } finally {
+        Clear-ReaTempFile -Path $work
+        if ($stage) { Clear-ReaTempFile -Path $stage }
+    }
+    $script:GhidraDirSelected = $final
+    Write-ReaLog INFO ghidra "installed Ghidra $version in $(Get-ReaShortPath $final)"
+    $script:Summary['ghidra'] = "$version installed: $final"
+    return $final
+}
+
+# The value of -GhidraDir when it was given on the command line, else ''. The parameter defaults to the
+# GHIDRA_INSTALL_DIR environment variable, so only the bound parameters tell the two apart.
+function Get-ReaGhidraDirFlag {
+    if ($script:Bound.ContainsKey('GhidraDir')) { return [string]$script:Opt.GhidraDir }
+    return ''
+}
+
+# Sets GhidraDirSelected, GhidraOfficial and Summary['ghidra']. Precedence: -GhidraDir (invalid: exit 1), the
+# GHIDRA_INSTALL_DIR environment variable (invalid: WARN and go on), the install in the tools directory (valid and
+# marked complete; one without the mark is treated as absent and replaced), a new install.
+function Select-ReaGhidra {
+    param(
+        [string]$FlagDir = (Get-ReaGhidraDirFlag),
+        [string]$EnvDir = $env:GHIDRA_INSTALL_DIR
+    )
+    $script:GhidraDirSelected = ''
+    $script:GhidraOfficial = $false
+    if ($FlagDir) {
+        $check = Test-ReaGhidraValid -Dir $FlagDir
+        if (-not $check.Valid) {
+            Stop-Rea -Code $script:EX_STEP -Step ghidra -Message "-GhidraDir $FlagDir is not a usable Ghidra: $($check.Reason)"
+        }
+        $script:GhidraDirSelected = $FlagDir
+        Write-ReaLog INFO ghidra "using -GhidraDir: $(Get-ReaShortPath $FlagDir)"
+        $script:Summary['ghidra'] = "reused -GhidraDir: $FlagDir"
+        return
+    }
+    if ($EnvDir) {
+        $check = Test-ReaGhidraValid -Dir $EnvDir
+        if ($check.Valid) {
+            $script:GhidraDirSelected = $EnvDir
+            Write-ReaLog INFO ghidra "using GHIDRA_INSTALL_DIR: $(Get-ReaShortPath $EnvDir)"
+            $script:Summary['ghidra'] = "reused GHIDRA_INSTALL_DIR: $EnvDir"
+            return
+        }
+        if ((Get-ReaGhidraVersion -Dir $EnvDir) -match '^12\.2(\.|$)') {
+            Write-ReaLog DEBUG ghidra "GHIDRA_INSTALL_DIR $EnvDir is a 12.2 install"
+            Write-ReaLog WARN ghidra '12.2 is not accepted by rea 6.8.0; installing 12.1.4 alongside'
+        } else {
+            Write-ReaLog WARN ghidra "GHIDRA_INSTALL_DIR $EnvDir is not a usable Ghidra ($($check.Reason)); ignoring it"
+        }
+    }
+    $topDir = $script:PIN_GHIDRA_TOPDIR
+    $dir = Join-Path $script:ToolsDir $topDir
+    if (Test-Path -LiteralPath $dir -PathType Container) {
+        if (-not (Test-ReaInstallValid -Dir $dir -File @('Ghidra/application.properties'))) {
+            Write-ReaLog DEBUG ghidra "ignoring ${topDir}: no .install-complete or no application.properties"
+        } else {
+            $check = Test-ReaGhidraValid -Dir $dir
+            if ($check.Valid) {
+                $script:GhidraDirSelected = $dir
+                $script:GhidraOfficial = $true
+                Write-ReaLog INFO ghidra "reusing $topDir in $(Get-ReaShortPath $script:ToolsDir)"
+                $script:Summary['ghidra'] = "reused ${topDir}: $dir"
+                return
+            }
+            Write-ReaLog WARN ghidra "ignoring the install ${topDir}: $($check.Reason)"
+        }
+    }
+    $installed = Install-ReaGhidra
+    if ($installed) { $script:GhidraDirSelected = [string]$installed }
+}
+
+# Picks or installs the Ghidra that rea runs with. Runs under the lock Invoke-ReaStepToolsBin took. On macOS the
+# official archive has no native decompiler: a WARN and a warn summary, never a failure.
+function Invoke-ReaStepGhidra {
+    Select-ReaGhidra
+    Write-ReaLog DEBUG ghidra "selected: $script:GhidraDirSelected"
+    if (([string](Get-ReaPlatform).Os) -eq 'mac' -and $script:GhidraOfficial) {
+        Write-ReaLog WARN ghidra 'the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
+        $script:Summary['ghidra'] = "warn: $($script:Summary['ghidra']); no macOS native decompiler in the official archive"
+    }
+    Write-ReaLog INFO ghidra 'ok'
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -2414,6 +2596,7 @@ function Invoke-Main {
         Invoke-ReaStepPrereq
         Invoke-ReaStepToolsBin
         Invoke-ReaStepJdk
+        Invoke-ReaStepGhidra
         Unlock-ReaToolsDir
         return $script:EX_OK
     } catch {

@@ -1934,6 +1934,146 @@ step_jdk() {
   return 0
 }
 
+# --- step ghidra ---
+
+# ghidra_version DIR: the application.version of DIR/Ghidra/application.properties (tolerant of CRLF, blanks
+# and other properties); empty when the file or the property is absent
+ghidra_version() {
+  gv_file="$1/Ghidra/application.properties"
+  [ -f "$gv_file" ] || return 0
+  tr -d '\r' <"$gv_file" | sed -n -E 's/^[[:space:]]*application\.version[[:space:]]*=[[:space:]]*([^[:space:]]*)[[:space:]]*$/\1/p' | head -n 1
+}
+
+# ghidra_valid DIR: 0 when DIR holds a Ghidra of the 12.1 line (12.1 or 12.1.N); otherwise 1 with the reason
+# on stdout
+ghidra_valid() {
+  gl_ver=$(ghidra_version "$1")
+  if [ -z "$gl_ver" ]; then
+    echo "no application.version in Ghidra/application.properties"
+    return 1
+  fi
+  if printf '%s\n' "$gl_ver" | grep -Eq '^12\.1(\.[0-9]+)?$'; then
+    return 0
+  fi
+  echo "version $gl_ver is not in the 12.1 line"
+  return 1
+}
+
+# ghidra_fail STAGE MSG [CODE]: removes STAGE (and the archive in it) and dies, EX_VERIFY unless CODE is given
+ghidra_fail() {
+  rm -rf -- "$1"
+  die "${3:-$EX_VERIFY}" ghidra "$2"
+}
+
+# ghidra_install: installs the pinned Ghidra into TOOLS_DIR/PIN_GHIDRA_TOPDIR and sets GHIDRA_DIR_SELECTED; a
+# read-only run only logs what it would fetch. The work happens in a staging directory beside the final one
+# (a short name, for the Windows path limit); the archive lives there as .download.$$.zip and goes right after
+# the extract. The digest is the one embedded in this script, never one fetched.
+ghidra_install() {
+  gi_final="$TOOLS_DIR/$PIN_GHIDRA_TOPDIR"
+  require_free_mb "$TOOLS_DIR" 1500
+  log INFO ghidra "will install Ghidra $PIN_GHIDRA_VERSION from $PIN_GHIDRA_URL ($PIN_GHIDRA_ZIP_BYTES bytes) into $(abbrev_home "$gi_final")"
+  GHIDRA_OFFICIAL=1
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log INFO ghidra "read-only run, nothing installed"
+    summary_set ghidra "$PIN_GHIDRA_VERSION (not installed: read-only run)"
+    return 0
+  fi
+  mkdir -p -- "$TOOLS_DIR" || die "$EX_STEP" ghidra "cannot create directory: $TOOLS_DIR"
+  gi_work=$(staging_new "$TOOLS_DIR" ghidra.work) || die "$EX_STEP" ghidra "cannot create a staging directory in $TOOLS_DIR"
+  register_tmp "$gi_work"
+  gi_archive="$gi_work/.download.$$.zip"
+  download_verified "$PIN_GHIDRA_URL" "$gi_archive" "$PIN_GHIDRA_SHA256" || ghidra_fail "$gi_work" "cannot download and verify Ghidra $PIN_GHIDRA_VERSION from $PIN_GHIDRA_URL"
+  gi_size=$(wc -c <"$gi_archive" | tr -d ' ')
+  [ "$gi_size" = "$PIN_GHIDRA_ZIP_BYTES" ] || ghidra_fail "$gi_work" "the Ghidra archive is $gi_size bytes, expected $PIN_GHIDRA_ZIP_BYTES"
+  archive_check_safe "$gi_archive" || ghidra_fail "$gi_work" "the Ghidra archive is not safe to extract"
+  archive_extract "$gi_archive" "$gi_work/x" || ghidra_fail "$gi_work" "cannot extract the Ghidra archive"
+  rm -f "$gi_archive"
+  gi_count=0
+  gi_found=""
+  for gi_e in "$gi_work"/x/* "$gi_work"/x/.[!.]* "$gi_work"/x/..?*; do
+    if [ -e "$gi_e" ] || [ -L "$gi_e" ]; then
+      gi_count=$((gi_count + 1))
+      gi_found=$gi_e
+    fi
+  done
+  if [ "$gi_count" -ne 1 ] || [ "${gi_found##*/}" != "$PIN_GHIDRA_TOPDIR" ] || [ -L "$gi_found" ] || [ ! -d "$gi_found" ]; then
+    ghidra_fail "$gi_work" "the Ghidra archive must hold exactly one top directory, $PIN_GHIDRA_TOPDIR (found $gi_count entries)"
+  fi
+  gi_stage=$(staging_new "$TOOLS_DIR" "$PIN_GHIDRA_TOPDIR") || ghidra_fail "$gi_work" "cannot create a staging directory in $TOOLS_DIR" "$EX_STEP"
+  register_tmp "$gi_stage"
+  rmdir "$gi_stage" || ghidra_fail "$gi_work" "cannot prepare the staging directory $gi_stage" "$EX_STEP"
+  mv -- "$gi_found" "$gi_stage" || ghidra_fail "$gi_work" "cannot move the extracted Ghidra into $gi_stage" "$EX_STEP"
+  rm -rf -- "$gi_work"
+  gi_ver=$(ghidra_version "$gi_stage")
+  [ "$gi_ver" = "$PIN_GHIDRA_VERSION" ] || ghidra_fail "$gi_stage" "the downloaded Ghidra reports version '$gi_ver', expected $PIN_GHIDRA_VERSION"
+  install_commit "$gi_stage" "$gi_final" || ghidra_fail "$gi_stage" "cannot move Ghidra into place: $gi_final" "$EX_STEP"
+  GHIDRA_DIR_SELECTED=$gi_final
+  log INFO ghidra "installed Ghidra $PIN_GHIDRA_VERSION in $(abbrev_home "$gi_final")"
+  summary_set ghidra "$PIN_GHIDRA_VERSION installed: $GHIDRA_DIR_SELECTED"
+  return 0
+}
+
+# ghidra_select: sets GHIDRA_DIR_SELECTED and SUMMARY_ghidra. Precedence: --ghidra-dir (invalid: dies EX_STEP),
+# the GHIDRA_INSTALL_DIR environment variable (invalid: WARN and go on), the install in TOOLS_DIR (valid and
+# marked complete; one without the mark is treated as absent and replaced), a new install. GHIDRA_OFFICIAL is
+# 1 when the Ghidra is the official archive (installed or about to be, or reused from TOOLS_DIR).
+ghidra_select() {
+  GHIDRA_DIR_SELECTED=""
+  GHIDRA_OFFICIAL=0
+  if [ -n "${OPT_GHIDRA_DIR:-}" ]; then
+    gs_why=$(ghidra_valid "$OPT_GHIDRA_DIR") || die "$EX_STEP" ghidra "--ghidra-dir $OPT_GHIDRA_DIR is not a usable Ghidra: $gs_why"
+    GHIDRA_DIR_SELECTED=$OPT_GHIDRA_DIR
+    log INFO ghidra "using --ghidra-dir: $(abbrev_home "$OPT_GHIDRA_DIR")"
+    summary_set ghidra "reused --ghidra-dir: $GHIDRA_DIR_SELECTED"
+    return 0
+  fi
+  if [ -n "${GHIDRA_INSTALL_DIR:-}" ]; then
+    if gs_why=$(ghidra_valid "$GHIDRA_INSTALL_DIR"); then
+      GHIDRA_DIR_SELECTED=$GHIDRA_INSTALL_DIR
+      log INFO ghidra "using GHIDRA_INSTALL_DIR: $(abbrev_home "$GHIDRA_INSTALL_DIR")"
+      summary_set ghidra "reused GHIDRA_INSTALL_DIR: $GHIDRA_DIR_SELECTED"
+      return 0
+    fi
+    case "$(ghidra_version "$GHIDRA_INSTALL_DIR")" in
+      12.2 | 12.2.*)
+        log DEBUG ghidra "GHIDRA_INSTALL_DIR $GHIDRA_INSTALL_DIR is a 12.2 install"
+        log WARN ghidra "12.2 is not accepted by rea 6.8.0; installing 12.1.4 alongside"
+        ;;
+      *) log WARN ghidra "GHIDRA_INSTALL_DIR $GHIDRA_INSTALL_DIR is not a usable Ghidra ($gs_why); ignoring it" ;;
+    esac
+  fi
+  gs_dir="$TOOLS_DIR/$PIN_GHIDRA_TOPDIR"
+  if [ -d "$gs_dir" ]; then
+    if ! install_valid "$gs_dir" Ghidra/application.properties; then
+      log DEBUG ghidra "ignoring $PIN_GHIDRA_TOPDIR: no .install-complete or no application.properties"
+    elif gs_why=$(ghidra_valid "$gs_dir"); then
+      GHIDRA_DIR_SELECTED=$gs_dir
+      GHIDRA_OFFICIAL=1
+      log INFO ghidra "reusing $PIN_GHIDRA_TOPDIR in $(abbrev_home "$TOOLS_DIR")"
+      summary_set ghidra "reused $PIN_GHIDRA_TOPDIR: $GHIDRA_DIR_SELECTED"
+      return 0
+    else
+      log WARN ghidra "ignoring the install $PIN_GHIDRA_TOPDIR: $gs_why"
+    fi
+  fi
+  ghidra_install
+}
+
+# step_ghidra: picks or installs the Ghidra that rea runs with. Runs under the lock step_tools_bin took. Sets
+# GHIDRA_DIR_SELECTED and SUMMARY_ghidra. On macOS the official archive has no native decompiler: a WARN and
+# a warn summary, never a failure.
+step_ghidra() {
+  ghidra_select
+  log DEBUG ghidra "selected: $GHIDRA_DIR_SELECTED"
+  if [ "$OS" = mac ] && [ "$GHIDRA_OFFICIAL" -eq 1 ]; then
+    log WARN ghidra 'the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
+    summary_set ghidra "warn: $(summary_get ghidra); no macOS native decompiler in the official archive"
+  fi
+  log INFO ghidra "ok"
+  return 0
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -1963,6 +2103,7 @@ main() {
   step_prereq
   step_tools_bin
   step_jdk
+  step_ghidra
   tools_lock_release
 }
 
