@@ -1,0 +1,37 @@
+[
+    {
+        "binary": {
+            "architecture": "x64",
+            "download_count": 1417162,
+            "heap_size": "normal",
+            "image_type": "jdk",
+            "jvm_impl": "hotspot",
+            "os": "linux",
+            "package": {
+                "checksum": "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c",
+                "checksum_link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sha256.txt",
+                "download_count": 1417162,
+                "link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+                "metadata_link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.json",
+                "name": "OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+                "signature_link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sig",
+                "size": 207858352
+            },
+            "project": "jdk",
+            "scm_ref": "jdk-21.0.13+9_adopt",
+            "updated_at": "2026-10-22T12:07:52Z"
+        },
+        "release_link": "https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.13%2B9",
+        "release_name": "jdk-21.0.13+9",
+        "vendor": "eclipse",
+        "version": {
+            "build": 9,
+            "major": 21,
+            "minor": 0,
+            "openjdk_version": "21.0.13+9-LTS",
+            "optional": "LTS",
+            "security": 13,
+            "semver": "21.0.13+9.0.LTS"
+        }
+    }
+]

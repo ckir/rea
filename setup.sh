@@ -370,6 +370,329 @@ confirm() {
   esac
 }
 
+# --- network ---
+
+ALLOWED_SCHEMES=https
+ALLOWED_HOSTS=$PIN_ALLOWED_HOSTS
+RETRY_WAITS="2 4 8 16"
+CURL="curl"
+
+# url_scheme URL: the lower-cased scheme; fails when there is no scheme://
+url_scheme() {
+  case "$1" in
+    *://*) printf '%s\n' "${1%%://*}" | tr '[:upper:]' '[:lower:]' ;;
+    *) return 1 ;;
+  esac
+}
+
+# url_authority URL: everything between scheme:// and the first / ? or #
+url_authority() {
+  ua_rest=${1#*://}
+  printf '%s\n' "${ua_rest%%[/?#]*}"
+}
+
+# url_host URL: the lower-cased host, without any userinfo or port
+url_host() {
+  uh_auth=$(url_authority "$1")
+  uh_auth=${uh_auth##*@}
+  printf '%s\n' "${uh_auth%%:*}" | tr '[:upper:]' '[:lower:]'
+}
+
+# url_allowed URL: 0 when the scheme is in ALLOWED_SCHEMES, the host in ALLOWED_HOSTS and the authority
+# carries no userinfo; whitespace and backslashes are refused outright
+url_allowed() {
+  case "$1" in
+    *[[:space:]\\]*) return 1 ;;
+  esac
+  ual_scheme=$(url_scheme "$1") || return 1
+  ual_ok=1
+  for ual_s in $ALLOWED_SCHEMES; do
+    if [ "$ual_s" = "$ual_scheme" ]; then
+      ual_ok=0
+    fi
+  done
+  [ "$ual_ok" -eq 0 ] || return 1
+  case "$(url_authority "$1")" in
+    *@*) return 1 ;;
+  esac
+  ual_host=$(url_host "$1")
+  for ual_h in $ALLOWED_HOSTS; do
+    if [ "$ual_h" = "$ual_host" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# net_proto: the value for curl --proto, https only unless ALLOWED_SCHEMES lists http (tests)
+net_proto() {
+  case " $ALLOWED_SCHEMES " in
+    *" http "*) echo '=https,http' ;;
+    *) echo '=https' ;;
+  esac
+}
+
+# resolve_redirects URL: prints the final URL after at most 5 redirects, using HEAD (no body is fetched).
+# A hop answering 405 or 403 to HEAD is asked again with a one-byte ranged GET. Every hop must pass
+# url_allowed. Returns 1 for a disallowed hop, 2 for more than 5 redirects, 3 for any other failure.
+resolve_redirects() {
+  rr_url=$1
+  rr_hops=0
+  while :; do
+    url_allowed "$rr_url" || {
+      log ERROR net "redirect target not allowed: $rr_url"
+      return 1
+    }
+    rr_resp=$("$CURL" -sS -I -o /dev/null -w '%{http_code} %{redirect_url}' --proto "$(net_proto)" --tlsv1.2 \
+      --connect-timeout 20 --max-time 60 "$rr_url" 2>/dev/null) || rr_resp="000 "
+    case "$rr_resp" in
+      403* | 405*)
+        rr_resp=$("$CURL" -sS -r 0-0 -o /dev/null -w '%{http_code} %{redirect_url}' --proto "$(net_proto)" --tlsv1.2 \
+          --connect-timeout 20 --max-time 60 "$rr_url" 2>/dev/null) || rr_resp="000 "
+        ;;
+    esac
+    rr_code=${rr_resp%% *}
+    rr_next=${rr_resp#* }
+    log DEBUG net "HEAD $rr_url -> $rr_code"
+    case "$rr_code" in
+      2??)
+        printf '%s\n' "$rr_url"
+        return 0
+        ;;
+      3??)
+        if [ -z "$rr_next" ]; then
+          return 3
+        fi
+        rr_hops=$((rr_hops + 1))
+        if [ "$rr_hops" -gt 5 ]; then
+          log ERROR net "more than 5 redirects from $1"
+          return 2
+        fi
+        rr_url=$rr_next
+        ;;
+      *) return 3 ;;
+    esac
+  done
+}
+
+# http_get URL DEST [EXTRA_CURL_ARGS...]: GET into DEST with retries. 2xx returns 0; 5xx, 429 and curl exits
+# 6 7 28 35 52 56 are retried (RETRY_WAITS gives the pause before each retry, so it also sets the number of
+# attempts; Retry-After raises the pause); any other failure returns 1 at once. GITHUB_TOKEN goes to
+# api.github.com only, through a private curl config file so it is neither on a command line nor in the log.
+http_get() {
+  hg_url=$1
+  hg_dest=$2
+  shift 2
+  url_allowed "$hg_url" || {
+    log ERROR net "URL not allowed: $hg_url"
+    return 1
+  }
+  hg_hdr=$(mktemp "${TMPDIR:-/tmp}/rea-setup-hdr.XXXXXX") || return 1
+  hg_cfg=$(mktemp "${TMPDIR:-/tmp}/rea-setup-cfg.XXXXXX") || {
+    rm -f "$hg_hdr"
+    return 1
+  }
+  hg_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || {
+    rm -f "$hg_hdr" "$hg_cfg"
+    return 1
+  }
+  if [ -n "${GITHUB_TOKEN:-}" ] && [ "$(url_host "$hg_url")" = api.github.com ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" >"$hg_cfg"
+  fi
+  hg_total=0
+  for hg_w in $RETRY_WAITS; do
+    [ -n "$hg_w" ] && hg_total=$((hg_total + 1))
+  done
+  hg_attempt=0
+  hg_result=1
+  for hg_wait in $RETRY_WAITS; do
+    hg_attempt=$((hg_attempt + 1))
+    hg_rc=0
+    hg_code=$("$CURL" -sS -K "$hg_cfg" --proto "$(net_proto)" --tlsv1.2 --speed-limit 1024 --speed-time 60 \
+      --connect-timeout 20 -D "$hg_hdr" -o "$hg_dest" -w '%{http_code}' "$@" "$hg_url" 2>"$hg_err") || hg_rc=$?
+    log DEBUG net "GET $hg_url -> ${hg_code:-000} (curl exit $hg_rc, attempt $hg_attempt of $hg_total)"
+    if [ "$hg_rc" -ne 0 ]; then
+      log DEBUG net "curl: $(head -c 500 "$hg_err")"
+    fi
+    hg_retry=0
+    if [ "$hg_rc" -eq 0 ]; then
+      case "$hg_code" in
+        2??)
+          hg_result=0
+          break
+          ;;
+        5?? | 429) hg_retry=1 ;;
+        *) break ;;
+      esac
+    else
+      case "$hg_rc" in
+        6 | 7 | 28 | 35 | 52 | 56) hg_retry=1 ;;
+        *) break ;;
+      esac
+    fi
+    [ "$hg_retry" -eq 1 ] || break
+    [ "$hg_attempt" -lt "$hg_total" ] || break
+    hg_ra=$(sed -n 's/^[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$hg_hdr" | tail -n 1)
+    if [ -n "$hg_ra" ] && [ "$hg_ra" -gt "$hg_wait" ]; then
+      hg_wait=$hg_ra
+    fi
+    if [ "$hg_wait" -gt 120 ]; then
+      hg_wait=120
+    fi
+    log DEBUG net "retrying in ${hg_wait}s"
+    sleep "$hg_wait"
+  done
+  rm -f "$hg_hdr" "$hg_cfg" "$hg_err"
+  if [ "$hg_result" -ne 0 ]; then
+    rm -f "$hg_dest"
+    log ERROR net "GET failed: $hg_url"
+  fi
+  return "$hg_result"
+}
+
+# sha256_file FILE: prints the lower-case hex digest
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d ' ' -f 1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d ' ' -f 1
+  else
+    log ERROR net "neither sha256sum nor shasum is available"
+    return 1
+  fi
+}
+
+# sidecar_sha256 FILE: prints the first 64-hex token of a .sha256 sidecar, lower-cased (sha256sum, shasum
+# and PowerShell layouts); fails when there is none
+sidecar_sha256() {
+  ss_hash=$(sed -n -E 's/^[[:space:]]*([0-9A-Fa-f]{64})([^0-9A-Fa-f].*)?$/\1/p' "$1" | head -n 1 | tr '[:upper:]' '[:lower:]')
+  [ -n "$ss_hash" ] || return 1
+  printf '%s\n' "$ss_hash"
+}
+
+# download_verified URL DEST SHA256: resolves redirects, downloads to DEST.tmp.$$, checks the digest
+# (case-insensitive) and only then moves the file to DEST. Returns 1 on any failure, leaving nothing behind.
+download_verified() {
+  dv_final=$(resolve_redirects "$1") || {
+    log ERROR net "cannot resolve $1"
+    return 1
+  }
+  dv_tmp="$2.tmp.$$"
+  http_get "$dv_final" "$dv_tmp" || {
+    rm -f "$dv_tmp"
+    return 1
+  }
+  dv_got=$(sha256_file "$dv_tmp") || {
+    rm -f "$dv_tmp"
+    return 1
+  }
+  dv_want=$(printf '%s' "$3" | tr '[:upper:]' '[:lower:]')
+  if [ "$dv_got" != "$dv_want" ]; then
+    log ERROR net "checksum mismatch for $1: expected $dv_want got $dv_got"
+    rm -f "$dv_tmp"
+    return 1
+  fi
+  mv -f "$dv_tmp" "$2"
+}
+
+# json_query FILE JS: applies the JavaScript expression JS (a literal from this script, never data) to the
+# parsed JSON of FILE as `d` and prints the result; arrays one element per line, null and undefined as empty.
+# The expression travels as an argument, so quoting cannot break the program. The last two arguments are
+# read, so it does not matter whether this node keeps the -- in process.argv.
+json_query() {
+  node -e 'const a=process.argv.slice(-2);const d=JSON.parse(require("fs").readFileSync(a[0],"utf8"));let r=new Function("d","return ("+a[1]+")")(d);if(r===null||r===undefined)r="";if(Array.isArray(r))r=r.join("\n");process.stdout.write(String(r)+"\n")' -- "$1" "$2"
+}
+
+# github_latest_tag REPO: the tag of the latest release, from the redirect of /releases/latest
+github_latest_tag() {
+  gl_url="https://github.com/$1/releases/latest"
+  url_allowed "$gl_url" || return 1
+  gl_loc=$("$CURL" -sS -I -o /dev/null -w '%{redirect_url}' --proto "$(net_proto)" --tlsv1.2 \
+    --connect-timeout 20 --max-time 60 "$gl_url" 2>/dev/null) || return 1
+  log DEBUG net "latest release of $1 -> $gl_loc"
+  case "$gl_loc" in
+    */releases/tag/?*) printf '%s\n' "${gl_loc##*/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# github_release_assets REPO: the asset names of the latest release, one per line, from the API
+github_release_assets() {
+  gr_tmp=$(mktemp "${TMPDIR:-/tmp}/rea-setup-json.XXXXXX") || return 1
+  if http_get "https://api.github.com/repos/$1/releases/latest" "$gr_tmp"; then
+    gr_rc=0
+    json_query "$gr_tmp" '(d.assets||[]).map(a=>a.name)' || gr_rc=1
+  else
+    gr_rc=1
+  fi
+  rm -f "$gr_tmp"
+  return "$gr_rc"
+}
+
+# github_release_assets_scrape REPO TAG: the asset names of a release, from the HTML of its expanded_assets
+# page; the fallback for when the API is rate-limited
+github_release_assets_scrape() {
+  gs_tmp=$(mktemp "${TMPDIR:-/tmp}/rea-setup-html.XXXXXX") || return 1
+  if http_get "https://github.com/$1/releases/expanded_assets/$2" "$gs_tmp"; then
+    grep -Eo '/[^"<> ]+/releases/download/[^"<> ]+' "$gs_tmp" | grep -F "/$1/releases/download/$2/" | sed 's#.*/##' | sort -u
+    gs_rc=0
+  else
+    gs_rc=1
+  fi
+  rm -f "$gs_tmp"
+  return "$gs_rc"
+}
+
+# jdk_release_valid TAG: 0 when TAG is a Temurin 21 release name such as jdk-21.0.13+9
+jdk_release_valid() {
+  printf '%s\n' "$1" | grep -Eq '^jdk-21(\.[0-9]+)*\+[0-9]+$'
+}
+
+# adoptium_parse FILE: reads the first asset of an Adoptium response and sets JDK_RELEASE, JDK_URL,
+# JDK_SHA256, JDK_SIDECAR_URL and JDK_BYTES. Returns 1 unless the release name, the download link (host
+# github.com, path /adoptium/temurin21-binaries/), the sidecar link and the checksum all pass.
+adoptium_parse() {
+  ap_vals=$(json_query "$1" '[d[0].release_name, d[0].binary.package.link, d[0].binary.package.checksum, d[0].binary.package.checksum_link, d[0].binary.package.size]') || return 1
+  JDK_RELEASE=$(printf '%s\n' "$ap_vals" | sed -n 1p)
+  JDK_URL=$(printf '%s\n' "$ap_vals" | sed -n 2p)
+  JDK_SHA256=$(printf '%s\n' "$ap_vals" | sed -n 3p | tr '[:upper:]' '[:lower:]')
+  JDK_SIDECAR_URL=$(printf '%s\n' "$ap_vals" | sed -n 4p)
+  JDK_BYTES=$(printf '%s\n' "$ap_vals" | sed -n 5p)
+  jdk_release_valid "$JDK_RELEASE" || {
+    log ERROR net "unexpected JDK release name: $JDK_RELEASE"
+    return 1
+  }
+  url_allowed "$JDK_URL" || return 1
+  [ "$(url_host "$JDK_URL")" = github.com ] || return 1
+  case "${JDK_URL#*://*/}" in
+    adoptium/temurin21-binaries/?*) ;;
+    *)
+      log ERROR net "unexpected JDK download path: $JDK_URL"
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$JDK_SHA256" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  printf '%s\n' "$JDK_BYTES" | grep -Eq '^[0-9]+$' || return 1
+  if [ -n "$JDK_SIDECAR_URL" ]; then
+    url_allowed "$JDK_SIDECAR_URL" || return 1
+  fi
+  return 0
+}
+
+# adoptium_resolve OS ARCH: asks the Adoptium API for the latest Temurin 21 JDK and parses it. Returns 2
+# when the API cannot be reached (the caller uses the fallback pin) and 1 when the answer fails validation.
+adoptium_resolve() {
+  ar_tmp=$(mktemp "${TMPDIR:-/tmp}/rea-setup-json.XXXXXX") || return 2
+  if ! http_get "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=$2&image_type=jdk&os=$1&vendor=eclipse" "$ar_tmp"; then
+    rm -f "$ar_tmp"
+    return 2
+  fi
+  ar_rc=0
+  adoptium_parse "$ar_tmp" || ar_rc=1
+  rm -f "$ar_tmp"
+  return "$ar_rc"
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log

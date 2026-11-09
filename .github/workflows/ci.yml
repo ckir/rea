@@ -69,6 +69,9 @@ jobs:
           }
       - name: Unit tests
         run: just test
+      - name: Integration tests (loopback fake release server)
+        if: runner.os == 'Linux'
+        run: just test-integration
       - name: Pester under Windows PowerShell 5.1
         if: runner.os == 'Windows'
         shell: cmd
