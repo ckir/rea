@@ -1,15 +1,30 @@
 #!/bin/sh
-# Test stub. Answers --version, -V and -v with STUB_<name>_VERSION (hyphens in the command name become
-# underscores, so agent-profile reads STUB_agent_profile_VERSION) and exits with STUB_<name>_EXIT (default 0).
-n=$(basename "$0" | tr '-' '_')
-eval "v=\${STUB_${n}_VERSION:-}"
-eval "rc=\${STUB_${n}_EXIT:-0}"
+# Test stub. Answers --version, -V and -v with STUB_clavity_ls_VERSION (default 1.0.0).
+# Any other call is recorded when STUB_CL_LOG is set: one `arg: <value>` line per argument, then
+# `env GHIDRA_INSTALL_DIR=...`, `env JAVA_HOME=...`, `env CLAUDE_CONFIG_DIR=...` (a variable that is not set is
+# not listed) and `path-head: <first PATH entry>`. STUB_CL_STDERR is a line for stderr. The exit code is
+# STUB_CL_EXIT (default 0).
 case "${1:-}" in
   --version | -V | -v)
-    if [ -z "$v" ]; then
-      if [ "$n" = node ]; then v=v24.22.2; else v=1.0.0; fi
-    fi
-    printf '%s\n' "$v"
+    printf '%s\n' "${STUB_clavity_ls_VERSION:-1.0.0}"
+    exit "${STUB_clavity_ls_EXIT:-0}"
     ;;
 esac
-exit "$rc"
+if [ -n "${STUB_CL_LOG:-}" ]; then
+  {
+    for a in "$@"; do
+      printf 'arg: %s\n' "$a"
+    done
+    for v in GHIDRA_INSTALL_DIR JAVA_HOME CLAUDE_CONFIG_DIR; do
+      eval "set_v=\${$v+set}"
+      if [ -n "$set_v" ]; then
+        eval "printf 'env %s=%s\\n' \"$v\" \"\${$v}\""
+      fi
+    done
+    printf 'path-head: %s\n' "${PATH%%:*}"
+  } >>"$STUB_CL_LOG"
+fi
+if [ -n "${STUB_CL_STDERR:-}" ]; then
+  printf '%s\n' "$STUB_CL_STDERR" >&2
+fi
+exit "${STUB_CL_EXIT:-0}"

@@ -472,6 +472,6 @@ assert_eq "" "$(listing "$TOOLS_DIR")" "check-upstream: nothing written"
 assert_eq 0 "$(count_of "$DL_PATH")" "check-upstream: the zip is not downloaded"
 
 # --- main runs the steps in order, the lock released after the last ---
-assert_eq "step_tools_bin step_jdk step_ghidra tools_lock_release" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (step_tools_bin|step_jdk|step_ghidra|tools_lock_release)$' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: step_ghidra runs after step_jdk and before the lock release"
+assert_eq "plan_confirm step_tools_bin step_jdk step_ghidra tools_lock_release" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (plan_confirm|step_tools_bin|step_jdk|step_ghidra|tools_lock_release)$' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: step_ghidra runs after step_jdk and before the lock release"
 
 t_done

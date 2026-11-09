@@ -532,7 +532,7 @@ assert_eq "" "$(grep -c 'sk-secret-123' "$T/d13.log" | sed 's/^0$//')" "doctor: 
 
 # --- the pin and the main order ---
 assert_eq "rea-agents@latest" "$PIN_REA_SPEC" "pin: PIN_REA_SPEC"
-assert_eq "step_ghidra tools_lock_release step_profile step_rea_setup step_rea_doctor" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (step_ghidra|tools_lock_release|step_profile|step_rea_setup|step_rea_doctor)$' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: rea-setup and rea-doctor run last, after profile"
+assert_eq "step_ghidra tools_lock_release step_profile step_rea_setup step_rea_doctor write_env_files" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (step_ghidra|tools_lock_release|step_profile|step_rea_setup|step_rea_doctor|write_env_files)( "[^"]*")?$' | sed 's/ "[^"]*"$//' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: rea-setup and rea-doctor run after profile, then the env file"
 assert_eq "" "$(grep -n 'HOME/.claude.json' "$ROOT/setup.sh" | grep -v '^[0-9]*:#' | sed 's/^/found /')" "setup.sh never names \$HOME/.claude.json outside comments"
 
 t_done

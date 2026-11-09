@@ -78,6 +78,7 @@ test:
 # Integration tests against a local fake release server (not part of check)
 test-integration:
     sh tests/integration/run.sh
+    sh tests/integration/e2e.sh
     pwsh -NoProfile -File tests/integration/run-win.ps1
 
 # The local gate, cheapest first

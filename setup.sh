@@ -1634,6 +1634,7 @@ install_single_binary() {
   http_get "$isb_final" "$isb_stage/sidecar" || die "$EX_VERIFY" tools-bin "cannot download the checksum of $isb_name: $isb_sidecar_url"
   isb_hash=$(sidecar_sha256 "$isb_stage/sidecar") || die "$EX_VERIFY" tools-bin "the checksum file of $isb_name holds no SHA-256: $isb_sidecar_url"
   isb_archive="$isb_stage/${isb_url##*/}"
+  log DEBUG tools-bin "disk_free_mb $(disk_free_mb "$isb_dir") MB at $isb_dir before the download of $isb_name"
   download_verified "$isb_url" "$isb_archive" "$isb_hash" || die "$EX_VERIFY" tools-bin "cannot download and verify $isb_name from $isb_url"
   archive_check_safe "$isb_archive" || die "$EX_VERIFY" tools-bin "the archive of $isb_name is not safe to extract"
   archive_extract "$isb_archive" "$isb_stage/x" || die "$EX_VERIFY" tools-bin "cannot extract the archive of $isb_name"
@@ -1651,6 +1652,7 @@ install_single_binary() {
   chmod +x -- "$isb_found" || die "$EX_STEP" tools-bin "cannot make $isb_expected executable"
   if mv -f -- "$isb_found" "$isb_dest"; then
     rm -rf -- "$isb_stage"
+    log DEBUG tools-bin "disk_free_mb $(disk_free_mb "$isb_dir") MB at $isb_dir after installing $isb_name"
     return 0
   fi
   if [ "${OS:-}" = windows ] && [ -e "$isb_dest" ]; then
@@ -1698,6 +1700,7 @@ tools_bin_one() {
   tbo_result=$tbo_decision
   case "$tbo_decision" in
     install | update)
+      TOOLS_BIN_ACTED=1
       if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
         log INFO tools-bin "$tbo_name: read-only run, nothing installed"
         tbo_result="$tbo_decision (not done: read-only run)"
@@ -1720,20 +1723,29 @@ tools_bin_one() {
 # SUMMARY_tools_bin.
 step_tools_bin() {
   TOOLS_BIN_SUMMARY=""
+  TOOLS_BIN_ACTED=0
   if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
     log DEBUG tools-bin "read-only run: no lock taken"
   else
     lock_acquire "$TOOLS_DIR"
     mkdir -p -- "$BIN_DIR" || die "$EX_STEP" tools-bin "cannot create directory: $BIN_DIR"
   fi
-  resolve_agent_profile "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no agent-profile build for $OS $ARCH"
+  if [ "${TB_PLANNED:-0}" -ne 1 ]; then
+    resolve_agent_profile "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no agent-profile build for $OS $ARCH"
+  fi
   tools_bin_one agent-profile "$AP_VERSION" "$AP_URL" "$AP_SIDECAR_URL"
-  resolve_clavity_ls "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no clavity-ls build for $OS $ARCH"
+  if [ "${TB_PLANNED:-0}" -ne 1 ]; then
+    resolve_clavity_ls "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no clavity-ls build for $OS $ARCH"
+  fi
   tools_bin_one clavity-ls "$CL_VERSION" "$CL_URL" "$CL_SIDECAR_URL"
   PATH="$BIN_DIR:$PATH"
   export PATH
   summary_set tools_bin "$TOOLS_BIN_SUMMARY"
-  log INFO tools-bin "ok"
+  if [ "$TOOLS_BIN_ACTED" -eq 1 ]; then
+    log INFO tools-bin "ok"
+  else
+    log INFO tools-bin "skip (already valid)"
+  fi
   return 0
 }
 
@@ -1869,7 +1881,9 @@ jdk_fail() {
 # directory beside the final one; the archive lives there as .download.$$ and goes right after the extract.
 jdk_install() {
   require_free_mb "$TOOLS_DIR" 600
-  jdk_resolve
+  if [ "${JDK_PLANNED:-0}" -ne 1 ]; then
+    jdk_resolve
+  fi
   log INFO jdk "resolved $JDK_RELEASE: $JDK_URL (${JDK_BYTES:-unknown} bytes)"
   if [ "${OPT_DRY_RUN:-0}" -eq 1 ] || [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
     log INFO jdk "read-only run, nothing installed"
@@ -1894,6 +1908,7 @@ jdk_install() {
       log WARN jdk "the checksum sidecar of $JDK_RELEASE is unreachable; relying on the SHA-256 from the release listing"
     fi
   fi
+  log DEBUG jdk "disk_free_mb $(disk_free_mb "$TOOLS_DIR") MB at $TOOLS_DIR before the download"
   download_verified "$JDK_URL" "$ji_archive" "$JDK_SHA256" || jdk_fail "$ji_work" "cannot download and verify $JDK_RELEASE from $JDK_URL"
   archive_check_safe "$ji_archive" || jdk_fail "$ji_work" "the archive of $JDK_RELEASE is not safe to extract"
   archive_extract "$ji_archive" "$ji_work/x" || jdk_fail "$ji_work" "cannot extract the archive of $JDK_RELEASE"
@@ -1918,16 +1933,20 @@ jdk_install() {
   ji_why=$(jdk_valid "$ji_home") || jdk_fail "$ji_stage" "the downloaded $JDK_RELEASE is not a usable JDK: $ji_why"
   install_commit "$ji_stage" "$ji_final" || jdk_fail "$ji_stage" "cannot move $JDK_RELEASE into place: $ji_final" "$EX_STEP"
   JAVA_HOME_SELECTED=$(jdk_home_candidate "$ji_final")
+  log DEBUG jdk "disk_free_mb $(disk_free_mb "$TOOLS_DIR") MB at $TOOLS_DIR after the install"
   log INFO jdk "installed $JDK_RELEASE in $(abbrev_home "$ji_final")"
   prune_jdks "$TOOLS_DIR"
   summary_set jdk "$JDK_RELEASE installed: $JAVA_HOME_SELECTED"
   return 0
 }
 
-# jdk_select: sets JAVA_HOME_SELECTED and SUMMARY_jdk. Precedence: --java-home (invalid: dies EX_STEP), the
-# JAVA_HOME environment variable (invalid: WARN and go on), the newest valid install in TOOLS_DIR, a new install.
-jdk_select() {
+# jdk_choose: sets JAVA_HOME_SELECTED and SUMMARY_jdk and returns 0 when a JDK can be reused, 1 when one has to
+# be installed (JDK_REUSED says which). Precedence: --java-home (invalid: dies EX_STEP), the JAVA_HOME
+# environment variable (invalid: WARN and go on), the newest valid install in TOOLS_DIR. Resolves and checks;
+# downloads and writes nothing.
+jdk_choose() {
   JAVA_HOME_SELECTED=""
+  JDK_REUSED=1
   if [ -n "${OPT_JAVA_HOME:-}" ]; then
     js_home=$(jdk_home_candidate "$OPT_JAVA_HOME")
     js_why=$(jdk_valid "$js_home") || die "$EX_STEP" jdk "--java-home $OPT_JAVA_HOME is not a usable JDK: $js_why"
@@ -1971,14 +1990,28 @@ jdk_select() {
     summary_set jdk "reused $js_best: $JAVA_HOME_SELECTED"
     return 0
   fi
-  jdk_install
+  JDK_REUSED=0
+  return 1
+}
+
+# jdk_select: jdk_choose, then jdk_install when there is nothing to reuse
+jdk_select() {
+  jdk_choose || jdk_install
 }
 
 # step_jdk: picks or installs the JDK that Ghidra and rea run with. Runs under the lock step_tools_bin took.
-# Sets JAVA_HOME_SELECTED and SUMMARY_jdk.
+# Sets JAVA_HOME_SELECTED and SUMMARY_jdk. After jdk_plan it follows the plan (the choice was made there).
 step_jdk() {
-  jdk_select
-  log INFO jdk "ok"
+  case "${PLAN_jdk:-}" in
+    reuse) ;;
+    install) jdk_install ;;
+    *) jdk_select ;;
+  esac
+  if [ "${JDK_REUSED:-0}" -eq 1 ]; then
+    log INFO jdk "skip (already valid)"
+  else
+    log INFO jdk "ok"
+  fi
   return 0
 }
 
@@ -2031,6 +2064,7 @@ ghidra_install() {
   gi_work=$(staging_new "$TOOLS_DIR" ghidra.work) || die "$EX_STEP" ghidra "cannot create a staging directory in $TOOLS_DIR"
   register_tmp "$gi_work"
   gi_archive="$gi_work/.download.$$.zip"
+  log DEBUG ghidra "disk_free_mb $(disk_free_mb "$TOOLS_DIR") MB at $TOOLS_DIR before the download"
   download_verified "$PIN_GHIDRA_URL" "$gi_archive" "$PIN_GHIDRA_SHA256" || ghidra_fail "$gi_work" "cannot download and verify Ghidra $PIN_GHIDRA_VERSION from $PIN_GHIDRA_URL"
   gi_size=$(wc -c <"$gi_archive" | tr -d ' ')
   [ "$gi_size" = "$PIN_GHIDRA_ZIP_BYTES" ] || ghidra_fail "$gi_work" "the Ghidra archive is $gi_size bytes, expected $PIN_GHIDRA_ZIP_BYTES"
@@ -2057,18 +2091,22 @@ ghidra_install() {
   [ "$gi_ver" = "$PIN_GHIDRA_VERSION" ] || ghidra_fail "$gi_stage" "the downloaded Ghidra reports version '$gi_ver', expected $PIN_GHIDRA_VERSION"
   install_commit "$gi_stage" "$gi_final" || ghidra_fail "$gi_stage" "cannot move Ghidra into place: $gi_final" "$EX_STEP"
   GHIDRA_DIR_SELECTED=$gi_final
+  log DEBUG ghidra "disk_free_mb $(disk_free_mb "$TOOLS_DIR") MB at $TOOLS_DIR after the install"
   log INFO ghidra "installed Ghidra $PIN_GHIDRA_VERSION in $(abbrev_home "$gi_final")"
   summary_set ghidra "$PIN_GHIDRA_VERSION installed: $GHIDRA_DIR_SELECTED"
   return 0
 }
 
-# ghidra_select: sets GHIDRA_DIR_SELECTED and SUMMARY_ghidra. Precedence: --ghidra-dir (invalid: dies EX_STEP),
-# the GHIDRA_INSTALL_DIR environment variable (invalid: WARN and go on), the install in TOOLS_DIR (valid and
-# marked complete; one without the mark is treated as absent and replaced), a new install. GHIDRA_OFFICIAL is
-# 1 when the Ghidra is the official archive (installed or about to be, or reused from TOOLS_DIR).
-ghidra_select() {
+# ghidra_choose: sets GHIDRA_DIR_SELECTED and SUMMARY_ghidra and returns 0 when a Ghidra can be reused, 1 when
+# one has to be installed (GHIDRA_REUSED says which). Precedence: --ghidra-dir (invalid: dies EX_STEP), the
+# GHIDRA_INSTALL_DIR environment variable (invalid: WARN and go on), the install in TOOLS_DIR (valid and
+# marked complete; one without the mark is treated as absent and replaced). GHIDRA_OFFICIAL is 1 when the
+# Ghidra is the official archive (reused from TOOLS_DIR; ghidra_install sets it for a new one). Resolves and
+# checks; downloads and writes nothing.
+ghidra_choose() {
   GHIDRA_DIR_SELECTED=""
   GHIDRA_OFFICIAL=0
+  GHIDRA_REUSED=1
   if [ -n "${OPT_GHIDRA_DIR:-}" ]; then
     gs_why=$(ghidra_valid "$OPT_GHIDRA_DIR") || die "$EX_STEP" ghidra "--ghidra-dir $OPT_GHIDRA_DIR is not a usable Ghidra: $gs_why"
     GHIDRA_DIR_SELECTED=$OPT_GHIDRA_DIR
@@ -2105,20 +2143,34 @@ ghidra_select() {
       log WARN ghidra "ignoring the install $PIN_GHIDRA_TOPDIR: $gs_why"
     fi
   fi
-  ghidra_install
+  GHIDRA_REUSED=0
+  return 1
+}
+
+# ghidra_select: ghidra_choose, then ghidra_install when there is nothing to reuse
+ghidra_select() {
+  ghidra_choose || ghidra_install
 }
 
 # step_ghidra: picks or installs the Ghidra that rea runs with. Runs under the lock step_tools_bin took. Sets
 # GHIDRA_DIR_SELECTED and SUMMARY_ghidra. On macOS the official archive has no native decompiler: a WARN and
 # a warn summary, never a failure.
 step_ghidra() {
-  ghidra_select
+  case "${PLAN_ghidra:-}" in
+    reuse) ;;
+    install) ghidra_install ;;
+    *) ghidra_select ;;
+  esac
   log DEBUG ghidra "selected: $GHIDRA_DIR_SELECTED"
   if [ "$OS" = mac ] && [ "$GHIDRA_OFFICIAL" -eq 1 ]; then
     log WARN ghidra 'the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
     summary_set ghidra "warn: $(summary_get ghidra); no macOS native decompiler in the official archive"
   fi
-  log INFO ghidra "ok"
+  if [ "${GHIDRA_REUSED:-0}" -eq 1 ]; then
+    log INFO ghidra "skip (already valid)"
+  else
+    log INFO ghidra "ok"
+  fi
   return 0
 }
 
@@ -2256,6 +2308,8 @@ step_profile() {
   fi
   sp_dir=$(profile_config_dir "$OPT_PROFILE") || exit "$?"
   if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    CLAUDE_CONFIG_DIR_SELECTED=$sp_dir
+    export CLAUDE_CONFIG_DIR_SELECTED
     log INFO profile "would use $(abbrev_home "$sp_dir") (read-only run, nothing created)"
     summary_set profile "would use $sp_dir (not created: read-only run)"
     return 0
@@ -2453,6 +2507,299 @@ step_rea_doctor() {
   die "$EX_VERIFY" rea-doctor "rea reports the Ghidra provider unavailable; failing checks: ${rd_names:-none listed}"
 }
 
+# --- plan phase: resolution and validity checks only, no download and no write ---
+
+PLAN_tools_bin=""
+PLAN_jdk=""
+PLAN_ghidra=""
+PLAN_tools_bin_text=""
+PLAN_jdk_text=""
+PLAN_ghidra_text=""
+PLAN_jdk_bytes=0
+PLAN_ghidra_bytes=0
+# the size of the Temurin 21 archive (208 MiB, measured) when the release listing gave none
+JDK_DOWNLOAD_ESTIMATE_BYTES=218103808
+
+# mb_of BYTES: BYTES in megabytes (MiB), one decimal
+mb_of() {
+  awk -v b="$1" 'BEGIN { printf "%.1f", b / 1048576 }'
+}
+
+# tools_bin_decide NAME LATEST: prints install, update or reuse for one managed tool
+tools_bin_decide() {
+  td_have=$(installed_version "$1")
+  if [ -z "$td_have" ]; then
+    echo install
+  elif [ "$(semver_compare "$td_have" "$2")" = -1 ]; then
+    echo update
+  else
+    echo reuse
+  fi
+}
+
+# tools_bin_plan: resolves the latest agent-profile and clavity-ls (the answers are kept for step_tools_bin) and
+# sets PLAN_tools_bin to install (one is missing), update (one is behind) or reuse. Skipped by --check-upstream.
+tools_bin_plan() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    return 0
+  fi
+  resolve_agent_profile "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no agent-profile build for $OS $ARCH"
+  resolve_clavity_ls "$OS" "$ARCH" || die "$EX_PLATFORM" tools-bin "no clavity-ls build for $OS $ARCH"
+  TB_PLANNED=1
+  tp_ap=$(tools_bin_decide agent-profile "$AP_VERSION")
+  tp_cl=$(tools_bin_decide clavity-ls "$CL_VERSION")
+  PLAN_tools_bin=reuse
+  case "$tp_ap $tp_cl" in
+    *install*) PLAN_tools_bin=install ;;
+    *update*) PLAN_tools_bin=update ;;
+  esac
+  PLAN_tools_bin_text="agent-profile $AP_VERSION ($tp_ap), clavity-ls $CL_VERSION ($tp_cl) in $BIN_DIR"
+  log INFO plan "tools-bin: $PLAN_tools_bin ($PLAN_tools_bin_text)"
+}
+
+# jdk_plan: sets PLAN_jdk to reuse (jdk_choose picked one) or install (the release is resolved; the answer is
+# kept for jdk_install) and PLAN_jdk_bytes to the download size
+jdk_plan() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    return 0
+  fi
+  if jdk_choose; then
+    PLAN_jdk=reuse
+    PLAN_jdk_bytes=0
+    PLAN_jdk_text=$JAVA_HOME_SELECTED
+  else
+    jdk_resolve
+    JDK_PLANNED=1
+    PLAN_jdk=install
+    PLAN_jdk_bytes=${JDK_BYTES:-$JDK_DOWNLOAD_ESTIMATE_BYTES}
+    PLAN_jdk_text="$JDK_RELEASE into $TOOLS_DIR"
+  fi
+  log INFO plan "jdk: $PLAN_jdk ($PLAN_jdk_text)"
+}
+
+# ghidra_plan: sets PLAN_ghidra to reuse (ghidra_choose picked one) or install, and PLAN_ghidra_bytes
+ghidra_plan() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    return 0
+  fi
+  if ghidra_choose; then
+    PLAN_ghidra=reuse
+    PLAN_ghidra_bytes=0
+    PLAN_ghidra_text=$GHIDRA_DIR_SELECTED
+  else
+    PLAN_ghidra=install
+    PLAN_ghidra_bytes=$PIN_GHIDRA_ZIP_BYTES
+    PLAN_ghidra_text="Ghidra $PIN_GHIDRA_VERSION into $TOOLS_DIR/$PIN_GHIDRA_TOPDIR"
+  fi
+  log INFO plan "ghidra: $PLAN_ghidra ($PLAN_ghidra_text)"
+}
+
+# plan_needed_mb: the free space the pending installs need: 1500 for Ghidra, 600 for the JDK, 200 for the rest
+plan_needed_mb() {
+  need_mb=200
+  if [ "$PLAN_ghidra" = install ]; then
+    need_mb=$((need_mb + 1500))
+  fi
+  if [ "$PLAN_jdk" = install ]; then
+    need_mb=$((need_mb + 600))
+  fi
+  echo "$need_mb"
+}
+
+# print_disclosures: the four things the user is told before anything is downloaded (spec section 10)
+print_disclosures() {
+  pd_bytes=$((PLAN_ghidra_bytes + PLAN_jdk_bytes))
+  printf 'Before anything is changed, please note:\n'
+  if [ "$pd_bytes" -gt 0 ]; then
+    printf '  1. Download: %s MB in total (Ghidra %s MB, JDK %s MB), unpacked under %s; agent-profile and clavity-ls go to %s when they are new or outdated.\n' \
+      "$(mb_of "$pd_bytes")" "$(mb_of "$PLAN_ghidra_bytes")" "$(mb_of "$PLAN_jdk_bytes")" "$TOOLS_DIR" "$BIN_DIR"
+  else
+    printf '  1. Download: nothing for Ghidra and the JDK (both are already there); agent-profile and clavity-ls go to %s when they are new or outdated.\n' "$BIN_DIR"
+  fi
+  printf '  2. clavity-ls start always runs agy with --dangerously-skip-permissions, and agy is not isolated by the profile (it shares ~/.gemini/antigravity-cli/).\n'
+  printf '  3. --install-hopper may ask for administrator rights and installs commercial demo software.\n'
+  printf '  4. npx -y rea-agents@latest downloads and runs the newest published npm package with your rights.\n'
+}
+
+# plan_line STEP TEXT: one line of the plan
+plan_line() {
+  printf '  %-10s %s\n' "$1:" "$2"
+}
+
+# plan_phrase PLAN TEXT: would install, would update, would reuse or skip, then TEXT
+plan_phrase() {
+  case "$1" in
+    install | update | reuse) printf 'would %s %s\n' "$1" "$2" ;;
+    *) printf 'skip %s\n' "$2" ;;
+  esac
+}
+
+# plan_summary: one line per step
+plan_summary() {
+  printf 'Plan:\n'
+  plan_line tools-bin "$(plan_phrase "$PLAN_tools_bin" "$PLAN_tools_bin_text")"
+  plan_line jdk "$(plan_phrase "$PLAN_jdk" "$PLAN_jdk_text ($(mb_of "$PLAN_jdk_bytes") MB)")"
+  plan_line ghidra "$(plan_phrase "$PLAN_ghidra" "$PLAN_ghidra_text ($(mb_of "$PLAN_ghidra_bytes") MB)")"
+  plan_line profile "would create or reuse the agent-profile profile $OPT_PROFILE"
+  plan_line rea-setup "would register rea in that profile"
+  plan_line rea-doctor "would check the registration and Ghidra"
+  if [ "$OPT_NO_LAUNCH" -eq 1 ]; then
+    plan_line launch "skip (--no-launch)"
+  else
+    plan_line launch "would start clavity-ls on $OPT_FOLDER"
+  fi
+}
+
+# plan_confirm: the free-space check for every pending install at once, the disclosures, the plan and the
+# question. Declining prints `nothing changed` on stdout and exits 0. Skipped by --check-upstream; --dry-run
+# prints and never asks.
+plan_confirm() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    return 0
+  fi
+  NEEDED_MB=$(plan_needed_mb)
+  log DEBUG plan "free space needed: $NEEDED_MB MB"
+  require_free_mb "$TOOLS_DIR" "$NEEDED_MB"
+  print_disclosures >&2
+  plan_summary >&2
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    log INFO plan "dry run: nothing will be changed"
+    return 0
+  fi
+  if ! confirm "Proceed?"; then
+    log INFO plan "declined"
+    printf 'nothing changed\n'
+    exit "$EX_OK"
+  fi
+  return 0
+}
+
+# --- env file, summary and launch ---
+
+# shell_quote TEXT: TEXT in single quotes, each embedded ' written as '\'' (safe for any POSIX shell)
+shell_quote() {
+  sq_body=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+  printf "'%s'\\n" "$sq_body"
+}
+
+# write_env_files TOOLS_DIR: writes TOOLS_DIR/env.sh, which exports GHIDRA_INSTALL_DIR and JAVA_HOME and puts BIN_DIR
+# first on PATH, for a terminal that does not inherit this script's environment. Written to a temporary file and
+# renamed, mode 0644 (it holds no secret), over the old one on every run. A dry run writes nothing.
+write_env_files() {
+  ENV_FILE=""
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    return 0
+  fi
+  we_file="$1/env.sh"
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    log INFO env "would write $we_file"
+    return 0
+  fi
+  [ -n "${GHIDRA_DIR_SELECTED:-}" ] && [ -n "${JAVA_HOME_SELECTED:-}" ] ||
+    die "$EX_STEP" env "cannot write $we_file: no Ghidra or JDK was selected"
+  mkdir -p -- "$1" || die "$EX_STEP" env "cannot create directory: $1"
+  we_tmp="$we_file.tmp.$$"
+  register_tmp "$we_tmp"
+  {
+    printf '# Written by setup.sh on every run. Source it in a terminal that does not inherit its environment.\n'
+    printf 'export GHIDRA_INSTALL_DIR=%s\n' "$(shell_quote "$GHIDRA_DIR_SELECTED")"
+    printf 'export JAVA_HOME=%s\n' "$(shell_quote "$JAVA_HOME_SELECTED")"
+    printf "export PATH=%s\":\$PATH\"\n" "$(shell_quote "$BIN_DIR")"
+  } >"$we_tmp" || die "$EX_STEP" env "cannot write $we_tmp"
+  chmod 644 "$we_tmp" || die "$EX_STEP" env "cannot set the mode of $we_tmp"
+  mv -f -- "$we_tmp" "$we_file" || die "$EX_STEP" env "cannot move $we_tmp into place: $we_file"
+  ENV_FILE=$we_file
+  log INFO env "wrote $(abbrev_home "$we_file")"
+}
+
+# print_summary: what was installed, reused or skipped, where, and what to do next; on stdout, before the launch
+print_summary() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    return 0
+  fi
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    printf 'Dry run: nothing was changed. Plan result:\n'
+  else
+    printf 'Setup summary:\n'
+  fi
+  printf '  profile:     %s\n' "$(summary_get profile)"
+  printf '  tools-bin:   in %s\n' "$BIN_DIR"
+  summary_get tools_bin | while IFS= read -r ps_line; do
+    printf '               %s\n' "$ps_line"
+  done
+  printf '  jdk:         %s\n' "$(summary_get jdk)"
+  printf '  ghidra:      %s\n' "$(summary_get ghidra)"
+  printf '  rea setup:   %s\n' "$(summary_get rea_setup)"
+  printf '  rea doctor:  %s\n' "$(summary_get rea_doctor)"
+  printf '  log file:    %s\n' "$LOG_FILE"
+  if [ -n "${ENV_FILE:-}" ]; then
+    printf '  env file:    %s\n' "$ENV_FILE"
+  else
+    printf '  env file:    not written\n'
+  fi
+  printf 'Next:\n'
+  printf '  clavity-ls start "%s" --profile %s\n' "$OPT_FOLDER" "$OPT_PROFILE"
+  printf '  (to launch again, run this script again: it skips everything that is already in place)\n'
+}
+
+# launch_instructions: the two-terminal flow, for a machine where clavity-ls cannot open a terminal itself
+launch_instructions() {
+  printf 'Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.\n'
+  printf 'Terminal 1:\n'
+  printf '  . "%s/env.sh"\n' "$TOOLS_DIR"
+  printf '  clavity-ls agy "%s"\n' "$OPT_FOLDER"
+  printf 'Terminal 2:\n'
+  printf '  . "%s/env.sh"\n' "$TOOLS_DIR"
+  printf '  clavity-ls start "%s" --attach --profile %s\n' "$OPT_FOLDER" "$OPT_PROFILE"
+  printf 'Use these commands exactly as written: the attach hint that clavity-ls agy prints omits --profile, and must not be used, because it would start Claude on your default profile.\n'
+}
+
+# step_launch: always the last step, and it exits with clavity-ls start's own exit code. --no-launch prints the
+# command; macOS and a Linux without DISPLAY and WAYLAND_DISPLAY get the two-terminal flow (start would fail
+# there); otherwise clavity-ls start runs with the three variables in its environment only, and when it exits 1
+# having said `terminal` on stderr the two-terminal flow is printed too.
+step_launch() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    return 0
+  fi
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    log INFO launch "would run: clavity-ls start \"$OPT_FOLDER\" --profile $OPT_PROFILE"
+    exit "$EX_OK"
+  fi
+  if [ "${OPT_NO_LAUNCH:-0}" -eq 1 ]; then
+    log INFO launch "skip (--no-launch)"
+    printf 'launch skipped (--no-launch); run: clavity-ls start "%s" --profile %s\n' "$OPT_FOLDER" "$OPT_PROFILE"
+    exit "$EX_OK"
+  fi
+  if [ "$OS" = mac ] || { [ "$OS" = linux ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; }; then
+    log INFO launch "no terminal can be opened from here: two-terminal instructions printed"
+    launch_instructions
+    exit "$EX_OK"
+  fi
+  sl_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || die "$EX_STEP" launch "cannot create a temporary file"
+  register_tmp "$sl_err"
+  sl_rcf=$(mktemp "${TMPDIR:-/tmp}/rea-setup-rc.XXXXXX") || die "$EX_STEP" launch "cannot create a temporary file"
+  register_tmp "$sl_rcf"
+  log INFO launch "running clavity-ls start \"$OPT_FOLDER\" --profile $OPT_PROFILE"
+  # stdout and stdin stay the console's; stderr is shown as it comes and kept to look for `terminal`
+  {
+    {
+      env "GHIDRA_INSTALL_DIR=$GHIDRA_DIR_SELECTED" "JAVA_HOME=$JAVA_HOME_SELECTED" "PATH=$BIN_DIR:$PATH" \
+        clavity-ls start "$OPT_FOLDER" --profile "$OPT_PROFILE" 2>&1 1>&3 3>&-
+      echo "$?" >"$sl_rcf"
+    } | tee "$sl_err" >&2
+  } 3>&1
+  sl_rc=$(cat "$sl_rcf")
+  case "$sl_rc" in
+    '' | *[!0-9]*) sl_rc=$EX_STEP ;;
+  esac
+  log INFO launch "launch exited $sl_rc"
+  if [ "$sl_rc" -eq 1 ] && grep -qi terminal "$sl_err"; then
+    launch_instructions
+  fi
+  exit "$sl_rc"
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -2480,6 +2827,10 @@ main() {
   log_config
   step_preflight
   step_prereq
+  tools_bin_plan
+  jdk_plan
+  ghidra_plan
+  plan_confirm
   step_tools_bin
   step_jdk
   step_ghidra
@@ -2487,6 +2838,9 @@ main() {
   step_profile
   step_rea_setup
   step_rea_doctor
+  write_env_files "$TOOLS_DIR"
+  print_summary
+  step_launch
 }
 
 if [ "${REA_SETUP_NO_MAIN:-}" != 1 ]; then
