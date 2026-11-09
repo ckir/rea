@@ -144,8 +144,10 @@ register_tmp() {
 }
 
 # cleanup_tmp: removes every registered path; safe to call again, and with an empty list. Later steps that
-# create locks or staging directories register them here rather than adding their own traps.
+# create temporary files register them here, and the locks and staging directories are released by
+# cleanup_install (called first); nothing adds its own traps.
 cleanup_tmp() {
+  cleanup_install
   ct_list=$TMP_FILES
   TMP_FILES=""
   [ -n "$ct_list" ] || return 0
@@ -747,6 +749,584 @@ adoptium_resolve() {
   adoptium_parse "$ar_tmp" || ar_rc=1
   rm -f "$ar_tmp"
   return "$ar_rc"
+}
+
+# --- files, locks, archives and staging ---
+
+NL='
+'
+LOCK_HELD=""
+STAGING_DIRS=""
+
+# tools_dir_default / bin_dir_default: where the JDK and Ghidra go, and where the launchers go
+tools_dir_default() {
+  printf '%s\n' "${OPT_TOOLS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/rea-tools}"
+}
+
+bin_dir_default() {
+  printf '%s\n' "${OPT_BIN_DIR:-$HOME/.local/bin}"
+}
+
+# pid_alive PID: 0 when the process exists. kill -0 fails for another user's process, so ps -p decides then.
+pid_alive() {
+  case "$1" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$1" 2>/dev/null && return 0
+  ps -p "$1" >/dev/null 2>&1
+}
+
+# older_than_min PATH MINUTES: 0 when PATH's modification time is more than MINUTES minutes ago
+older_than_min() {
+  [ -n "$(find "$1" -maxdepth 0 -mmin "+$2" 2>/dev/null)" ]
+}
+
+# list_has LIST ITEM: 0 when the newline-separated LIST contains ITEM exactly
+list_has() {
+  case "$NL$1$NL" in
+    *"$NL$2$NL"*) return 0 ;;
+  esac
+  return 1
+}
+
+# lock_owner_pid DIR: the pid recorded in DIR/.lock/owner, or nothing
+lock_owner_pid() {
+  sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$1/.lock/owner" 2>/dev/null | head -n 1
+}
+
+# lock_acquire DIR: takes DIR/.lock (mkdir is atomic) and records pid and start time in DIR/.lock/owner. A
+# lock whose owner is dead (or that has no owner file and is over a minute old) is taken over with a WARN. A
+# live owner is waited for, 2 s per poll, up to LOCK_POLLS polls (default 60), then the step fails. Taking the
+# same lock twice in one process is a no-op. The release is lock_release, or cleanup_install on any exit.
+lock_acquire() {
+  la_dir=$1
+  la_polls=0
+  if list_has "$LOCK_HELD" "$la_dir"; then
+    return 0
+  fi
+  mkdir -p -- "$la_dir" || die "$EX_STEP" tools-bin "cannot create directory: $la_dir"
+  while :; do
+    if mkdir -- "$la_dir/.lock" 2>/dev/null; then
+      printf 'pid=%s started=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$la_dir/.lock/owner" 2>/dev/null || true
+      LOCK_HELD="${LOCK_HELD}${LOCK_HELD:+$NL}$la_dir"
+      return 0
+    fi
+    [ -d "$la_dir/.lock" ] || die "$EX_STEP" tools-bin "cannot create lock: $la_dir/.lock"
+    la_pid=$(lock_owner_pid "$la_dir")
+    la_stale=0
+    if [ -n "$la_pid" ]; then
+      pid_alive "$la_pid" || la_stale=1
+    elif older_than_min "$la_dir/.lock" 1; then
+      la_stale=1
+    fi
+    if [ "$la_stale" -eq 1 ]; then
+      # Re-read just before removing, so a lock another process re-took meanwhile is not removed.
+      if [ "$(lock_owner_pid "$la_dir")" = "$la_pid" ]; then
+        log WARN tools-bin "stale lock from pid ${la_pid:-unknown} taken over: $la_dir/.lock"
+        rm -rf -- "$la_dir/.lock"
+      fi
+      continue
+    fi
+    la_polls=$((la_polls + 1))
+    if [ "$la_polls" -ge "${LOCK_POLLS:-60}" ]; then
+      die "$EX_STEP" tools-bin "lock held by pid ${la_pid:-unknown}: $la_dir/.lock"
+    fi
+    sleep 2
+  done
+}
+
+# lock_release DIR: removes DIR/.lock when this process holds it; otherwise does nothing
+lock_release() {
+  list_has "$LOCK_HELD" "$1" || return 0
+  rm -rf -- "$1/.lock"
+  lr_rest=""
+  while IFS= read -r lr_d; do
+    if [ -n "$lr_d" ] && [ "$lr_d" != "$1" ]; then
+      lr_rest="${lr_rest}${lr_rest:+$NL}$lr_d"
+    fi
+  done <<EOF
+$LOCK_HELD
+EOF
+  LOCK_HELD=$lr_rest
+  return 0
+}
+
+# cleanup_install: called by cleanup_tmp (the one trap mechanism). Removes the staging directories this
+# process made, and what it left beside them (*.tmp.$$ and *.old.$$ in every directory it holds a lock on:
+# a staging_new inside $(...) runs in a subshell and cannot add itself to STAGING_DIRS, but its name always
+# ends in this process's $$), then releases the locks.
+cleanup_install() {
+  ci_stage=$STAGING_DIRS
+  ci_locks=$LOCK_HELD
+  STAGING_DIRS=""
+  LOCK_HELD=""
+  if [ -n "$ci_stage" ]; then
+    printf '%s\n' "$ci_stage" | while IFS= read -r ci_path; do
+      if [ -n "$ci_path" ]; then
+        rm -rf -- "$ci_path"
+      fi
+    done
+  fi
+  if [ -n "$ci_locks" ]; then
+    printf '%s\n' "$ci_locks" | while IFS= read -r ci_dir; do
+      if [ -n "$ci_dir" ]; then
+        for ci_path in "$ci_dir"/*.tmp."$$" "$ci_dir"/*.old."$$"; do
+          if [ -e "$ci_path" ] || [ -L "$ci_path" ]; then
+            rm -rf -- "$ci_path"
+          fi
+        done
+        rm -rf -- "$ci_dir/.lock"
+      fi
+    done
+  fi
+  return 0
+}
+
+# cleanup_orphans DIR: removes DIR/*.tmp.PID and DIR/*.old.PID (also the Windows script's leftovers) whose
+# process is gone or whose modification time is over 24 hours old; logs each
+cleanup_orphans() {
+  co_dir=$1
+  for co_path in "$co_dir"/*.tmp.* "$co_dir"/*.old.*; do
+    if [ ! -e "$co_path" ] && [ ! -L "$co_path" ]; then
+      continue
+    fi
+    co_pid=${co_path##*.}
+    case "$co_pid" in
+      '' | *[!0-9]*) continue ;;
+    esac
+    if ! pid_alive "$co_pid"; then
+      co_why="pid $co_pid is not running"
+    elif older_than_min "$co_path" 1440; then
+      co_why="older than 24 hours"
+    else
+      continue
+    fi
+    log INFO cleanup "removing orphan ($co_why): $co_path"
+    rm -rf -- "$co_path" || log WARN cleanup "could not remove orphan: $co_path"
+  done
+  return 0
+}
+
+# disk_free_mb PATH: free megabytes on the filesystem holding PATH (the nearest existing parent when PATH
+# does not exist yet)
+disk_free_mb() {
+  df_path=$1
+  while [ ! -d "$df_path" ]; do
+    case "$df_path" in
+      */*) df_path=${df_path%/*} ;;
+      *) df_path=. ;;
+    esac
+    [ -n "$df_path" ] || df_path=/
+  done
+  df -Pm "$df_path" | awk 'NR == 2 { print $4 }'
+}
+
+# require_free_mb PATH MB: dies EX_STEP with the shortfall when PATH has less than MB megabytes free
+require_free_mb() {
+  rf_have=$(disk_free_mb "$1")
+  case "$rf_have" in
+    '' | *[!0-9]*) die "$EX_STEP" disk "cannot determine the free space at: $1" ;;
+  esac
+  if [ "$rf_have" -lt "$2" ]; then
+    die "$EX_STEP" disk "not enough free space at $1: need $2 MB, have $rf_have MB (short by $(($2 - rf_have)) MB)"
+  fi
+  return 0
+}
+
+# archive_tool_for ZIP: prints unzip, bsdtar or jar (the first available); ARCHIVE_ZIP_TOOL forces one (tests)
+archive_tool_for() {
+  if [ -n "${ARCHIVE_ZIP_TOOL:-}" ]; then
+    printf '%s\n' "$ARCHIVE_ZIP_TOOL"
+    return 0
+  fi
+  if command -v unzip >/dev/null 2>&1; then
+    echo unzip
+  elif command -v bsdtar >/dev/null 2>&1; then
+    echo bsdtar
+  elif [ -x "${JAVA_HOME_SELECTED:-/nonexistent}/bin/jar" ]; then
+    echo jar
+  else
+    return 1
+  fi
+}
+
+# archive_tarlike_normalise: stdin is `tar -tvf` output (GNU or bsdtar), stdout is `MODE TYPE PATH [-> TARGET]`
+# lines. Exit 1 on a line it cannot parse, so a name holding a newline cannot slip through.
+archive_tarlike_normalise() {
+  awk '
+    function skip(line, n,   i) {
+      for (i = 0; i < n; i++) { sub(/^[ \t]*[^ \t]+/, "", line) }
+      sub(/^[ \t]+/, "", line)
+      return line
+    }
+    function cnt(s, t,   n, i) {
+      n = 0
+      while ((i = index(s, t)) > 0) { n++; s = substr(s, i + length(t)) }
+      return n
+    }
+    {
+      if ($1 !~ /^[-dlhcbps][-rwxsStTlL.+@]+$/) { bad = 1; exit }
+      mode = $1
+      if ($4 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) { rest = skip($0, 5) } else { rest = skip($0, 8) }
+      t = substr(mode, 1, 1)
+      if (t == "-") { t = "f" }
+      if (t == "h" || t == "l") {
+        sep = (t == "h" && cnt(rest, " link to ") > 0) ? " link to " : " -> "
+        if (cnt(rest, sep) != 1) { bad = 1; exit }
+        i = index(rest, sep)
+        rest = substr(rest, 1, i - 1) " -> " substr(rest, i + length(sep))
+      }
+      print mode " " t " " rest
+    }
+    END { if (bad) { exit 1 } }
+  '
+}
+
+# archive_list FILE: prints one `MODE TYPE PATH [-> TARGET]` line per entry. TYPE is f, d, l (symlink), h
+# (hardlink, TARGET is a member path) or ? (unknown: jar lists names only, MODE is then ?). Tar archives use
+# `tar -tvf` (GNU or bsdtar; stdout only), zips use `unzip -Z`, else `bsdtar -tvf`, else `jar tf`. Fails when
+# the archive cannot be listed or a line cannot be parsed.
+archive_list() {
+  al_file=$1
+  al_raw=$(mktemp "${TMPDIR:-/tmp}/rea-setup-al.XXXXXX") || return 1
+  register_tmp "$al_raw"
+  al_rc=0
+  case "$al_file" in
+    *.zip | *.ZIP)
+      al_tool=$(archive_tool_for "$al_file") || al_tool=""
+      case "$al_tool" in
+        unzip) archive_list_unzip "$al_file" "$al_raw" || al_rc=1 ;;
+        bsdtar)
+          bsdtar -tvf "$al_file" 2>/dev/null | archive_tarlike_normalise >"$al_raw" || al_rc=1
+          ;;
+        jar)
+          "$JAVA_HOME_SELECTED/bin/jar" tf "$al_file" 2>/dev/null | sed -e 's/^/? ? /' >"$al_raw" || al_rc=1
+          ;;
+        *) al_rc=1 ;;
+      esac
+      ;;
+    *)
+      ${ARCHIVE_TAR:-tar} -tvf "$al_file" 2>/dev/null >"$al_raw.t" || al_rc=1
+      if [ "$al_rc" -eq 0 ]; then
+        archive_tarlike_normalise <"$al_raw.t" >"$al_raw" || al_rc=1
+      fi
+      rm -f "$al_raw.t"
+      ;;
+  esac
+  if [ "$al_rc" -eq 0 ]; then
+    cat "$al_raw"
+  fi
+  rm -f "$al_raw"
+  return "$al_rc"
+}
+
+# archive_list_unzip ZIP OUT: normalised listing via unzip -Z. unzip does not show a symlink's target, so it
+# is read from the entry itself.
+archive_list_unzip() {
+  alu_raw="$2.z"
+  unzip -Z "$1" 2>/dev/null >"$alu_raw" || {
+    rm -f "$alu_raw"
+    return 1
+  }
+  awk '
+    function skip(line, n,   i) {
+      for (i = 0; i < n; i++) { sub(/^[ \t]*[^ \t]+/, "", line) }
+      sub(/^[ \t]+/, "", line)
+      return line
+    }
+    $1 ~ /^[-dlcbps][-rwxsStTa]+$/ && NF >= 9 {
+      t = substr($1, 1, 1)
+      if (t == "-") { t = "f" }
+      print $1 " " t " " skip($0, 8)
+    }
+  ' "$alu_raw" >"$2.n"
+  : >"$2"
+  while IFS= read -r alu_line; do
+    case "$alu_line" in
+      ?*\ l\ *)
+        alu_name=${alu_line#* l }
+        alu_pat=$(printf '%s' "$alu_name" | sed -e 's/[][\\*?]/\\&/g')
+        alu_target=$(unzip -p "$1" "$alu_pat" 2>/dev/null | head -c 4096 | tr '\n' '/')
+        printf '%s -> %s\n' "$alu_line" "$alu_target" >>"$2"
+        ;;
+      *) printf '%s\n' "$alu_line" >>"$2" ;;
+    esac
+  done <"$2.n"
+  rm -f "$alu_raw" "$2.n"
+  return 0
+}
+
+# archive_check_lines: reads normalised listing lines on stdin; exit 1, naming the first offending entry on
+# stderr via log, when any path is absolute (leading / or a drive letter), has a .. component (a backslash
+# counts as a separator), traverses a symlink made earlier or later in the same archive, or is a link whose
+# target leaves the archive root (a symlink target is resolved from the link's directory; a .. after a normal
+# component is refused outright, since it cannot be resolved without the filesystem).
+archive_check_lines() {
+  acl_out=$(awk '
+    function norm(p) { gsub(/\\/, "/", p); return p }
+    function absolute(p) { return (p ~ /^\// || p ~ /^[A-Za-z]:/) }
+    function dotdot(p,   n, a, i) {
+      n = split(p, a, "/")
+      for (i = 1; i <= n; i++) { if (a[i] == "..") { return 1 } }
+      return 0
+    }
+    function canon(p,   n, a, i, r) {
+      n = split(p, a, "/")
+      r = ""
+      for (i = 1; i <= n; i++) { if (a[i] != "" && a[i] != ".") { r = r (r == "" ? "" : "/") a[i] } }
+      return r
+    }
+    function escapes(dir, tgt,   n, a, i, depth, seen) {
+      if (absolute(tgt)) { return 1 }
+      depth = 0
+      n = split(dir, a, "/")
+      for (i = 1; i <= n; i++) { if (a[i] != "" && a[i] != ".") { depth++ } }
+      seen = 0
+      n = split(tgt, a, "/")
+      for (i = 1; i <= n; i++) {
+        if (a[i] == "" || a[i] == ".") { continue }
+        if (a[i] == "..") {
+          if (seen) { return 1 }
+          depth--
+          if (depth < 0) { return 1 }
+        } else { seen = 1 }
+      }
+      return 0
+    }
+    {
+      line = $0
+      m = match(line, /^[^ ]+ [^ ]+ /)
+      if (m == 0) { next }
+      type[NR] = substr(line, RSTART + length($1) + 1, 1)
+      rest = substr(line, RLENGTH + 1)
+      tgt[NR] = ""
+      if (type[NR] == "l" || type[NR] == "h") {
+        i = index(rest, " -> ")
+        if (i == 0) { path[NR] = rest; amb[NR] = 1 } else {
+          tgt[NR] = substr(rest, i + 4)
+          rest = substr(rest, 1, i - 1)
+          if (index(tgt[NR], " -> ") > 0) { amb[NR] = 1 }
+        }
+      }
+      path[NR] = norm(rest)
+      tgt[NR] = norm(tgt[NR])
+      if (type[NR] == "l") { sym[canon(path[NR])] = 1 }
+      last = NR
+    }
+    END {
+      for (k = 1; k <= last; k++) {
+        if (!(k in path)) { continue }
+        p = path[k]
+        why = ""
+        if (absolute(p)) { why = "absolute path" }
+        else if (dotdot(p)) { why = "parent-directory component" }
+        else if (amb[k]) { why = "ambiguous link entry" }
+        else if (type[k] == "l") {
+          d = p
+          if (sub(/\/[^\/]*\/?$/, "", d) == 0) { d = "" }
+          if (escapes(d, tgt[k])) { why = "symlink target leaves the archive: " tgt[k] }
+        } else if (type[k] == "h") {
+          if (escapes("", tgt[k])) { why = "hardlink target leaves the archive: " tgt[k] }
+        }
+        if (why == "") {
+          n = split(canon(p), a, "/")
+          pre = ""
+          for (i = 1; i < n; i++) {
+            pre = pre (i == 1 ? "" : "/") a[i]
+            if (pre in sym) { why = "path below a symlink (" pre ")"; break }
+          }
+        }
+        if (why != "") { print p " (" why ")"; exit 1 }
+      }
+    }
+  ') && return 0
+  log ERROR archive "unsafe archive entry: $acl_out"
+  return 1
+}
+
+# archive_check_safe FILE: 0 when every entry stays inside the archive root; 1 (logged, first offending entry
+# named) otherwise, and also when the archive cannot be listed
+archive_check_safe() {
+  acs_list=$(mktemp "${TMPDIR:-/tmp}/rea-setup-cs.XXXXXX") || return 1
+  register_tmp "$acs_list"
+  if ! archive_list "$1" >"$acs_list"; then
+    rm -f "$acs_list"
+    log ERROR archive "cannot list archive: $1"
+    return 1
+  fi
+  acs_rc=0
+  archive_check_lines <"$acs_list" || acs_rc=1
+  rm -f "$acs_list"
+  return "$acs_rc"
+}
+
+# archive_extract FILE DEST: tar.gz with tar; zip with unzip, else bsdtar, else jar run inside DEST. A zip
+# that holds the Ghidra top directory then gets ghidra_set_exec_bits (jar and some bsdtar builds drop the
+# execute bits).
+archive_extract() {
+  ae_file=$1
+  ae_dest=$2
+  [ -f "$ae_file" ] || return 1
+  mkdir -p -- "$ae_dest" || return 1
+  case "$ae_file" in
+    *.zip | *.ZIP)
+      ae_tool=$(archive_tool_for "$ae_file") || return 1
+      case "$ae_tool" in
+        unzip) unzip -q "$ae_file" -d "$ae_dest" || return 1 ;;
+        bsdtar) bsdtar -xf "$ae_file" -C "$ae_dest" || return 1 ;;
+        jar)
+          case "$ae_file" in
+            /*) ae_abs=$ae_file ;;
+            *) ae_abs=$PWD/$ae_file ;;
+          esac
+          (cd "$ae_dest" && "$JAVA_HOME_SELECTED/bin/jar" xf "$ae_abs") || return 1
+          ;;
+        *) return 1 ;;
+      esac
+      if [ -d "$ae_dest/$PIN_GHIDRA_TOPDIR" ]; then
+        ghidra_set_exec_bits "$ae_dest/$PIN_GHIDRA_TOPDIR"
+      fi
+      ;;
+    *)
+      ${ARCHIVE_TAR:-tar} -xzf "$ae_file" -C "$ae_dest" --no-same-owner || return 1
+      ;;
+  esac
+  return 0
+}
+
+# ghidra_set_exec_bits ROOT: the zip format keeps the execute bit, but jar and some tools drop it. Sets it on
+# ghidraRun, the files directly under support/ and server/ (not *.bat *.properties *.txt *.html *.cmd), every
+# *.sh, every file under an os/linux_x86_64/ directory, the debugger launchers under
+# Ghidra/Debug/*/data/debugger-launchers/, Ghidra/Debug/Debugger-isf/support/runISFServer,
+# support/gradle/gradlew and support/GhidraGo/ghidraGo. Symlinks are never followed (find -type f).
+ghidra_set_exec_bits() {
+  [ -d "$1" ] || return 1
+  (
+    cd "$1" || exit 1
+    [ -f ghidraRun ] && chmod +x ghidraRun
+    for gx_d in support server; do
+      [ -d "$gx_d" ] || continue
+      find "$gx_d" -maxdepth 1 -type f ! -name '*.bat' ! -name '*.properties' ! -name '*.txt' ! -name '*.html' ! -name '*.cmd' -exec chmod +x {} +
+    done
+    find . -type f -name '*.sh' -exec chmod +x {} +
+    find . -type f -path '*/os/linux_x86_64/*' -exec chmod +x {} +
+    if [ -d Ghidra/Debug ]; then
+      find Ghidra/Debug -type f -path 'Ghidra/Debug/*/data/debugger-launchers/*' -exec chmod +x {} +
+    fi
+    for gx_f in Ghidra/Debug/Debugger-isf/support/runISFServer support/gradle/gradlew support/GhidraGo/ghidraGo; do
+      [ -f "$gx_f" ] && chmod +x "$gx_f"
+    done
+    exit 0
+  )
+}
+
+# staging_new DIR NAME: creates DIR/NAME.tmp.$$, prints its path and adds it to STAGING_DIRS (newline-
+# separated: a path may contain a space). Called inside $(...) the addition is lost with the subshell;
+# cleanup_install still removes it when DIR is locked by this process.
+staging_new() {
+  sn_path="$1/$2.tmp.$$"
+  rm -rf -- "$sn_path"
+  mkdir -p -- "$sn_path" || return 1
+  STAGING_DIRS="${STAGING_DIRS}${STAGING_DIRS:+$NL}$sn_path"
+  printf '%s\n' "$sn_path"
+}
+
+# install_commit STAGING FINAL: marks STAGING complete, swaps it in for FINAL (an existing FINAL, complete
+# or not, is moved aside to FINAL.old.$$ first and removed after; failing to remove it only warns)
+install_commit() {
+  ic_stage=$1
+  ic_final=$2
+  ic_old="$ic_final.old.$$"
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PIN_SCRIPT_VERSION" >"$ic_stage/.install-complete" || return 1
+  rm -rf -- "$ic_old"
+  if [ -e "$ic_final" ] || [ -L "$ic_final" ]; then
+    mv -- "$ic_final" "$ic_old" || return 1
+  fi
+  if ! mv -- "$ic_stage" "$ic_final"; then
+    if [ -e "$ic_old" ]; then
+      mv -- "$ic_old" "$ic_final"
+    fi
+    return 1
+  fi
+  if [ -e "$ic_old" ] || [ -L "$ic_old" ]; then
+    rm -rf -- "$ic_old" || log WARN install "could not remove the previous install: $ic_old"
+  fi
+  return 0
+}
+
+# install_valid DIR FILE...: 0 when DIR/.install-complete and every listed file under DIR exist
+install_valid() {
+  iv_dir=$1
+  shift
+  [ -f "$iv_dir/.install-complete" ] || return 1
+  for iv_f in "$@"; do
+    [ -e "$iv_dir/$iv_f" ] || return 1
+  done
+  return 0
+}
+
+# jdk_build RELEASE: the build number after the + (0 when absent), digits only
+jdk_build() {
+  case "$1" in
+    *+*) jb=${1#*+} ;;
+    *) jb=0 ;;
+  esac
+  jb=${jb%%[!0-9]*}
+  echo "${jb:-0}"
+}
+
+# jdk_newer A B: 0 when directory name A (jdk-21.0.13+9) is a newer release than B: the X.Y.Z first, then
+# the build number
+jdk_newer() {
+  jn_a=${1#jdk-}
+  jn_b=${2#jdk-}
+  jn_c=$(semver_compare "${jn_a%%+*}" "${jn_b%%+*}")
+  [ "$jn_c" = 1 ] && return 0
+  [ "$jn_c" = -1 ] && return 1
+  [ "$(jdk_build "$jn_a")" -gt "$(jdk_build "$jn_b")" ]
+}
+
+# prune_jdks TOOLS: keeps the two newest jdk-* directories by release, and whichever one holds JAVA_HOME or
+# JAVA_HOME_SELECTED; removes the rest (a failed removal only warns). Staging and .old directories are
+# ignored.
+prune_jdks() {
+  pj_tools=$1
+  pj_all=""
+  for pj_d in "$pj_tools"/jdk-*; do
+    [ -d "$pj_d" ] || continue
+    pj_n=${pj_d##*/}
+    case "$pj_n" in
+      *.tmp.* | *.old.*) continue ;;
+    esac
+    pj_all="${pj_all}${pj_all:+$NL}$pj_n"
+  done
+  [ -n "$pj_all" ] || return 0
+  while IFS= read -r pj_n; do
+    pj_newer=0
+    while IFS= read -r pj_m; do
+      if [ "$pj_m" != "$pj_n" ] && jdk_newer "$pj_m" "$pj_n"; then
+        pj_newer=$((pj_newer + 1))
+      fi
+    done <<EOF
+$pj_all
+EOF
+    [ "$pj_newer" -ge 2 ] || continue
+    pj_keep=0
+    for pj_h in "${JAVA_HOME:-}" "${JAVA_HOME_SELECTED:-}"; do
+      case "$pj_h" in
+        "$pj_tools/$pj_n" | "$pj_tools/$pj_n"/*) pj_keep=1 ;;
+      esac
+    done
+    if [ "$pj_keep" -eq 1 ]; then
+      log INFO jdk "keeping the JDK in use: $pj_tools/$pj_n"
+      continue
+    fi
+    log INFO jdk "removing old JDK: $pj_tools/$pj_n"
+    rm -rf -- "${pj_tools:?}/${pj_n:?}" || log WARN jdk "could not remove: $pj_tools/$pj_n"
+  done <<EOF
+$pj_all
+EOF
+  return 0
 }
 
 # --- main ---
