@@ -98,7 +98,7 @@ Flags are the same in both scripts: kebab-case in `setup.sh`, PascalCase paramet
 | `--tools-dir PATH` | `-ToolsDir PATH` | see below | Where the JDK and Ghidra are installed |
 | `--bin-dir PATH` | `-BinDir PATH` | `~/.local/bin`; `%LOCALAPPDATA%\rea-tools\bin` | Where `agent-profile` and `clavity-ls` are installed |
 | `--log-dir PATH` | `-LogDir PATH` | see below | Where the log files go |
-| `--install-hopper` | `-InstallHopper` | off | Pass `--install-hopper` to `rea setup` (installs commercial demo software; may ask for root). Rejected on Windows with exit 2 |
+| `--install-hopper` | `-InstallHopper` | off | Pass `--install-hopper` to `rea setup` (installs commercial demo software; may ask for root). `setup.ps1` rejects it with exit 2; `setup.sh` is not the Windows script and does not check |
 | `--yes` | `-Yes` | off | Do not ask `Proceed? [y/N]` (answering no exits 0 and prints `nothing changed`). Without a terminal and without this flag the script refuses (exit 2) |
 | `--dry-run` | `-DryRun` | off | Plan only; see below |
 | `--no-launch` | `-NoLaunch` | off | Do everything except `clavity-ls start`; prints the command |
