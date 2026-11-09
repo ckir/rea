@@ -9,6 +9,8 @@
 # tests/integration (python3, loopback only). A curl wrapper maps every allow-listed host onto it, so the product
 # code runs unchanged. The rea source file is the real GhidraReleasePolicy.ts (tests/fixtures). Every run proves
 # that no archive was requested and that nothing was written under the tools, bin and home directories.
+# The fixture tests/fixtures/GhidraReleasePolicy.ts is src/ghidra/GhidraReleasePolicy.ts of github.com/morluto/rea
+# at the tag rea-agents-6.8.0, unchanged.
 # shellcheck source=/dev/null
 . "$(dirname "$0")/lib.sh"
 cd "$ROOT" || exit 1
@@ -116,6 +118,11 @@ mk_up() {
   grep -v 'SUPPORTED_GHIDRA_VERSION = ' "$FIX/GhidraReleasePolicy.ts" >"$mu_dir/policy-noconst.ts"
   printf '{"name":"rea-agents","version":"6.8.0"}\n' >"$mu_dir/npm.json"
   printf '{"name":"rea-agents"}\n' >"$mu_dir/npm-nover.json"
+  printf '{"version":%s}\n' "${UP_NPM_RAW:-0}" >"$mu_dir/npm-raw.json"
+  {
+    printf 'export const MIN_SUPPORTED_GHIDRA_VERSION = "9.9";\n'
+    cat "$FIX/GhidraReleasePolicy.ts"
+  } >"$mu_dir/policy-min.ts"
   printf '%s  %s\n' "$HEX64" "$AP_ASSET" >"$mu_dir/ap.sha256"
   printf 'no checksum here\n' >"$mu_dir/ap-bad.sha256"
   printf '%s *%s\n' "$HEX64" "$CL_ASSET" >"$mu_dir/cl.sha256"
@@ -135,6 +142,9 @@ mk_up() {
     policy-404) mu_pol='{"status":404}' ;;
     policy-noconst) mu_pol='{"status":200,"body_file":"policy-noconst.ts"}' ;;
     npm-nover) mu_npm=npm-nover.json ;;
+    npm-raw) mu_npm=npm-raw.json ;;
+    policy-min) mu_pol='{"status":200,"body_file":"policy-min.ts"}' ;;
+    tag-dots) mu_aplatest='{"status":302,"location":"{base}/r/aiprofiles/releases/tag/.."}' ;;
     len-bad) mu_gh='{"status":200,"body_file":"blob","content_length":569649597}' ;;
     head405) mu_gh='{"status":206,"head_status":405,"headers":{"Content-Range":"bytes 0-0/569649598"}}' ;;
     evil) mu_ghhop='{"status":302,"location":"https://evil.example/ghidra.zip"}' ;;
@@ -185,6 +195,11 @@ count_of() {
   curl -sS "$BASE/__count$1"
 }
 
+# count_prefix PREFIX: the GET requests the fake server has seen for any path starting with PREFIX
+count_prefix() {
+  curl -sS "$BASE/__countprefix$1"
+}
+
 # run_cu NAME CMD...: runs CMD in a subshell with the curl wrapper; stdout to $T/NAME.out, stderr and the log
 # to $T/NAME.err and $T/NAME.log; prints the exit status
 run_cu() {
@@ -212,6 +227,31 @@ mk_up supported ok
 rc=$(run_cu sup1 rea_supported_ghidra)
 assert_eq 0 "$rc" "rea_supported_ghidra: 6.8.0 supports the pinned 12.1.4"
 assert_match '^ok rea_supported_ghidra: rea-agents 6\.8\.0 supports Ghidra 12\.1\.4$' "$(cat "$T/sup1.out")" "rea_supported_ghidra: ok line"
+
+assert_eq 1 "$(count_prefix /raw.githubusercontent.com/)" "rea_supported_ghidra: the prefix counter sees the one raw request of a good answer"
+
+mk_up policy-min policy-min
+rc=$(run_cu supmin rea_supported_ghidra)
+assert_eq 0 "$rc" "rea_supported_ghidra: MIN_SUPPORTED_GHIDRA_VERSION is not the constant; the SUPPORTED one wins"
+assert_match 'supports Ghidra 12\.1\.4$' "$(cat "$T/supmin.out")" "rea_supported_ghidra: the word boundary picks 12.1.4"
+
+# a hostile registry answer is refused before any rea-agents-... request
+hn=0
+for hv in '"1.2.3\nx"' '"x\n1.2.3"' '"../../x\n1.2.3"' '"1.2.3/../../x"' '"1.2"' '"1.2.3.4"' '"v1.2.3"' '" 1.2.3"' '"1.2.3 "' '"1..3"' '""' '123' '1.5' '"1.2.3\u0000"' '"\n1.2.3"' '"1.2.3\n"'; do
+  hn=$((hn + 1))
+  UP_NPM_RAW=$hv
+  mk_up "hostile$hn" npm-raw
+  rc=$(run_cu "hostile$hn" step_check_upstream)
+  assert_eq 5 "$rc" "hostile registry version $hv: exit 5"
+  assert_match '^FAIL rea_supported_ghidra' "$(cat "$T/hostile$hn.out")" "hostile registry version $hv: the expectation fails"
+  assert_eq 0 "$(count_prefix /raw.githubusercontent.com/)" "hostile registry version $hv: no request to a rea-agents raw path"
+done
+
+# a tag that is a dot segment is not spliced into a URL
+mk_up tagdots tag-dots
+rc=$(run_cu tagdots step_check_upstream)
+assert_eq 5 "$rc" "release tag ..: exit 5"
+assert_match '^FAIL agent-profile' "$(cat "$T/tagdots.out")" "release tag ..: agent-profile fails"
 
 mk_up policy-new policy-new
 rc=$(run_cu sup2 rea_supported_ghidra)

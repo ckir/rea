@@ -8,7 +8,8 @@
 # mirror tests/sh/upstream.sh. The network is replaced at its two lowest seams: Invoke-ReaHttpGet copies a prepared
 # file for a URL and Send-ReaHeadRequest answers a prepared status, Location and size for a URL; so the redirect
 # walk, the release resolvers, the sidecar reads and the size check all run for real. The rea source file is the
-# real GhidraReleasePolicy.ts (tests/fixtures). The loopback run against the fake server is in
+# real GhidraReleasePolicy.ts (tests/fixtures; it is src/ghidra/GhidraReleasePolicy.ts of github.com/morluto/rea
+# at the tag rea-agents-6.8.0, unchanged). The loopback run against the fake server is in
 # tests/integration/run-win.ps1.
 
 BeforeAll {
@@ -39,6 +40,7 @@ BeforeAll {
     $script:FPolicyNew = Write-Up 'policy-new.ts' ($policy -replace '"12\.1\.4"', '"12.2.0"')
     $script:FPolicyNone = Write-Up 'policy-none.ts' (($policy -split "`n" | Where-Object { $_ -notmatch 'SUPPORTED_GHIDRA_VERSION = ' }) -join "`n")
     $script:FNpm = Write-Up 'npm.json' '{"name":"rea-agents","version":"6.8.0"}'
+    $script:FPolicyMin = Write-Up 'policy-min.ts' ('export const MIN_SUPPORTED_GHIDRA_VERSION = "9.9";' + "`n" + $policy)
     $script:FNpmNone = Write-Up 'npm-none.json' '{"name":"rea-agents"}'
     $script:FApSum = Write-Up 'ap.sha256' "$script:Hex  $script:ApAsset`n"
     $script:FBadSum = Write-Up 'bad.sha256' "no checksum here`n"
@@ -52,7 +54,7 @@ BeforeAll {
 
     # A world in which every expectation holds, then Set-UpWorld changes one thing.
     function script:Set-UpWorld {
-        param([string]$Case = 'ok')
+        param([string]$Case = 'ok', [string]$NpmRaw = '')
         $http = @{}
         $head = @{}
         $head['https://github.com/ckir/aiprofiles/releases/latest'] = @{ Status = 302; Location = 'https://github.com/ckir/aiprofiles/releases/tag/v0.1.2' }
@@ -74,6 +76,9 @@ BeforeAll {
             'policy-new' { $http[$script:ReaUrl] = $script:FPolicyNew }
             'policy-404' { $http.Remove($script:ReaUrl) }
             'policy-none' { $http[$script:ReaUrl] = $script:FPolicyNone }
+            'npm-raw' { $http[$script:NpmUrl] = (Write-Up ('npm-raw-' + [guid]::NewGuid().ToString('N') + '.json') ('{"version":' + $NpmRaw + '}')) }
+            'policy-min' { $http[$script:ReaUrl] = $script:FPolicyMin }
+            'tag-dots' { $head['https://github.com/ckir/aiprofiles/releases/latest'] = @{ Status = 302; Location = 'https://github.com/ckir/aiprofiles/releases/tag/..' } }
             'npm-none' { $http[$script:NpmUrl] = $script:FNpmNone }
             'len-bad' { $head[$script:GhidraFinal] = @{ Status = 200; ContentLength = [int64]569649597 } }
             'head405' { $head[$script:GhidraFinal] = @{ Status = 405; RangeStatus = 206; ContentRange = 'bytes 0-0/569649598' } }
@@ -134,6 +139,25 @@ Describe 'check-upstream' {
             $r.Ghidra | Should -Be '12.1.4'
             $r.ReaVersion | Should -Be '6.8.0'
             $script:Out[0] | Should -Be 'ok rea_supported_ghidra: rea-agents 6.8.0 supports Ghidra 12.1.4'
+        }
+        It 'the word boundary: MIN_SUPPORTED_GHIDRA_VERSION is not the constant' {
+            Set-UpWorld 'policy-min'
+            (Get-ReaRuntimeSupportedGhidra).Ghidra | Should -Be '12.1.4'
+        }
+        It 'a hostile registry version <raw> fails with 5 and requests no rea-agents raw path' -ForEach @(
+            @{ raw = '"1.2.3\nx"' }, @{ raw = '"x\n1.2.3"' }, @{ raw = '"../../x\n1.2.3"' }, @{ raw = '"1.2.3/../../x"' },
+            @{ raw = '"1.2"' }, @{ raw = '"1.2.3.4"' }, @{ raw = '"v1.2.3"' }, @{ raw = '" 1.2.3"' }, @{ raw = '"1.2.3 "' },
+            @{ raw = '"1..3"' }, @{ raw = '""' }, @{ raw = '123' }, @{ raw = '1.5' }, @{ raw = '"\n1.2.3"' }, @{ raw = '"1.2.3\n"' }
+        ) {
+            Set-UpWorld 'npm-raw' -NpmRaw $raw
+            (Test-ReaUpstream) | Should -Be 5
+            @($script:Out | Where-Object { $_ -like 'FAIL rea_supported_ghidra*' }).Count | Should -Be 1
+            @($script:Gets | Where-Object { $_ -like 'https://raw.githubusercontent.com/*' }).Count | Should -Be 0
+        }
+        It 'a release tag that is a dot segment fails agent-profile' {
+            Set-UpWorld 'tag-dots'
+            (Test-ReaUpstream) | Should -Be 5
+            @($script:Out | Where-Object { $_ -like 'FAIL agent-profile*' }).Count | Should -Be 1
         }
         It 'a newer Ghidra is exit 5 with the PIN_GHIDRA_* hint' {
             Set-UpWorld 'policy-new'

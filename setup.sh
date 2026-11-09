@@ -712,9 +712,14 @@ github_latest_tag() {
     --connect-timeout 20 --max-time 60 "$gl_url" 2>/dev/null) || return 1
   log DEBUG net "latest release of $1 -> $gl_loc"
   case "$gl_loc" in
-    */releases/tag/?*) printf '%s\n' "${gl_loc##*/}" ;;
+    */releases/tag/?*) gl_tag=${gl_loc##*/} ;;
     *) return 1 ;;
   esac
+  # the tag is spliced into later URLs: letters, digits and . _ + - only, never a dot segment
+  case "$gl_tag" in
+    '' | .* | *[!A-Za-z0-9._+-]*) return 1 ;;
+  esac
+  printf '%s\n' "$gl_tag"
 }
 
 # github_release_assets REPO: the asset names of the latest release, one per line, from the API
@@ -2878,13 +2883,21 @@ rea_supported_ghidra() {
   register_tmp "$rg_tmp"
   rg_npm=https://registry.npmjs.org/rea-agents/latest
   http_get "$rg_npm" "$rg_tmp" || die "$EX_VERIFY" check-upstream "cannot read the latest rea-agents release from $rg_npm"
-  rg_ver=$(json_query "$rg_tmp" 'd.version' 2>/dev/null) || rg_ver=""
-  if ! printf '%s\n' "$rg_ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  # The JavaScript test is anchored to the whole string (no multi-line match, a string and not a number), and the
+  # case below repeats it without trusting the tool: only digits and exactly two dots, none leading, trailing or
+  # doubled, can reach the URL.
+  rg_ver=$(json_query "$rg_tmp" 'typeof d.version==="string"&&/^[0-9]+\.[0-9]+\.[0-9]+$/.test(d.version)?d.version:""' 2>/dev/null) || rg_ver=""
+  case "$rg_ver" in
+    '' | *[!0-9.]* | .* | *. | *..* | *.*.*.*) rg_ver="" ;;
+    *.*.*) ;;
+    *) rg_ver="" ;;
+  esac
+  if [ -z "$rg_ver" ]; then
     die "$EX_VERIFY" check-upstream "no X.Y.Z version in the answer of $rg_npm"
   fi
   rg_src="https://raw.githubusercontent.com/morluto/rea/rea-agents-$rg_ver/src/ghidra/GhidraReleasePolicy.ts"
   http_get "$rg_src" "$rg_tmp" || die "$EX_VERIFY" check-upstream "cannot read $rg_src"
-  rg_ghidra=$(sed -n -E 's/.*SUPPORTED_GHIDRA_VERSION[[:space:]]*=[[:space:]]*"([0-9.]+)".*/\1/p' "$rg_tmp" | head -n 1)
+  rg_ghidra=$(sed -n -E 's/^(.*[^A-Za-z0-9_])?SUPPORTED_GHIDRA_VERSION[[:space:]]*=[[:space:]]*"([0-9.]+)".*$/\2/p' "$rg_tmp" | head -n 1)
   rm -f "$rg_tmp"
   [ -n "$rg_ghidra" ] || die "$EX_VERIFY" check-upstream "no SUPPORTED_GHIDRA_VERSION constant in $rg_src"
   if [ "$rg_ghidra" != "$PIN_GHIDRA_VERSION" ]; then

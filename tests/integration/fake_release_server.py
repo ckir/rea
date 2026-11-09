@@ -26,6 +26,7 @@ A HEAD request is answered from the next unconsumed response without consuming o
 resolve step does not use up the responses meant for the download. A path whose list is exhausted, or
 that is not in the scenario, answers 410.
 GET /__count/<path> answers with the number of GET requests that hit /<path>.
+GET /__countprefix/<prefix> answers with the number of GET requests whose path starts with /<prefix>.
 """
 
 import http.server
@@ -97,6 +98,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.reply(next_response(self.path, False), True)
 
     def do_GET(self):
+        if self.path.startswith("/__countprefix/"):
+            prefix = "/" + self.path[len("/__countprefix/"):]
+            with State.lock:
+                body = str(sum(n for k, n in State.counts.items() if k.startswith(prefix))).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/__count/"):
             target = "/" + self.path[len("/__count/"):]
             with State.lock:

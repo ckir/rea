@@ -945,7 +945,8 @@ function Get-ReaGitHubLatestTag {
     if (-not (Test-ReaUrlAllowed $url)) { return $null }
     $r = Send-ReaHeadRequest -Url $url -Method 'HEAD'
     Write-ReaLog DEBUG net "latest release of $Repo -> $($r.Location)"
-    if ($r.Location -and $r.Location -match '/releases/tag/[^/]+$') {
+    # The tag is spliced into later URLs: letters, digits and . _ + - only, never a dot segment.
+    if ($r.Location -and $r.Location -cmatch '/releases/tag/[A-Za-z0-9_+-][A-Za-z0-9._+-]*\z') {
         return $r.Location.Substring($r.Location.LastIndexOf('/') + 1)
     }
     return $null
@@ -3461,7 +3462,7 @@ function Get-ReaRuntimeSupportedGhidra {
         if (-not (Invoke-ReaHttpGet -Url $src -Destination $tmp)) {
             Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "cannot read $src"
         }
-        $m = [regex]::Match([System.IO.File]::ReadAllText($tmp), 'SUPPORTED_GHIDRA_VERSION\s*=\s*"([0-9.]+)"')
+        $m = [regex]::Match([System.IO.File]::ReadAllText($tmp), '(?<![A-Za-z0-9_])SUPPORTED_GHIDRA_VERSION\s*=\s*"([0-9.]+)"')
         if (-not $m.Success) {
             Stop-Rea -Code $script:EX_VERIFY -Step check-upstream -Message "no SUPPORTED_GHIDRA_VERSION constant in $src"
         }
