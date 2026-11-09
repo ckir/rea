@@ -15,13 +15,16 @@ The unsafe archives carry hostile entry names as plain data; they are only ever 
 tar.gz: clean, dotdot, dotdot-mid, abs, symlink (to /etc/passwd), symlink-rel (../../x), symlink-deep
         (a/b/link -> ../../../x), hardlink (target /etc/passwd), hardlink-rel (../x), symchain (a link
         to . followed by an entry below it)
-zip:    clean, dotdot, dotdot-mid, abs, backslash, drive, symlink, exec (execute-bit entries under the
+zip:    notype-evil, notype-ok (no file-type bits), spacel (a name holding ' l '), empty, notzip, mismatch
+        (entry count disagrees with the header), clean, dotdot, dotdot-mid, abs, backslash, drive, symlink, exec (execute-bit entries under the
         Ghidra top directory)
 """
 
+import gzip
 import io
 import os
 import stat
+import struct
 import sys
 import tarfile
 import zipfile
@@ -47,9 +50,12 @@ def tar_add(tf, name, data=b"x", kind=tarfile.REGTYPE, link="", mode=0o644):
 
 
 def make_tar(path, entries):
-    with tarfile.open(path, "w:gz", format=tarfile.GNU_FORMAT) as tf:
-        for entry in entries:
-            tar_add(tf, *entry)
+    # mtime=0 and an empty stored file name make the gzip layer byte-for-byte reproducible
+    with open(path, "wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+            with tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tf:
+                for entry in entries:
+                    tar_add(tf, *entry)
 
 
 def zip_add(zf, name, data=b"x", mode=0o100644):
@@ -104,7 +110,7 @@ def main():
     make_zip(
         os.path.join(out, "clean.zip"),
         [
-            (TOP + "/",  b"", 0o040755),
+            (TOP + "/", b"", 0o040755),
             (TOP + "/ok.txt",),
             (TOP + "/dir with space/inner file.txt",),
         ],
@@ -127,5 +133,27 @@ def main():
     )
 
 
+def make_odd_zips(out):
+    """Zips whose records unzip prints with no file-type bit (?rw-------), and unusable archives."""
+    make_tar(os.path.join(out, "empty.tar.gz"), [])
+    make_zip(os.path.join(out, "notype-evil.zip"), [("../../evil", b"x", 0)])
+    make_zip(os.path.join(out, "notype-ok.zip"), [(TOP + "/ok.txt", b"x", 0)])
+    make_zip(os.path.join(out, "spacel.zip"), [("dir/a l b", b"x", 0o100644), ("dir/c", b"x", 0o100644)])
+    with zipfile.ZipFile(os.path.join(out, "empty.zip"), "w"):
+        pass
+    with open(os.path.join(out, "notzip.zip"), "wb") as f:
+        f.write(b"this is not a zip file\n")
+    # central directory says 1 entry, holds 2: the listed count must not match the header
+    make_zip(os.path.join(out, "two.zip"), [("a", b"1", 0o100644), ("../../evil", b"2", 0o100644)])
+    with open(os.path.join(out, "two.zip"), "rb") as f:
+        raw = bytearray(f.read())
+    eocd = raw.rfind(b"PK\x05\x06")
+    struct.pack_into("<HH", raw, eocd + 8, 1, 1)
+    with open(os.path.join(out, "mismatch.zip"), "wb") as f:
+        f.write(raw)
+    os.remove(os.path.join(out, "two.zip"))
+
+
 if __name__ == "__main__":
     main()
+    make_odd_zips(sys.argv[1])

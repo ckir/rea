@@ -820,12 +820,22 @@ lock_acquire() {
       la_stale=1
     fi
     if [ "$la_stale" -eq 1 ]; then
-      # Re-read just before removing, so a lock another process re-took meanwhile is not removed.
-      if [ "$(lock_owner_pid "$la_dir")" = "$la_pid" ]; then
-        log WARN tools-bin "stale lock from pid ${la_pid:-unknown} taken over: $la_dir/.lock"
-        rm -rf -- "$la_dir/.lock"
+      # Move the lock aside (atomic) only while its owner is still the one judged dead; a failed move means
+      # another process took it over first, so fall through to normal polling. Never rm the live name.
+      la_aside="$la_dir/.lock.stale.$$"
+      rm -rf -- "$la_aside"
+      if [ "$(lock_owner_pid "$la_dir")" = "$la_pid" ] && mv -- "$la_dir/.lock" "$la_aside" 2>/dev/null; then
+        if [ "$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$la_aside/owner" 2>/dev/null | head -n 1)" = "$la_pid" ]; then
+          log WARN tools-bin "stale lock from pid ${la_pid:-unknown} taken over: $la_dir/.lock"
+          rm -rf -- "$la_aside"
+        elif [ ! -e "$la_dir/.lock" ]; then
+          # We moved a lock that changed owner between the check and the move: put it back.
+          mv -- "$la_aside" "$la_dir/.lock" 2>/dev/null || rm -rf -- "$la_aside"
+        else
+          rm -rf -- "$la_aside"
+        fi
+        continue
       fi
-      continue
     fi
     la_polls=$((la_polls + 1))
     if [ "$la_polls" -ge "${LOCK_POLLS:-60}" ]; then
@@ -870,7 +880,7 @@ cleanup_install() {
   if [ -n "$ci_locks" ]; then
     printf '%s\n' "$ci_locks" | while IFS= read -r ci_dir; do
       if [ -n "$ci_dir" ]; then
-        for ci_path in "$ci_dir"/*.tmp."$$" "$ci_dir"/*.old."$$"; do
+        for ci_path in "$ci_dir"/*.tmp."$$" "$ci_dir"/*.old."$$" "$ci_dir"/.lock.stale."$$"; do
           if [ -e "$ci_path" ] || [ -L "$ci_path" ]; then
             rm -rf -- "$ci_path"
           fi
@@ -984,12 +994,17 @@ archive_tarlike_normalise() {
 
 # archive_list FILE: prints one `MODE TYPE PATH [-> TARGET]` line per entry. TYPE is f, d, l (symlink), h
 # (hardlink, TARGET is a member path) or ? (unknown: jar lists names only, MODE is then ?). Tar archives use
-# `tar -tvf` (GNU or bsdtar; stdout only), zips use `unzip -Z`, else `bsdtar -tvf`, else `jar tf`. Fails when
-# the archive cannot be listed or a line cannot be parsed.
+# `tar -tvf` (GNU or bsdtar; stdout only), zips use `unzip -Z`, else `bsdtar -tvf`, else `jar tf`. Every tool
+# writes to a temp file first so its exit status is not hidden by a pipeline. Fails when the archive cannot be
+# listed, a record cannot be parsed, or the listing is empty (an archive with no entries is not an install
+# archive).
 archive_list() {
   al_file=$1
   al_raw=$(mktemp "${TMPDIR:-/tmp}/rea-setup-al.XXXXXX") || return 1
   register_tmp "$al_raw"
+  register_tmp "$al_raw.t"
+  register_tmp "$al_raw.z"
+  register_tmp "$al_raw.n"
   al_rc=0
   case "$al_file" in
     *.zip | *.ZIP)
@@ -997,54 +1012,72 @@ archive_list() {
       case "$al_tool" in
         unzip) archive_list_unzip "$al_file" "$al_raw" || al_rc=1 ;;
         bsdtar)
-          bsdtar -tvf "$al_file" 2>/dev/null | archive_tarlike_normalise >"$al_raw" || al_rc=1
+          bsdtar -tvf "$al_file" >"$al_raw.t" 2>/dev/null || al_rc=1
+          if [ "$al_rc" -eq 0 ]; then
+            archive_tarlike_normalise <"$al_raw.t" >"$al_raw" || al_rc=1
+          fi
           ;;
         jar)
-          "$JAVA_HOME_SELECTED/bin/jar" tf "$al_file" 2>/dev/null | sed -e 's/^/? ? /' >"$al_raw" || al_rc=1
+          "$JAVA_HOME_SELECTED/bin/jar" tf "$al_file" >"$al_raw.t" 2>/dev/null || al_rc=1
+          if [ "$al_rc" -eq 0 ]; then
+            sed -e 's/^/? ? /' <"$al_raw.t" >"$al_raw" || al_rc=1
+          fi
           ;;
         *) al_rc=1 ;;
       esac
       ;;
     *)
-      ${ARCHIVE_TAR:-tar} -tvf "$al_file" 2>/dev/null >"$al_raw.t" || al_rc=1
+      "${ARCHIVE_TAR:-tar}" -tvf "$al_file" >"$al_raw.t" 2>/dev/null || al_rc=1
       if [ "$al_rc" -eq 0 ]; then
         archive_tarlike_normalise <"$al_raw.t" >"$al_raw" || al_rc=1
       fi
-      rm -f "$al_raw.t"
       ;;
   esac
+  if [ "$al_rc" -eq 0 ] && [ ! -s "$al_raw" ]; then
+    al_rc=1
+  fi
   if [ "$al_rc" -eq 0 ]; then
     cat "$al_raw"
   fi
-  rm -f "$al_raw"
+  rm -f "$al_raw" "$al_raw.t" "$al_raw.z" "$al_raw.n"
   return "$al_rc"
 }
 
-# archive_list_unzip ZIP OUT: normalised listing via unzip -Z. unzip does not show a symlink's target, so it
-# is read from the entry itself.
+# archive_list_unzip ZIP OUT: normalised listing via unzip -Z. Every line must be the header, the footer or a
+# parsable record, and the number of records must equal the `number of entries` in the header; anything else
+# fails. A record with no file-type bit (mode ?rw-------) is listed as a regular file, so its path is still
+# checked. unzip does not show a symlink's target, so it is read from the entry itself.
 archive_list_unzip() {
-  alu_raw="$2.z"
-  unzip -Z "$1" 2>/dev/null >"$alu_raw" || {
-    rm -f "$alu_raw"
-    return 1
-  }
+  unzip -Z "$1" 2>/dev/null >"$2.z" || return 1
   awk '
     function skip(line, n,   i) {
       for (i = 0; i < n; i++) { sub(/^[ \t]*[^ \t]+/, "", line) }
       sub(/^[ \t]+/, "", line)
       return line
     }
-    $1 ~ /^[-dlcbps][-rwxsStTa]+$/ && NF >= 9 {
-      t = substr($1, 1, 1)
-      if (t == "-") { t = "f" }
-      print $1 " " t " " skip($0, 8)
+    /^Archive:/ { next }
+    /^Zip file size:/ {
+      if (match($0, /number of entries: [0-9]+/) == 0) { bad = 1; exit }
+      want = substr($0, RSTART + 19, RLENGTH - 19) + 0
+      have_header = 1
+      next
     }
-  ' "$alu_raw" >"$2.n"
+    /^[0-9]+ files?, / { next }
+    {
+      if ($1 !~ /^[-dlcbps?][-rwxsStTa?]+$/ || NF < 9) { bad = 1; exit }
+      t = substr($1, 1, 1)
+      if (t == "-" || t == "?") { t = "f" }
+      print $1 " " t " " skip($0, 8)
+      n++
+    }
+    END { if (bad || !have_header || n != want) { exit 1 } }
+  ' "$2.z" >"$2.n" || return 1
   : >"$2"
   while IFS= read -r alu_line; do
-    case "$alu_line" in
-      ?*\ l\ *)
-        alu_name=${alu_line#* l }
+    alu_rest=${alu_line#* }
+    case "$alu_rest" in
+      l\ *)
+        alu_name=${alu_rest#l }
         alu_pat=$(printf '%s' "$alu_name" | sed -e 's/[][\\*?]/\\&/g')
         alu_target=$(unzip -p "$1" "$alu_pat" 2>/dev/null | head -c 4096 | tr '\n' '/')
         printf '%s -> %s\n' "$alu_line" "$alu_target" >>"$2"
@@ -1052,7 +1085,6 @@ archive_list_unzip() {
       *) printf '%s\n' "$alu_line" >>"$2" ;;
     esac
   done <"$2.n"
-  rm -f "$alu_raw" "$2.n"
   return 0
 }
 
@@ -1160,6 +1192,8 @@ archive_check_safe() {
   return "$acs_rc"
 }
 
+# PRECONDITION: the caller has run archive_check_safe on this same, already verified file; nothing here
+# re-checks the entries.
 # archive_extract FILE DEST: tar.gz with tar; zip with unzip, else bsdtar, else jar run inside DEST. A zip
 # that holds the Ghidra top directory then gets ghidra_set_exec_bits (jar and some bsdtar builds drop the
 # execute bits).
@@ -1188,7 +1222,7 @@ archive_extract() {
       fi
       ;;
     *)
-      ${ARCHIVE_TAR:-tar} -xzf "$ae_file" -C "$ae_dest" --no-same-owner || return 1
+      "${ARCHIVE_TAR:-tar}" -xzf "$ae_file" -C "$ae_dest" --no-same-owner || return 1
       ;;
   esac
   return 0
@@ -1286,18 +1320,23 @@ jdk_newer() {
   [ "$(jdk_build "$jn_a")" -gt "$(jdk_build "$jn_b")" ]
 }
 
-# prune_jdks TOOLS: keeps the two newest jdk-* directories by release, and whichever one holds JAVA_HOME or
+# prune_jdks TOOLS: keeps the two newest jdk-<digit>* directories that hold .install-complete or a release
+# file (nothing else is ever touched) by release, and whichever one holds JAVA_HOME or
 # JAVA_HOME_SELECTED; removes the rest (a failed removal only warns). Staging and .old directories are
 # ignored.
 prune_jdks() {
   pj_tools=$1
   pj_all=""
-  for pj_d in "$pj_tools"/jdk-*; do
+  for pj_d in "$pj_tools"/jdk-[0-9]*; do
     [ -d "$pj_d" ] || continue
     pj_n=${pj_d##*/}
     case "$pj_n" in
       *.tmp.* | *.old.*) continue ;;
     esac
+    # Only what an install made: the sentinel, or a JDK's own release file (also in the macOS layout)
+    if [ ! -f "$pj_d/.install-complete" ] && [ ! -f "$pj_d/release" ] && [ ! -f "$pj_d/Contents/Home/release" ]; then
+      continue
+    fi
     pj_all="${pj_all}${pj_all:+$NL}$pj_n"
   done
   [ -n "$pj_all" ] || return 0

@@ -115,6 +115,54 @@ fi
 assert_eq unzip "$(archive_tool_for "$T/exec.zip")" "zip tool prefers unzip"
 assert_eq jar "$(ARCHIVE_ZIP_TOOL=jar archive_tool_for "$T/exec.zip")" "zip tool override"
 
+# --- review fixes: fail closed on odd zip records and hidden tool failures ---
+assert_status 1 "zip entry without type bits and a ../ name refused" archive_check_safe "$T/notype-evil.zip"
+assert_status 0 "zip entry without type bits and a harmless name is treated as a regular file" archive_check_safe "$T/notype-ok.zip"
+assert_match '^\?rw-------  *f ghidra_12.1.4_PUBLIC/ok.txt$|^\?rw------- f ' "$(archive_list "$T/notype-ok.zip")" "no-type-bit record listed as f"
+assert_status 1 "entry count differing from the header refused" archive_check_safe "$T/mismatch.zip"
+assert_status 1 "empty zip refused" archive_check_safe "$T/empty.zip"
+assert_status 1 "non-zip file refused" archive_check_safe "$T/notzip.zip"
+assert_status 1 "empty zip cannot be listed" archive_list "$T/empty.zip"
+sl=$(archive_list "$T/spacel.zip")
+assert_eq "-rw-r--r-- f dir/a l b" "$(printf '%s\n' "$sl" | head -n 1)" "a name holding ' l ' gets no bogus target"
+assert_status 0 "zip with ' l ' in a name is safe" archive_check_safe "$T/spacel.zip"
+if command -v bsdtar >/dev/null 2>&1; then
+  for z in empty notzip; do
+    assert_status 1 "bsdtar zip $z refused" env ARCHIVE_ZIP_TOOL=bsdtar sh -c ". ./setup.sh; archive_check_safe \"\$1\"" _ "$T/$z.zip"
+  done
+  assert_status 1 "bsdtar zip missing refused" env ARCHIVE_ZIP_TOOL=bsdtar sh -c ". ./setup.sh; archive_check_safe \"\$1\"" _ "$T/nope.zip"
+else
+  t_skip "bsdtar not installed: bsdtar missing, non-zip and empty zip tests skipped"
+fi
+if [ -n "${jh:-}" ]; then
+  for z in empty notzip nope; do
+    assert_status 1 "jar $z.zip refused" env JAVA_HOME_SELECTED="$jh" ARCHIVE_ZIP_TOOL=jar sh -c ". ./setup.sh; archive_check_safe \"\$1\"" _ "$T/$z.zip"
+  done
+  assert_status 0 "jar clean zip still safe" env JAVA_HOME_SELECTED="$jh" ARCHIVE_ZIP_TOOL=jar sh -c ". ./setup.sh; archive_check_safe \"\$1\"" _ "$T/clean.zip"
+fi
+assert_status 1 "empty tar refused" archive_check_safe "$T/empty.tar.gz"
+# deterministic fixtures
+sum1=$(cksum <"$T/clean.tar.gz")
+python3 -I "$ROOT/tests/integration/make_archives.py" "$T/again" || exit 1
+assert_eq "$sum1" "$(cksum <"$T/again/clean.tar.gz")" "tar.gz fixtures are reproducible"
+# a SIGINT during archive_list leaves no temp file behind (private TMPDIR)
+mkdir -p "$T/tmpd"
+cat >"$T/killer.sh" <<'KILLER_EOF'
+#!/bin/sh
+kill -INT "$PPID"
+sleep 1
+exit 0
+KILLER_EOF
+chmod +x "$T/killer.sh"
+trc=0
+TMPDIR="$T/tmpd" ARCHIVE_TAR="$T/killer.sh" sh -c ". ./setup.sh; install_traps; archive_list \"\$1\"" _ "$T/clean.tar.gz" >/dev/null 2>&1 || trc=$?
+assert_eq 130 "$trc" "INT during archive_list exits 130"
+assert_eq "" "$(ls -A "$T/tmpd")" "no archive_list temp file left after INT"
+TMPDIR="$T/tmpd" archive_list "$T/exec.zip" >/dev/null
+TMPDIR="$T/tmpd" archive_list "$T/clean.tar.gz" >/dev/null
+TMPDIR="$T/tmpd" archive_list "$T/empty.zip" >/dev/null 2>&1
+assert_eq "" "$(ls -A "$T/tmpd")" "archive_list removes its temp files on every path"
+
 # --- archive_extract ---
 ex="$T/extract dest"
 assert_status 0 "extract tar" archive_extract "$T/clean.tar.gz" "$ex"
@@ -147,6 +195,46 @@ assert_status 0 "live lock left in place by the refused process" test -f "$T/too
 rm -rf "$T/tools/.lock"
 mkdir -p "$T/tools/.lock"
 assert_status 0 "old ownerless lock taken over" sh -c ". ./setup.sh; touch -d \"2 hours ago\" \"\$1/.lock\" 2>/dev/null || touch -t 200001010000 \"\$1/.lock\"; lock_acquire \"\$1\" && lock_release \"\$1\"" _ "$T/tools"
+# two processes race to take over one stale lock: never both inside, no .lock.stale.* left (the race itself is
+# timing dependent, so a pass here shows the absence of overlap in these runs, not a proof)
+cat >"$T/racer.sh" <<'RACER_EOF'
+. ./setup.sh
+LOCK_POLLS=1
+while [ ! -e "$1/go" ]; do :; done
+lock_acquire "$1/tools" 2>/dev/null || exit 0
+if [ -e "$1/holder" ]; then
+  echo "overlap $$" >>"$1/violations"
+fi
+echo "$$" >"$1/holder"
+sleep 0.2
+[ "$(cat "$1/holder" 2>/dev/null)" = "$$" ] || echo "stolen $$" >>"$1/violations"
+rm -f "$1/holder"
+echo "$$" >>"$1/winners"
+lock_release "$1/tools"
+RACER_EOF
+race_i=0
+race_bad=0
+while [ "$race_i" -lt 20 ]; do
+  race_i=$((race_i + 1))
+  rd="$T/race $race_i"
+  mkdir -p "$rd/tools/.lock"
+  printf 'pid=999999 started=x\n' >"$rd/tools/.lock/owner"
+  sh "$T/racer.sh" "$rd" &
+  rp1=$!
+  sh "$T/racer.sh" "$rd" &
+  rp2=$!
+  : >"$rd/go"
+  wait "$rp1" "$rp2"
+  [ ! -e "$rd/violations" ] || race_bad=$((race_bad + 1))
+  [ -e "$rd/winners" ] || race_bad=$((race_bad + 1))
+  [ -z "$(find "$rd" -name '.lock.stale.*' | head -n 1)" ] || race_bad=$((race_bad + 1))
+  [ ! -d "$rd/tools/.lock" ] || race_bad=$((race_bad + 1))
+done
+assert_eq 0 "$race_bad" "20 takeover races: no overlap, a winner each time, no stale leftovers, lock released"
+# a takeover must not delete a lock whose owner changed after the staleness decision
+mkdir -p "$T/chg/.lock"
+printf 'pid=999999 started=x\n' >"$T/chg/.lock/owner"
+assert_status 0 "stale takeover leaves no .lock.stale" sh -c ". ./setup.sh; lock_acquire \"\$1\" && lock_release \"\$1\" && test -z \"\$(find \"\$1\" -name '.lock.stale.*')\"" _ "$T/chg"
 mkdir -p "$T/tools dir with space"
 assert_status 0 "lock in path with space" lock_acquire "$T/tools dir with space"
 lock_release "$T/tools dir with space"
@@ -302,8 +390,24 @@ assert_eq "" "$(printf '%s\n' "$uncovered" | grep -v -E '^(Ghidra/Features/|Ghid
 
 # --- prune_jdks ---
 pj="$T/jdk tools"
+mkjdk() {
+  for mj_n in "$@"; do
+    mkdir -p "$pj/$mj_n"
+    : >"$pj/$mj_n/.install-complete"
+  done
+}
+mkjdk jdk-21.0.13+9 jdk-21.0.9+10 jdk-21.0.13+10 jdk-17.0.1+1
 mkdir -p "$pj/jdk-21.0.13+9" "$pj/jdk-21.0.9+10" "$pj/jdk-21.0.13+10" "$pj/jdk-17.0.1+1" "$pj/not-a-jdk" "$pj/jdk-21.0.13+9.tmp.1" "$pj/ghidra_12.1.4_PUBLIC"
+mkdir -p "$pj/jdk-notes" "$pj/jdk-21-scratch" "$pj/jdk-0.0.1-user/sub"
+touch "$pj/jdk-notes/keep.txt" "$pj/jdk-0.0.1-user/sub/f"
+mkdir -p "$pj/jdk-mac-old/Contents/Home" "$pj/jdk-1.8.0+1/Contents/Home"
+: >"$pj/jdk-1.8.0+1/Contents/Home/release"
 JAVA_HOME="" JAVA_HOME_SELECTED="" prune_jdks "$pj"
+assert_status 0 "jdk-notes (user directory) untouched" test -f "$pj/jdk-notes/keep.txt"
+assert_status 0 "jdk-21-scratch (no marker) untouched" test -d "$pj/jdk-21-scratch"
+assert_status 0 "jdk-0.0.1-user (no marker) untouched" test -d "$pj/jdk-0.0.1-user/sub"
+assert_status 0 "jdk-mac-old (not a version name) untouched" test -d "$pj/jdk-mac-old"
+assert_status 1 "old mac-layout jdk with a release file pruned" test -d "$pj/jdk-1.8.0+1"
 assert_status 0 "newest jdk kept" test -d "$pj/jdk-21.0.13+10"
 assert_status 0 "second newest jdk kept" test -d "$pj/jdk-21.0.13+9"
 assert_status 1 "21.0.9+10 pruned (older release)" test -d "$pj/jdk-21.0.9+10"
@@ -311,7 +415,9 @@ assert_status 1 "17.0.1+1 pruned" test -d "$pj/jdk-17.0.1+1"
 assert_status 0 "non-jdk dirs untouched" test -d "$pj/not-a-jdk"
 assert_status 0 "ghidra untouched" test -d "$pj/ghidra_12.1.4_PUBLIC"
 assert_status 0 "staging-named jdk untouched" test -d "$pj/jdk-21.0.13+9.tmp.1"
-mkdir -p "$pj/jdk-21.0.9+10/Contents/Home" "$pj/jdk-21.0.20+1"
+mkjdk jdk-21.0.9+10
+mkdir -p "$pj/jdk-21.0.9+10/Contents/Home"
+mkjdk jdk-21.0.20+1
 JAVA_HOME="$pj/jdk-21.0.9+10/Contents/Home" prune_jdks "$pj"
 assert_status 0 "JAVA_HOME's jdk never pruned (even below it)" test -d "$pj/jdk-21.0.9+10"
 assert_status 0 "newest kept" test -d "$pj/jdk-21.0.20+1"
