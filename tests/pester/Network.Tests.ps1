@@ -761,3 +761,83 @@ Describe 'setup.ps1 network layer' {
         }
     }
 }
+
+Describe 'wrapped transport exceptions and head retries' {
+    BeforeEach {
+        $script:AllowedSchemes = @('https', 'http')
+        $script:AllowedHosts = @('github.com', 'api.github.com')
+        $script:RetryWaits = @(0, 0, 0, 0)
+        $script:LogFile = $null
+        $script:ConsoleLevel = 'ERROR'
+        $script:Sleeps = New-Object System.Collections.ArrayList
+        $script:HeadPlan = New-Object System.Collections.ArrayList
+        $script:HeadCalls = New-Object System.Collections.ArrayList
+        Mock Invoke-ReaSleep { [void]$script:Sleeps.Add($Seconds) }
+        Mock Send-ReaHeadRequest {
+            [void]$script:HeadCalls.Add("$Method $Url")
+            $step = $script:HeadPlan[$script:HeadCalls.Count - 1]
+            $loc = $null
+            if ($step.ContainsKey('Location')) { $loc = $step.Location }
+            $retryable = $false
+            if ($step.ContainsKey('Retryable')) { $retryable = $step.Retryable }
+            return [pscustomobject]@{ Status = $step.Status; Location = $loc; Error = ''; ContentLength = [int64]-1; ContentRange = $null; Retryable = $retryable }
+        }
+    }
+    AfterAll {
+        $script:AllowedSchemes = $script:SavedSchemes
+        $script:AllowedHosts = $script:SavedHosts
+        $script:RetryWaits = $script:SavedWaits
+    }
+
+    It 'sees an IOException through a MethodInvocationException as transient' {
+        $wrapped = $null
+        try { [System.IO.File]::OpenRead((Join-Path $script:Tmp 'no such file.bin')) | Out-Null } catch { $wrapped = $_.Exception }
+        $wrapped | Should -BeOfType ([System.Management.Automation.MethodInvocationException])
+        Test-ReaTransientError $wrapped | Should -BeTrue
+    }
+    It 'sees an IOException through an AggregateException inside a MethodInvocationException as transient' {
+        $task = [System.Threading.Tasks.Task]::FromException((New-Object System.IO.IOException 'reset'))
+        $wrapped = $null
+        try { $task.Wait() } catch { $wrapped = $_.Exception }
+        Test-ReaTransientError $wrapped | Should -BeTrue
+        Get-ReaRootMessage $wrapped | Should -Be 'reset'
+    }
+    It 'still refuses an unrelated exception behind a wrapper' {
+        $task = [System.Threading.Tasks.Task]::FromException((New-Object System.InvalidOperationException 'bug'))
+        $wrapped = $null
+        try { $task.Wait() } catch { $wrapped = $_.Exception }
+        Test-ReaTransientError $wrapped | Should -BeFalse
+    }
+    It 'retries a 504 on the redirect hop and then follows it' {
+        [void]$script:HeadPlan.Add(@{ Status = 504 })
+        [void]$script:HeadPlan.Add(@{ Status = 503 })
+        [void]$script:HeadPlan.Add(@{ Status = 302; Location = 'https://github.com/b' })
+        [void]$script:HeadPlan.Add(@{ Status = 200 })
+        $r = Resolve-ReaRedirect -Url 'https://github.com/a'
+        $r.Code | Should -Be 0
+        $r.Url | Should -Be 'https://github.com/b'
+        $script:HeadCalls.Count | Should -Be 4
+    }
+    It 'retries a transient transport failure on the head request' {
+        [void]$script:HeadPlan.Add(@{ Status = 0; Retryable = $true })
+        [void]$script:HeadPlan.Add(@{ Status = 200 })
+        (Resolve-ReaRedirect -Url 'https://github.com/a').Code | Should -Be 0
+        $script:HeadCalls.Count | Should -Be 2
+    }
+    It 'does not retry a 404 or a non-transient failure' {
+        [void]$script:HeadPlan.Add(@{ Status = 404 })
+        (Resolve-ReaRedirect -Url 'https://github.com/a').Code | Should -Be 3
+        $script:HeadCalls.Count | Should -Be 1
+    }
+    It 'gives up after the configured number of attempts' {
+        foreach ($i in 1..6) { [void]$script:HeadPlan.Add(@{ Status = 504 }) }
+        (Resolve-ReaRedirect -Url 'https://github.com/a').Code | Should -Be 3
+        $script:HeadCalls.Count | Should -Be 4
+    }
+    It 'retries the latest-tag lookup after a 504' {
+        [void]$script:HeadPlan.Add(@{ Status = 504 })
+        [void]$script:HeadPlan.Add(@{ Status = 302; Location = 'https://github.com/ckir/clavity/releases/tag/clavity-v31' })
+        Get-ReaGitHubLatestTag -Repo 'ckir/clavity' | Should -Be 'clavity-v31'
+        $script:HeadCalls.Count | Should -Be 2
+    }
+}

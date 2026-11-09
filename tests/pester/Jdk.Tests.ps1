@@ -16,6 +16,8 @@ BeforeDiscovery {
 }
 
 BeforeAll {
+    # BeforeDiscovery variables are empty in the run phase, so the run-phase reads need their own copy
+    $script:OnWindows = ([System.IO.Path]::DirectorySeparatorChar -eq '\')
     $env:REA_SETUP_NO_MAIN = '1'
     . (Resolve-Path (Join-Path $PSScriptRoot '../../setup.ps1')).Path
     $script:Root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -408,6 +410,16 @@ Describe 'jdk' {
             Invoke-ReaStepJdk
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'reusing jdk-21\.0\.13\+9'
             Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
+        }
+        It 'rechecks an install plan under the lock: a JDK another run installed meanwhile is reused, not downloaded again' {
+            Initialize-Serve
+            Invoke-ReaStepJdk
+            Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
+            $script:PlanJdk = 'install'
+            try { Invoke-ReaStepJdk } finally { $script:PlanJdk = $null }
+            Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
+            $script:JdkReused | Should -BeTrue
+            $script:JavaHomeSelected | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
         }
         It 'uses the embedded pin with the verbatim WARN when Adoptium is unreachable' {
             Initialize-Serve

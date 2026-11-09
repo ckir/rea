@@ -15,6 +15,8 @@ BeforeDiscovery {
 }
 
 BeforeAll {
+    # BeforeDiscovery variables are empty in the run phase, so the run-phase reads need their own copy
+    $script:OnWindows = ([System.IO.Path]::DirectorySeparatorChar -eq '\')
     $env:REA_SETUP_NO_MAIN = '1'
     . (Resolve-Path (Join-Path $PSScriptRoot '../../setup.ps1')).Path
     $script:Root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -248,6 +250,16 @@ Describe 'ghidra' {
             Invoke-ReaStepGhidra
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'reusing ghidra_12\.1\.4_PUBLIC'
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
+        }
+        It 'rechecks an install plan under the lock: a Ghidra another run installed meanwhile is reused, not downloaded again' {
+            Initialize-Serve
+            Invoke-ReaStepGhidra
+            Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
+            $script:PlanGhidra = 'install'
+            try { Invoke-ReaStepGhidra } finally { $script:PlanGhidra = $null }
+            Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
+            $script:GhidraReused | Should -BeTrue
+            $script:GhidraDirSelected | Should -Be (Join-Path $script:ToolsDir $script:Top)
         }
         It 'replaces an install directory without .install-complete (rename over the existing directory)' {
             Initialize-Serve

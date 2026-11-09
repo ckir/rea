@@ -15,6 +15,8 @@ BeforeDiscovery {
 }
 
 BeforeAll {
+    # BeforeDiscovery variables are empty in the run phase, so the run-phase reads need their own copy
+    $script:OnWindows = ([System.IO.Path]::DirectorySeparatorChar -eq '\')
     $env:REA_SETUP_NO_MAIN = '1'
     . (Resolve-Path (Join-Path $PSScriptRoot '../../setup.ps1')).Path
     $script:Root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path

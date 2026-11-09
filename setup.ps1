@@ -9,10 +9,10 @@
 Takes a stock Windows machine to a running clavity-ls session with morluto/rea registered in an isolated
 agent-profile Claude profile. The PowerShell twin of setup.sh; Windows PowerShell 5.1 and PowerShell 7.
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$ProfileName = 'rea',
-    [string]$Folder = (Get-Location).Path,
+    [string]$Folder = (Get-Location).ProviderPath,
     [string]$GhidraDir = $env:GHIDRA_INSTALL_DIR,
     [string]$JavaHome = $env:JAVA_HOME,
     [string]$ToolsDir = '',
@@ -57,6 +57,18 @@ $script:EX_USAGE = 2
 $script:EX_PLATFORM = 3
 $script:EX_PREREQ = 4
 $script:EX_VERIFY = 5
+
+# The SHA-256 of this script file, or n/a when it cannot be read (dot-sourced from a string, no file).
+function Get-ReaScriptHash {
+    try {
+        if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+            return (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    } catch {
+        return 'n/a'
+    }
+    return 'n/a'
+}
 
 # The bound parameters, captured once so every function reads one object instead of the caller's scope.
 $script:Opt = [pscustomobject]@{
@@ -217,8 +229,13 @@ function Convert-ReaHomeText {
     if (-not $homeDir) { return $Text }
     $homeDir = $homeDir.TrimEnd('\', '/')
     if (-not $homeDir) { return $Text }
-    $pattern = '(^|[^A-Za-z0-9._/\\-])' + [regex]::Escape($homeDir) + '(?=$|[\\/]|[^A-Za-z0-9._-])'
-    return [regex]::Replace($Text, $pattern, '${1}%USERPROFILE%', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    # The path also appears JSON-escaped (doubled backslashes, in rea doctor --json) and with forward slashes.
+    $forms = @($homeDir.Replace('\', '\\'), $homeDir.Replace('\', '/'), $homeDir) | Select-Object -Unique
+    foreach ($form in $forms) {
+        $pattern = '(^|[^A-Za-z0-9._/\\-])' + [regex]::Escape($form) + '(?=$|[\\/]|[^A-Za-z0-9._-])'
+        $Text = [regex]::Replace($Text, $pattern, '${1}%USERPROFILE%', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    return $Text
 }
 
 # Prints a warning on stderr; one function so tests can capture it.
@@ -322,8 +339,7 @@ function Invoke-ReaCommand {
 function Open-ReaLog {
     param([string]$Directory = '')
     if (-not $Directory) {
-        $base = $env:LOCALAPPDATA
-        if (-not $base) { $base = Join-Path $HOME '.local/state' }
+        $base = Get-ReaLocalAppData
         $Directory = Join-Path (Join-Path $base 'rea-setup') 'logs'
     }
     $stamp = [DateTime]::UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
@@ -491,6 +507,29 @@ function Invoke-ReaSleep {
     Start-Sleep -Seconds $Seconds
 }
 
+# Pauses of a fraction of a second between the retries of a move; one function so tests can replace it.
+function Invoke-ReaSleepMs {
+    param([int]$Milliseconds)
+    Start-Sleep -Milliseconds $Milliseconds
+}
+
+# Move-Item that tries again when it fails: Windows Defender and the indexer open freshly extracted or
+# downloaded files, and renaming a directory that holds an open handle fails with access denied until they let
+# go. Ten attempts with a pause that grows from 0.5 s to 2 s; the last failure is thrown.
+function Move-ReaItemRetry {
+    param([string]$Path, [string]$Destination, [switch]$Force, [int]$Attempts = 10)
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try {
+            Move-Item -LiteralPath $Path -Destination $Destination -Force:$Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -ge $Attempts) { throw }
+            Write-ReaLog DEBUG move ("move failed (attempt $i of ${Attempts}): " + $_.Exception.Message)
+            Invoke-ReaSleepMs -Milliseconds ([Math]::Min(2000, 500 + 150 * ($i - 1)))
+        }
+    }
+}
+
 # --- temporary files ---
 
 # Remembers a file or directory for Clear-ReaTempFile. A finally block covers an ordinary failure; this list is
@@ -633,19 +672,25 @@ function New-ReaWebRequest {
 # The message of the real cause: an AggregateException (from Task.Wait) is replaced by its first inner exception.
 function Get-ReaRootMessage {
     param($Exception)
-    while ($Exception -is [System.AggregateException] -and $null -ne $Exception.InnerException) {
+    return (Get-ReaRootException $Exception).Message
+}
+
+# The exception behind the wrappers: an AggregateException (Task.Wait) and a MethodInvocationException (any .NET
+# method that throws inside an untyped catch) are replaced by their inner exception.
+function Get-ReaRootException {
+    param($Exception)
+    while ($null -ne $Exception -and $null -ne $Exception.InnerException -and
+        ($Exception -is [System.AggregateException] -or $Exception -is [System.Management.Automation.MethodInvocationException])) {
         $Exception = $Exception.InnerException
     }
-    return $Exception.Message
+    return $Exception
 }
 
 # True for a failure worth another attempt: connection, name-resolution, timeout and broken-transfer errors. A
 # certificate failure or anything unrecognised is not.
 function Test-ReaTransientError {
     param($Exception)
-    if ($Exception -is [System.AggregateException] -and $null -ne $Exception.InnerException) {
-        $Exception = $Exception.InnerException
-    }
+    $Exception = Get-ReaRootException $Exception
     if ($Exception -is [System.Net.WebException]) {
         $transient = 'ConnectFailure', 'NameResolutionFailure', 'ProxyNameResolutionFailure', 'Timeout', 'ConnectionClosed', 'ReceiveFailure', 'SendFailure', 'PipelineFailure', 'KeepAliveFailure'
         return ($transient -contains $Exception.Status.ToString())
@@ -661,7 +706,7 @@ function Send-ReaHeadRequest {
         [string]$Url,
         [ValidateSet('HEAD', 'RANGE')][string]$Method = 'HEAD'
     )
-    $result = [pscustomobject]@{ Status = 0; Location = $null; Error = ''; ContentLength = [int64]-1; ContentRange = $null }
+    $result = [pscustomobject]@{ Status = 0; Location = $null; Error = ''; ContentLength = [int64]-1; ContentRange = $null; Retryable = $false }
     $resp = $null
     try {
         if ($Method -eq 'RANGE') {
@@ -676,6 +721,7 @@ function Send-ReaHeadRequest {
             $resp = $_.Exception.Response
             if ($null -eq $resp) {
                 $result.Error = $_.Exception.Message
+                $result.Retryable = Test-ReaTransientError $_.Exception
                 return $result
             }
         }
@@ -685,10 +731,40 @@ function Send-ReaHeadRequest {
         $result.ContentRange = $resp.Headers['Content-Range']
     } catch {
         $result.Error = $_.Exception.Message
+        $result.Retryable = Test-ReaTransientError $_.Exception
     } finally {
         if ($null -ne $resp) { $resp.Close() }
     }
     return $result
+}
+
+# Send-ReaHeadRequest with the retries Invoke-ReaHttpGet has: 5xx, 429 and a retryable transport failure are
+# tried again after the pauses in $script:RetryWaits (so they also set the number of attempts); any other
+# answer is returned at once.
+function Invoke-ReaHeadRetry {
+    param(
+        [string]$Url,
+        [ValidateSet('HEAD', 'RANGE')][string]$Method = 'HEAD'
+    )
+    $waits = @($script:RetryWaits)
+    $total = $waits.Count
+    $r = $null
+    for ($attempt = 1; $attempt -le $total; $attempt++) {
+        $r = Send-ReaHeadRequest -Url $Url -Method $Method
+        if ($r.Error) { Write-ReaLog DEBUG net ("transport ($Method $Url, attempt $attempt of ${total}): " + $r.Error) }
+        $retry = $false
+        if ($r.Status -eq 429 -or ($r.Status -ge 500 -and $r.Status -le 599)) {
+            $retry = $true
+        } elseif ($r.Status -eq 0 -and $null -ne $r.PSObject.Properties['Retryable'] -and $r.Retryable) {
+            $retry = $true
+        }
+        if (-not $retry -or $attempt -ge $total) { break }
+        $wait = [int]$waits[$attempt - 1]
+        if ($wait -gt 120) { $wait = 120 }
+        Write-ReaLog DEBUG net "retrying in ${wait}s"
+        Invoke-ReaSleep -Seconds $wait
+    }
+    return $r
 }
 
 # The leading digits of a Retry-After value, or $null when there are none or more than six (so the number can
@@ -809,9 +885,9 @@ function Resolve-ReaRedirect {
             Write-ReaLog ERROR net "redirect target not allowed: $current"
             return [pscustomobject]@{ Code = 1; Url = $null }
         }
-        $r = Send-ReaHeadRequest -Url $current -Method 'HEAD'
+        $r = Invoke-ReaHeadRetry -Url $current -Method 'HEAD'
         if ($r.Status -eq 405 -or $r.Status -eq 403) {
-            $r = Send-ReaHeadRequest -Url $current -Method 'RANGE'
+            $r = Invoke-ReaHeadRetry -Url $current -Method 'RANGE'
         }
         Write-ReaLog DEBUG net "HEAD $current -> $($r.Status)"
         if ($r.Status -ge 200 -and $r.Status -le 299) {
@@ -929,7 +1005,7 @@ function Get-ReaDownload {
             Write-ReaLog ERROR net "checksum mismatch for ${Url}: expected $want got $got"
             return $false
         }
-        Move-Item -LiteralPath $tmp -Destination $Destination -Force
+        Move-ReaItemRetry -Path $tmp -Destination $Destination -Force
         return $true
     } finally {
         Clear-ReaTempFile -Path $tmp
@@ -943,7 +1019,7 @@ function Get-ReaGitHubLatestTag {
     param([string]$Repo)
     $url = "https://github.com/$Repo/releases/latest"
     if (-not (Test-ReaUrlAllowed $url)) { return $null }
-    $r = Send-ReaHeadRequest -Url $url -Method 'HEAD'
+    $r = Invoke-ReaHeadRetry -Url $url -Method 'HEAD'
     Write-ReaLog DEBUG net "latest release of $Repo -> $($r.Location)"
     # The tag is spliced into later URLs: letters, digits and . _ + - only, never a dot segment.
     if ($r.Location -and $r.Location -cmatch '/releases/tag/[A-Za-z0-9_+-][A-Za-z0-9._+-]*\z') {
@@ -1195,7 +1271,7 @@ function Lock-ReaDir {
             $made = $false
         }
         if ($made) {
-            $started = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $started = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
             try {
                 [System.IO.File]::WriteAllText((Join-Path $lock 'owner'), "pid=$PID started=$started" + [Environment]::NewLine)
             } catch {
@@ -1288,7 +1364,14 @@ function Remove-ReaOrphan {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param([string]$Dir)
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return }
-    $items = @(Get-ChildItem -LiteralPath $Dir -Force | Where-Object { $_.Name -like '*.tmp.*' -or $_.Name -like '*.old.*' })
+    # Only the names this script creates: the bin dir is shared with other tools and a tools dir may hold the
+    # user's own files.
+    $ours = 'agent-profile*', 'clavity-ls*', 'jdk-[0-9]*', 'ghidra.work', 'ghidra_[0-9]*', 'env.*'
+    $items = @(Get-ChildItem -LiteralPath $Dir -Force | Where-Object {
+            $name = $_.Name
+            ($name -like '*.tmp.*' -or $name -like '*.old.*') -and
+            @($ours | Where-Object { $name -like ($_ + '.tmp.*') -or $name -like ($_ + '.old.*') }).Count -gt 0
+        })
     foreach ($item in $items) {
         $suffix = $item.Name.Substring($item.Name.LastIndexOf('.') + 1)
         if ($suffix -notmatch '^[0-9]+$') { continue }
@@ -1637,7 +1720,7 @@ function Complete-ReaInstall {
     param([string]$Staging, [string]$Final)
     $old = "$Final.old.$PID"
     try {
-        $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $stamp = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
         $text = "$stamp $script:PIN_SCRIPT_VERSION" + [Environment]::NewLine
         [System.IO.File]::WriteAllText((Join-Path $Staging '.install-complete'), $text)
     } catch {
@@ -1650,19 +1733,19 @@ function Complete-ReaInstall {
     $hadFinal = Test-Path -LiteralPath $Final
     if ($hadFinal) {
         try {
-            Move-Item -LiteralPath $Final -Destination $old -ErrorAction Stop
+            Move-ReaItemRetry -Path $Final -Destination $old
         } catch {
             Write-ReaLog -Level ERROR -Step install -Message "cannot move the previous install aside: $Final"
             return $false
         }
     }
     try {
-        Move-Item -LiteralPath $Staging -Destination $Final -ErrorAction Stop
+        Move-ReaItemRetry -Path $Staging -Destination $Final
     } catch {
         Write-ReaLog -Level ERROR -Step install -Message "cannot move the new install into place: $Final"
         if ($hadFinal) {
             try {
-                Move-Item -LiteralPath $old -Destination $Final -ErrorAction Stop
+                Move-ReaItemRetry -Path $old -Destination $Final
             } catch {
                 Write-ReaLog -Level ERROR -Step install -Message "cannot restore the previous install from: $old"
             }
@@ -1722,9 +1805,9 @@ function Remove-ReaOldJdk {
     $names = New-Object System.Collections.Generic.List[string]
     foreach ($d in @(Get-ChildItem -LiteralPath $ToolsDir -Directory -Force | Where-Object { $_.Name -like 'jdk-[0-9]*' })) {
         if ($d.Name -like '*.tmp.*' -or $d.Name -like '*.old.*') { continue }
-        $marked = (Test-Path -LiteralPath (Join-Path $d.FullName '.install-complete') -PathType Leaf) -or
-            (Test-Path -LiteralPath (Join-Path $d.FullName 'release') -PathType Leaf) -or
-            (Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $d.FullName 'Contents') 'Home') 'release') -PathType Leaf)
+        # Only what an install of this script made: the sentinel. A JDK's own release file is no proof, a
+        # hand-extracted Temurin has one too.
+        $marked = Test-Path -LiteralPath (Join-Path $d.FullName '.install-complete') -PathType Leaf
         if ($marked) { $names.Add($d.Name) }
     }
     foreach ($n in $names) {
@@ -2353,7 +2436,7 @@ function Install-ReaJdk {
         $stage = New-ReaStaging -Dir $tools -Name $release
         [System.IO.Directory]::Delete($stage)
         try {
-            Move-Item -LiteralPath $items[0].FullName -Destination $stage -ErrorAction Stop
+            Move-ReaItemRetry -Path $items[0].FullName -Destination $stage
         } catch {
             Stop-Rea -Code $script:EX_STEP -Step jdk -Message "cannot move the extracted JDK into $stage"
         }
@@ -2454,8 +2537,12 @@ function Invoke-ReaStepJdk {
     switch ($script:PlanJdk) {
         'reuse' { }
         'install' {
-            $installed = Install-ReaJdk
-            if ($installed) { $script:JavaHomeSelected = [string]$installed }
+            # Re-checked under the lock: another run may have installed the JDK since the plan was made
+            Select-ReaJdk -PlanOnly
+            if (-not $script:JdkReused) {
+                $installed = Install-ReaJdk
+                if ($installed) { $script:JavaHomeSelected = [string]$installed }
+            }
         }
         default { Select-ReaJdk }
     }
@@ -2552,7 +2639,7 @@ function Install-ReaGhidra {
         $stage = New-ReaStaging -Dir $tools -Name $topDir
         [System.IO.Directory]::Delete($stage)
         try {
-            Move-Item -LiteralPath $items[0].FullName -Destination $stage -ErrorAction Stop
+            Move-ReaItemRetry -Path $items[0].FullName -Destination $stage
         } catch {
             Stop-Rea -Code $script:EX_STEP -Step ghidra -Message "cannot move the extracted Ghidra into $stage"
         }
@@ -2651,8 +2738,12 @@ function Invoke-ReaStepGhidra {
     switch ($script:PlanGhidra) {
         'reuse' { }
         'install' {
-            $installed = Install-ReaGhidra
-            if ($installed) { $script:GhidraDirSelected = [string]$installed }
+            # Re-checked under the lock: another run may have installed Ghidra since the plan was made
+            Select-ReaGhidra -PlanOnly
+            if (-not $script:GhidraReused) {
+                $installed = Install-ReaGhidra
+                if ($installed) { $script:GhidraDirSelected = [string]$installed }
+            }
         }
         default { Select-ReaGhidra }
     }
@@ -3615,15 +3706,28 @@ function Format-ReaInvocation {
 }
 
 # The script body; returns the exit code.
+# FullPath made absolute against PowerShell's location, not the process directory (the two differ after Set-Location),
+# without touching the disk; '' stays ''. A provider-qualified path comes back as the plain provider path.
+function Resolve-ReaFullPath {
+    param([AllowEmptyString()][string]$Path)
+    if (-not $Path) { return $Path }
+    return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
 function Invoke-Main {
     Initialize-ReaNetwork
+    # The paths are recorded in the profile and env.ps1 and handed to children: make them absolute now
+    foreach ($key in 'Folder', 'GhidraDir', 'JavaHome', 'ToolsDir', 'BinDir', 'LogDir') {
+        $script:Opt.$key = Resolve-ReaFullPath ([string]$script:Opt.$key)
+    }
     $script:OptYes = $script:Opt.Yes
     $script:ConsoleLevel = 'INFO'
     if ($script:Opt.Quiet) { $script:ConsoleLevel = 'WARN' }
     if ($VerbosePreference -eq 'Continue') { $script:ConsoleLevel = 'DEBUG' }
     try {
         Open-ReaLog -Directory $script:Opt.LogDir | Out-Null
-        Write-ReaLog DEBUG preflight "script version $script:PIN_SCRIPT_VERSION sha256 n/a"
+        if ($script:LogFile) { Write-ReaLog INFO preflight ('log file: ' + (Get-ReaShortPath $script:LogFile)) }
+        Write-ReaLog DEBUG preflight "script version $script:PIN_SCRIPT_VERSION sha256 $(Get-ReaScriptHash)"
         Write-ReaLog DEBUG preflight ('PowerShell ' + $PSVersionTable.PSVersion.ToString())
         Write-ReaLog DEBUG preflight ('invoked: ' + (Format-ReaInvocation $script:Bound))
         Write-ReaConfig

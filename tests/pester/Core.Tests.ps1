@@ -12,6 +12,8 @@ BeforeDiscovery {
 }
 
 BeforeAll {
+    # BeforeDiscovery variables are empty in the run phase, so the run-phase reads need their own copy
+    $script:OnWindows = ([System.IO.Path]::DirectorySeparatorChar -eq '\')
     $env:REA_SETUP_NO_MAIN = '1'
     $script:SetupPath = (Resolve-Path (Join-Path $PSScriptRoot '../../setup.ps1')).Path
     . $script:SetupPath
@@ -449,5 +451,39 @@ Describe 'pins' {
     It 'carries the pin block the drift gate reads' {
         $script:PIN_GHIDRA_SHA256 | Should -Match '^[0-9a-f]{64}$'
         $script:PIN_SCRIPT_VERSION | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Convert-ReaHomeText with the home directory in JSON and forward-slash form' {
+    BeforeEach {
+        $script:SavedHome = $env:USERPROFILE
+        $script:Bs = [string][char]92
+        $env:USERPROFILE = 'C:' + $script:Bs + 'Users' + $script:Bs + 'Jane Doe'
+    }
+    AfterEach { $env:USERPROFILE = $script:SavedHome }
+
+    It 'replaces the single-backslash form' {
+        $b = $script:Bs
+        Convert-ReaHomeText ('at C:' + $b + 'Users' + $b + 'Jane Doe' + $b + 'AppData') | Should -Be ('at %USERPROFILE%' + $b + 'AppData')
+    }
+    It 'replaces the JSON-escaped form (doubled backslashes)' {
+        $b = $script:Bs + $script:Bs
+        $text = '{"path":"C:' + $b + 'Users' + $b + 'Jane Doe' + $b + 'AppData' + $b + 'x"}'
+        $text | Should -Match 'Jane Doe'
+        Convert-ReaHomeText $text | Should -Be ('{"path":"%USERPROFILE%' + $b + 'AppData' + $b + 'x"}')
+    }
+    It 'replaces the forward-slash form' {
+        Convert-ReaHomeText 'see C:/Users/Jane Doe/AppData/x' | Should -Be 'see %USERPROFILE%/AppData/x'
+    }
+    It 'matches case-insensitively and only whole path components' {
+        Convert-ReaHomeText 'c:/users/jane doe/x' | Should -Be '%USERPROFILE%/x'
+        Convert-ReaHomeText 'C:/Users/Jane Doette/x' | Should -Be 'C:/Users/Jane Doette/x'
+    }
+}
+
+Describe 'Get-ReaScriptHash' {
+    It 'is a 64-digit hash when the script is a file, and n/a otherwise' {
+        $h = Get-ReaScriptHash
+        $h | Should -Match '^([0-9a-f]{64}|n/a)$'
     }
 }

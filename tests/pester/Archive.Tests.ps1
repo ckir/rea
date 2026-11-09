@@ -15,6 +15,8 @@ BeforeDiscovery {
 }
 
 BeforeAll {
+    # BeforeDiscovery variables are empty in the run phase, so the run-phase reads need their own copy
+    $script:OnWindows = ([System.IO.Path]::DirectorySeparatorChar -eq '\')
     $env:REA_SETUP_NO_MAIN = '1'
     $script:SetupPath = (Resolve-Path (Join-Path $PSScriptRoot '../../setup.ps1')).Path
     . $script:SetupPath
@@ -391,10 +393,10 @@ Describe 'Remove-ReaTree' {
         Clear-ReaTempFile
         Test-Path -LiteralPath $reg | Should -BeFalse
         $orph = Join-Path $script:T 'tree orph'
-        New-Item -ItemType Directory -Path (Join-Path $orph 'x.tmp.999999') -Force | Out-Null
-        & $mkLink (Join-Path $orph 'x.tmp.999999/l')
+        New-Item -ItemType Directory -Path (Join-Path $orph 'jdk-21.0.1+1.tmp.999999') -Force | Out-Null
+        & $mkLink (Join-Path $orph 'jdk-21.0.1+1.tmp.999999/l')
         Remove-ReaOrphan -Dir $orph
-        Test-Path -LiteralPath (Join-Path $orph 'x.tmp.999999') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $orph 'jdk-21.0.1+1.tmp.999999') | Should -BeFalse
         $tools = Join-Path $script:T 'tree jdks'
         foreach ($n in @('jdk-21.0.1+1', 'jdk-21.0.2+1', 'jdk-21.0.3+1')) {
             New-Item -ItemType Directory -Path (Join-Path $tools $n) -Force | Out-Null
@@ -551,17 +553,28 @@ Describe 'orphan cleanup' {
     BeforeEach { Mock Write-ReaLog {} }
     It 'removes dead-pid and old directories and keeps the rest' {
         $t = Join-Path $script:T 'orphans'
-        foreach ($n in @('x.tmp.999999', 'w.old.999999', "y.tmp.$PID", "old live.tmp.$PID", 'keep.tmp.abc', 'other.dir')) {
+        foreach ($n in @('agent-profile.tmp.999999', 'clavity-ls.exe.old.999999', "jdk-21.0.1+1.tmp.$PID", "jdk-21 old live.tmp.$PID", 'jdk-21.0.2+1.tmp.abc', 'other.dir')) {
             New-Item -ItemType Directory -Path (Join-Path $t $n) -Force | Out-Null
         }
-        Set-OldAge -Path (Join-Path $t "old live.tmp.$PID") -Hours 72
+        Set-OldAge -Path (Join-Path $t "jdk-21 old live.tmp.$PID") -Hours 72
         Remove-ReaOrphan -Dir $t
-        Test-Path -LiteralPath (Join-Path $t 'x.tmp.999999') | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $t 'w.old.999999') | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $t "y.tmp.$PID") | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $t "old live.tmp.$PID") | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $t 'keep.tmp.abc') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $t 'agent-profile.tmp.999999') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $t 'clavity-ls.exe.old.999999') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $t "jdk-21.0.1+1.tmp.$PID") | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $t "jdk-21 old live.tmp.$PID") | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $t 'jdk-21.0.2+1.tmp.abc') | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $t 'other.dir') | Should -BeTrue
+    }
+    It 'never touches a *.tmp.<n> or *.old.<n> name the script does not create (the bin dir is shared with other tools)' {
+        $t = Join-Path $script:T 'orphans foreign'
+        $mine = 'agent-profile.tmp.999999', 'clavity-ls.exe.old.999999', 'jdk-21.0.1+1.tmp.999999', 'jdk-21.0.1+1.work.tmp.999999', 'ghidra.work.tmp.999999', 'ghidra_12.1.4_PUBLIC.old.999999', 'env.ps1.tmp.999999'
+        $foreign = 'vim.tmp.999999', 'notes.old.999999', 'my.backup.old.999999', 'jdk-notes.tmp.999999', 'ghidra-notes.old.999999'
+        foreach ($n in @($mine) + @($foreign)) {
+            New-Item -ItemType Directory -Path (Join-Path $t $n) -Force | Out-Null
+        }
+        Remove-ReaOrphan -Dir $t
+        foreach ($n in $mine) { Test-Path -LiteralPath (Join-Path $t $n) | Should -BeFalse -Because $n }
+        foreach ($n in $foreign) { Test-Path -LiteralPath (Join-Path $t $n) | Should -BeTrue -Because $n }
     }
     It 'is fine on an empty or missing directory' {
         { Remove-ReaOrphan -Dir (Join-Path $script:T 'nothing here') } | Should -Not -Throw
@@ -671,14 +684,19 @@ Describe 'JDK pruning' {
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.13+9') | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.9+10') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-17.0.1+1') | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-1.8.0+1') | Should -BeFalse
+        # a JDK without our sentinel is a user's own, whatever its release file says
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-1.8.0+1') | Should -BeTrue
     }
-    It 'accepts a release file as the marker' {
+    It 'does not accept a JDK release file as the marker: only the sentinel of this script counts' {
         New-Item -ItemType Directory -Path (Join-Path $script:Pj 'jdk-8.0.1+1') -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $script:Pj 'jdk-8.0.1+1/release') -Value x
-        New-Jdk 'jdk-21.0.1+1', 'jdk-21.0.2+1'
+        New-Item -ItemType Directory -Path (Join-Path $script:Pj 'jdk-11.0.2+9') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Pj 'jdk-11.0.2+9/release') -Value x
+        New-Jdk 'jdk-21.0.1+1', 'jdk-21.0.2+1', 'jdk-21.0.3+1'
         Remove-ReaOldJdk -ToolsDir $script:Pj
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-8.0.1+1') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-8.0.1+1') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-11.0.2+9') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.1+1') | Should -BeFalse
     }
     It 'never prunes the JDK in use, even when JAVA_HOME points below it' {
         New-Jdk 'jdk-21.0.9+10', 'jdk-21.0.13+9', 'jdk-21.0.13+10', 'jdk-21.0.20+1'
@@ -752,5 +770,43 @@ Describe 'disk and directories' {
     }
     It 'Windows only (skipped elsewhere): the temp drive is a readable volume' -Skip:(-not $script:OnWindows) {
         (Get-ReaDriveInfo -Path ([System.IO.Path]::GetTempPath())).DriveFormat | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Move-ReaItemRetry' {
+    BeforeEach {
+        Mock Write-ReaLog {}
+        $script:Naps = New-Object System.Collections.ArrayList
+        Mock Invoke-ReaSleepMs { [void]$script:Naps.Add($Milliseconds) }
+        $script:Src = Join-Path $script:T ('mv src ' + [guid]::NewGuid().ToString('N'))
+        $script:Dst = Join-Path $script:T ('mv dst ' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:Src | Out-Null
+        $script:Failures = 0
+        Mock Move-Item {
+            if ($script:Failures -gt 0) {
+                $script:Failures--
+                throw 'Access to the path is denied.'
+            }
+            [System.IO.Directory]::Move($LiteralPath, $Destination)
+        }
+    }
+    It 'moves at once when nothing holds the directory' {
+        Move-ReaItemRetry -Path $script:Src -Destination $script:Dst
+        Test-Path -LiteralPath $script:Dst | Should -BeTrue
+        $script:Naps.Count | Should -Be 0
+    }
+    It 'tries again after an access-denied failure and then succeeds' {
+        $script:Failures = 3
+        Move-ReaItemRetry -Path $script:Src -Destination $script:Dst
+        Test-Path -LiteralPath $script:Dst | Should -BeTrue
+        $script:Naps.Count | Should -Be 3
+        $script:Naps[0] | Should -BeGreaterOrEqual 500
+        ($script:Naps | Measure-Object -Maximum).Maximum | Should -BeLessOrEqual 2000
+    }
+    It 'throws the last failure after the attempts are used up' {
+        $script:Failures = 99
+        { Move-ReaItemRetry -Path $script:Src -Destination $script:Dst -Attempts 4 } | Should -Throw '*denied*'
+        $script:Naps.Count | Should -Be 3
+        Test-Path -LiteralPath $script:Src | Should -BeTrue
     }
 }
