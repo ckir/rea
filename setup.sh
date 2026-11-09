@@ -2074,6 +2074,159 @@ step_ghidra() {
   return 0
 }
 
+# --- step profile ---
+
+# profile_phys PATH: PATH with the symlinks of its longest existing part resolved (the rest is kept as given);
+# PATH itself when nothing of it can be resolved
+profile_phys() {
+  pp_path=${1%/}
+  pp_rest=""
+  while [ -n "$pp_path" ] && [ ! -d "$pp_path" ]; do
+    pp_rest="/${pp_path##*/}$pp_rest"
+    pp_next=${pp_path%/*}
+    if [ "$pp_next" = "$pp_path" ]; then
+      printf '%s\n' "$1"
+      return 0
+    fi
+    pp_path=$pp_next
+  done
+  [ -n "$pp_path" ] || pp_path=/
+  pp_phys=$(cd -P -- "$pp_path" 2>/dev/null && pwd -P) || {
+    printf '%s\n' "$1"
+    return 0
+  }
+  printf '%s%s\n' "${pp_phys%/}" "$pp_rest"
+}
+
+# profile_within DIR ROOT: 0 when DIR is ROOT or lies under it; case-insensitive on Windows
+profile_within() {
+  pw_dir=${1%/}
+  pw_root=${2%/}
+  if [ "${OS:-}" = windows ]; then
+    pw_dir=$(printf '%s' "$pw_dir" | tr '[:upper:]' '[:lower:]')
+    pw_root=$(printf '%s' "$pw_root" | tr '[:upper:]' '[:lower:]')
+  fi
+  case "$pw_dir" in
+    "$pw_root" | "$pw_root"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# profile_dir_shared DIR: 0 when DIR is empty, or is $HOME/.claude or inside it, as given or with symlinks
+# resolved; the setup must never write there, whatever agent-profile reports
+profile_dir_shared() {
+  [ -n "$1" ] || return 0
+  [ -n "${HOME:-}" ] || return 1
+  ps_real=$(profile_phys "$1")
+  ps_home_real=$(profile_phys "$HOME/.claude")
+  for ps_root in "$HOME/.claude" "$ps_home_real"; do
+    for ps_cand in "$1" "$ps_real"; do
+      if profile_within "$ps_cand" "$ps_root"; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# profile_config_dir NAME: runs `agent-profile claude doctor NAME --json` and prints the CLAUDE_CONFIG_DIR it
+# reports. Exit 5 means a check failed: a WARN naming the failing checks, and create decides. Any other
+# non-zero exit, output that is not JSON, or a directory that is not specific to the profile dies EX_STEP.
+profile_config_dir() {
+  pcd_rc=0
+  run_cmd profile agent-profile claude doctor "$1" --json || pcd_rc=$?
+  pcd_json=$RUN_STDOUT
+  case "$pcd_rc" in
+    0 | 5) ;;
+    *)
+      rm -f "$pcd_json"
+      die "$EX_STEP" profile "agent-profile claude doctor exited $pcd_rc"
+      ;;
+  esac
+  pcd_dir=""
+  pcd_json_rc=0
+  pcd_dir=$(json_query "$pcd_json" '((d.checks||[]).find(c=>c.id==="launch_environment")||{}).data?.value ?? ""' 2>/dev/null) || pcd_json_rc=$?
+  pcd_fail=""
+  if [ "$pcd_rc" -eq 5 ] && [ "$pcd_json_rc" -eq 0 ]; then
+    pcd_fail=$(json_query "$pcd_json" '(d.checks||[]).filter(c=>c.status==="fail").map(c=>c.id)' 2>/dev/null) || pcd_fail=""
+  fi
+  rm -f "$pcd_json"
+  if [ "$pcd_json_rc" -ne 0 ]; then
+    die "$EX_STEP" profile "agent-profile claude doctor printed output that is not JSON"
+  fi
+  if [ "$pcd_rc" -eq 5 ]; then
+    log WARN profile "agent-profile doctor reports failing checks ($(printf '%s' "$pcd_fail" | tr '\n' ' ')); create decides"
+  fi
+  if profile_dir_shared "$pcd_dir"; then
+    die "$EX_STEP" profile "agent-profile did not report a profile-specific CLAUDE_CONFIG_DIR"
+  fi
+  printf '%s\n' "$pcd_dir"
+}
+
+# profile_create NAME: runs `agent-profile claude create NAME`; prints "exists" when the profile was already
+# there and "created" otherwise. A failure dies EX_STEP with the end of the output, bounded to 4000 characters
+# (log redacts secrets).
+profile_create() {
+  pcr_out=$(mktemp "${TMPDIR:-/tmp}/rea-setup-out.XXXXXX") || die "$EX_STEP" profile "cannot create a temporary file"
+  pcr_err=$(mktemp "${TMPDIR:-/tmp}/rea-setup-err.XXXXXX") || {
+    rm -f "$pcr_out"
+    die "$EX_STEP" profile "cannot create a temporary file"
+  }
+  log DEBUG profile "run: agent-profile claude create $1"
+  pcr_rc=0
+  agent-profile claude create "$1" >"$pcr_out" 2>"$pcr_err" || pcr_rc=$?
+  log DEBUG profile "exit $pcr_rc"
+  pcr_text=$(cat "$pcr_out" "$pcr_err")
+  rm -f "$pcr_out" "$pcr_err"
+  if [ "$pcr_rc" -ne 0 ]; then
+    pcr_tail=$(printf '%s' "$pcr_text" | tail -c 4000)
+    die "$EX_STEP" profile "agent-profile claude create exited $pcr_rc: $pcr_tail"
+  fi
+  case "$pcr_text" in
+    *"already exists"*) echo exists ;;
+    *) echo created ;;
+  esac
+}
+
+# step_profile: finds the profile's CLAUDE_CONFIG_DIR with agent-profile doctor, creates the profile when it is
+# not there yet and requires the directory to exist. Sets CLAUDE_CONFIG_DIR_SELECTED and SUMMARY_profile. A
+# dry run only runs doctor (read-only); --check-upstream skips the step. It never touches ~/.claude or
+# ~/.claude.json.
+step_profile() {
+  if [ "${OPT_CHECK_UPSTREAM:-0}" -eq 1 ]; then
+    log INFO profile "skip (--check-upstream)"
+    summary_set profile "skipped: --check-upstream"
+    return 0
+  fi
+  if ! command -v agent-profile >/dev/null 2>&1; then
+    if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+      log INFO profile "agent-profile is not installed (read-only run); would run doctor and create"
+      summary_set profile "not checked: agent-profile is not installed (read-only run)"
+      return 0
+    fi
+    die "$EX_STEP" profile "agent-profile not found on PATH after the tools-bin step"
+  fi
+  sp_dir=$(profile_config_dir "$OPT_PROFILE") || exit "$?"
+  if [ "${OPT_DRY_RUN:-0}" -eq 1 ]; then
+    log INFO profile "would use $(abbrev_home "$sp_dir") (read-only run, nothing created)"
+    summary_set profile "would use $sp_dir (not created: read-only run)"
+    return 0
+  fi
+  sp_made=$(profile_create "$OPT_PROFILE") || exit "$?"
+  [ -d "$sp_dir" ] || die "$EX_STEP" profile "the profile directory does not exist after create: $sp_dir"
+  CLAUDE_CONFIG_DIR_SELECTED=$sp_dir
+  export CLAUDE_CONFIG_DIR_SELECTED
+  if [ "$sp_made" = exists ]; then
+    log INFO profile "skip (already exists): $(abbrev_home "$sp_dir")"
+    summary_set profile "reused $OPT_PROFILE: $sp_dir"
+  else
+    log INFO profile "created $OPT_PROFILE: $(abbrev_home "$sp_dir")"
+    summary_set profile "created $OPT_PROFILE: $sp_dir"
+  fi
+  log INFO profile "ok"
+  return 0
+}
+
 # --- main ---
 
 # log_config: records the pins and effective options at DEBUG, the first lines of every log
@@ -2105,6 +2258,7 @@ main() {
   step_jdk
   step_ghidra
   tools_lock_release
+  step_profile
 }
 
 if [ "${REA_SETUP_NO_MAIN:-}" != 1 ]; then

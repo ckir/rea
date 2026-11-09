@@ -1,6 +1,10 @@
 #!/bin/sh
 # Test stub. Answers --version, -V and -v with STUB_<name>_VERSION (hyphens in the command name become
 # underscores, so agent-profile reads STUB_agent_profile_VERSION) and exits with STUB_<name>_EXIT (default 0).
+# Also answers the profile commands of agent-profile:
+#   claude doctor NAME --json  prints the file STUB_AP_DOCTOR_FILE and exits STUB_AP_DOCTOR_EXIT (default 0)
+#   claude create NAME         exits STUB_AP_CREATE_EXIT (default 0); on success it creates
+#                              $AGENT_PROFILE_HOME/profiles/NAME/claude and says "already exists" when it was there
 n=$(basename "$0" | tr '-' '_')
 eval "v=\${STUB_${n}_VERSION:-}"
 eval "rc=\${STUB_${n}_EXIT:-0}"
@@ -10,6 +14,31 @@ case "${1:-}" in
       if [ "$n" = node ]; then v=v24.22.2; else v=1.0.0; fi
     fi
     printf '%s\n' "$v"
+    ;;
+  claude)
+    case "${2:-}" in
+      doctor)
+        if [ -n "${STUB_AP_DOCTOR_FILE:-}" ]; then
+          cat "$STUB_AP_DOCTOR_FILE"
+        fi
+        exit "${STUB_AP_DOCTOR_EXIT:-0}"
+        ;;
+      create)
+        crc=${STUB_AP_CREATE_EXIT:-0}
+        if [ "$crc" -ne 0 ]; then
+          printf '%s\n' "${STUB_AP_CREATE_ERR:-stub: create failed}" >&2
+          exit "$crc"
+        fi
+        d="${AGENT_PROFILE_HOME:-/nonexistent-agent-profile-home}/profiles/${3:-}/claude"
+        if [ -d "$d" ]; then
+          printf "profile '%s' for claude already exists: %s\n" "${3:-}" "$d"
+        else
+          mkdir -p "$d" || exit 1
+          printf "created profile '%s' for claude: %s\n" "${3:-}" "$d"
+        fi
+        exit 0
+        ;;
+    esac
     ;;
 esac
 exit "$rc"

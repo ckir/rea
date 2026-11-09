@@ -2546,6 +2546,147 @@ function Invoke-ReaStepGhidra {
     Write-ReaLog INFO ghidra 'ok'
 }
 
+# --- step profile ---
+
+# The profile directory the step picked.
+$script:ClaudeConfigDirSelected = ''
+
+# Path as a full path with the symlinks and junctions of its existing part followed; the rest is kept as given.
+function Resolve-ReaLinkedPath {
+    param([string]$Path)
+    $current = [System.IO.Path]::GetFullPath($Path)
+    for ($hop = 0; $hop -lt 16; $hop++) {
+        $changed = $false
+        $probe = $current
+        while ($probe) {
+            $item = Get-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            if ($item -and ([string]$item.LinkType -eq 'SymbolicLink' -or [string]$item.LinkType -eq 'Junction') -and $item.Target) {
+                $target = [string]@($item.Target)[0]
+                if (-not [System.IO.Path]::IsPathRooted($target)) {
+                    $target = Join-Path (Split-Path -Parent $probe) $target
+                }
+                $current = [System.IO.Path]::GetFullPath($target + $current.Substring($probe.Length))
+                $changed = $true
+                break
+            }
+            $parent = Split-Path -Parent $probe
+            if ($parent -eq $probe) { break }
+            $probe = $parent
+        }
+        if (-not $changed) { break }
+    }
+    return $current
+}
+
+# True when Dir is empty, or is the .claude directory of the home directory or lies inside it (as given, and with
+# links followed, case-insensitive); the setup must never write there, whatever agent-profile reports.
+function Test-ReaProfileDirShared {
+    param([AllowEmptyString()][string]$Dir)
+    if (-not $Dir) { return $true }
+    $homeDir = $env:USERPROFILE
+    if (-not $homeDir) { return $false }
+    $shared = Join-Path $homeDir.TrimEnd('\', '/') '.claude'
+    $roots = @([System.IO.Path]::GetFullPath($shared), (Resolve-ReaLinkedPath -Path $shared))
+    $candidates = @([System.IO.Path]::GetFullPath($Dir), (Resolve-ReaLinkedPath -Path $Dir))
+    foreach ($root in $roots) {
+        foreach ($candidate in $candidates) {
+            if (Test-ReaUnderHome -Path $candidate -HomeDir $root.TrimEnd('\', '/')) { return $true }
+        }
+    }
+    return $false
+}
+
+# Runs `agent-profile claude doctor Name --json` and returns the CLAUDE_CONFIG_DIR it reports. Exit 5 means a
+# check failed: a WARN naming the failing checks, and create decides. Any other non-zero exit, output that is not
+# JSON, or a directory that is not specific to the profile stops with exit 1.
+function Get-ReaProfileConfigDir {
+    param([string]$Name, [string]$Executable)
+    $run = Invoke-ReaCommand -Step profile -FilePath $Executable -ArgumentList @('claude', 'doctor', $Name, '--json')
+    if ($run.ExitCode -ne 0 -and $run.ExitCode -ne 5) {
+        Stop-Rea -Code $script:EX_STEP -Step profile -Message "agent-profile claude doctor exited $($run.ExitCode)"
+    }
+    $doc = $null
+    try {
+        if ($run.Stdout -and $run.Stdout.Trim()) { $doc = ConvertFrom-Json -InputObject $run.Stdout }
+    } catch {
+        $doc = $null
+    }
+    if ($null -eq $doc) {
+        Stop-Rea -Code $script:EX_STEP -Step profile -Message 'agent-profile claude doctor printed output that is not JSON'
+    }
+    $checks = @($doc.checks)
+    if ($run.ExitCode -eq 5) {
+        $failed = @($checks | Where-Object { $null -ne $_ -and $_.status -eq 'fail' } | ForEach-Object { [string]$_.id })
+        Write-ReaLog WARN profile ('agent-profile doctor reports failing checks (' + ($failed -join ' ') + '); create decides')
+    }
+    $value = ''
+    $launchCheck = $checks | Where-Object { $null -ne $_ -and $_.id -eq 'launch_environment' } | Select-Object -First 1
+    if ($launchCheck -and $launchCheck.data -and $null -ne $launchCheck.data.value) {
+        $value = [string]$launchCheck.data.value
+    }
+    if (Test-ReaProfileDirShared -Dir $value) {
+        Stop-Rea -Code $script:EX_STEP -Step profile -Message 'agent-profile did not report a profile-specific CLAUDE_CONFIG_DIR'
+    }
+    return $value
+}
+
+# Runs `agent-profile claude create Name`; returns 'exists' when the profile was already there and 'created'
+# otherwise. A failure stops with exit 1 and the end of the output, bounded to 4000 characters (the log hides
+# secrets).
+function Invoke-ReaProfileCreate {
+    param([string]$Name, [string]$Executable)
+    $run = Invoke-ReaCommand -Step profile -FilePath $Executable -ArgumentList @('claude', 'create', $Name)
+    $text = ([string]$run.Stdout) + ([string]$run.Stderr)
+    if ($run.ExitCode -ne 0) {
+        if ($text.Length -gt 4000) { $text = $text.Substring($text.Length - 4000) }
+        Stop-Rea -Code $script:EX_STEP -Step profile -Message "agent-profile claude create exited $($run.ExitCode): $text"
+    }
+    if ($text.Contains('already exists')) { return 'exists' }
+    return 'created'
+}
+
+# Finds the profile's CLAUDE_CONFIG_DIR with agent-profile doctor, creates the profile when it is not there yet and
+# requires the directory to exist. Sets ClaudeConfigDirSelected (and the environment variable of that name for the
+# later steps) and the summary. A dry run only runs doctor (read-only); -CheckUpstream skips the step. It never
+# touches the .claude directory or .claude.json of the home directory.
+function Invoke-ReaStepProfile {
+    if ($script:Opt.CheckUpstream) {
+        Write-ReaLog INFO profile 'skip (-CheckUpstream)'
+        $script:Summary['profile'] = 'skipped: -CheckUpstream'
+        return
+    }
+    $name = $script:Opt.ProfileName
+    $exe = Resolve-ReaExecutable -Name 'agent-profile'
+    if (-not $exe) {
+        if ($script:Opt.DryRun) {
+            Write-ReaLog INFO profile 'agent-profile is not installed (read-only run); would run doctor and create'
+            $script:Summary['profile'] = 'not checked: agent-profile is not installed (read-only run)'
+            return
+        }
+        Stop-Rea -Code $script:EX_STEP -Step profile -Message 'agent-profile not found on PATH after the tools-bin step'
+    }
+    $dir = Get-ReaProfileConfigDir -Name $name -Executable $exe
+    if ($script:Opt.DryRun) {
+        Write-ReaLog INFO profile ('would use ' + (Get-ReaShortPath $dir) + ' (read-only run, nothing created)')
+        $script:Summary['profile'] = "would use $dir (not created: read-only run)"
+        return
+    }
+    $made = Invoke-ReaProfileCreate -Name $name -Executable $exe
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+        Stop-Rea -Code $script:EX_STEP -Step profile -Message "the profile directory does not exist after create: $dir"
+    }
+    $script:ClaudeConfigDirSelected = $dir
+    $env:CLAUDE_CONFIG_DIR_SELECTED = $dir
+    if ($made -eq 'exists') {
+        Write-ReaLog INFO profile ('skip (already exists): ' + (Get-ReaShortPath $dir))
+        $script:Summary['profile'] = "reused ${name}: $dir"
+    } else {
+        Write-ReaLog INFO profile ("created ${name}: " + (Get-ReaShortPath $dir))
+        $script:Summary['profile'] = "created ${name}: $dir"
+    }
+    Write-ReaLog INFO profile 'ok'
+}
+
 # --- main ---
 
 # Records the pins and effective options at DEBUG, the first lines of every log.
@@ -2598,6 +2739,7 @@ function Invoke-Main {
         Invoke-ReaStepJdk
         Invoke-ReaStepGhidra
         Unlock-ReaToolsDir
+        Invoke-ReaStepProfile
         return $script:EX_OK
     } catch {
         $code = $_.Exception.Data['ReaCode']
