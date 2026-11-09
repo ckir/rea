@@ -1011,25 +1011,29 @@ cleanup_install() {
 # bin dir is shared with other tools and the tools dir may hold a user's own files.
 cleanup_orphans() {
   co_dir=$1
-  for co_pat in 'agent-profile*' 'clavity-ls*' 'jdk-[0-9]*' 'ghidra.work' 'ghidra_[0-9]*' 'env.*'; do
-    for co_path in "$co_dir"/$co_pat.tmp.* "$co_dir"/$co_pat.old.*; do
-      if [ ! -e "$co_path" ] && [ ! -L "$co_path" ]; then
-        continue
-      fi
-      co_pid=${co_path##*.}
-      case "$co_pid" in
-        '' | *[!0-9]*) continue ;;
-      esac
-      if ! pid_alive "$co_pid"; then
-        co_why="pid $co_pid is not running"
-      elif older_than_min "$co_path" 1440; then
-        co_why="older than 24 hours"
-      else
-        continue
-      fi
-      log INFO cleanup "removing orphan ($co_why): $co_path"
-      rm -rf -- "$co_path" || log WARN cleanup "could not remove orphan: $co_path"
-    done
+  for co_path in "$co_dir"/*; do
+    if [ ! -e "$co_path" ] && [ ! -L "$co_path" ]; then
+      continue
+    fi
+    case "${co_path##*/}" in
+      agent-profile*.tmp.* | agent-profile*.old.* | clavity-ls*.tmp.* | clavity-ls*.old.*) ;;
+      jdk-[0-9]*.tmp.* | jdk-[0-9]*.old.* | ghidra.work.tmp.* | ghidra.work.old.*) ;;
+      ghidra_[0-9]*.tmp.* | ghidra_[0-9]*.old.* | env.*.tmp.* | env.*.old.*) ;;
+      *) continue ;;
+    esac
+    co_pid=${co_path##*.}
+    case "$co_pid" in
+      '' | *[!0-9]*) continue ;;
+    esac
+    if ! pid_alive "$co_pid"; then
+      co_why="pid $co_pid is not running"
+    elif older_than_min "$co_path" 1440; then
+      co_why="older than 24 hours"
+    else
+      continue
+    fi
+    log INFO cleanup "removing orphan ($co_why): $co_path"
+    rm -rf -- "$co_path" || log WARN cleanup "could not remove orphan: $co_path"
   done
   return 0
 }

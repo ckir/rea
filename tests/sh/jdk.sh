@@ -586,25 +586,10 @@ assert_file "$TOOLS_DIR/jdk-notes/readme.txt" "prune: jdk-notes content is intac
 assert_eq "step_tools_bin step_jdk tools_lock_release" "$(sed -n '/^main() {/,/^}/p' "$ROOT/setup.sh" | grep -E '^  (step_tools_bin|step_jdk|tools_lock_release)$' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')" "main: step_jdk runs after step_tools_bin and before the lock release"
 
 # --- an install plan is re-checked under the lock: what another run installed meanwhile is reused ---
-r3=$(
-  PLAN_jdk=install
-  jdk_choose() {
-    JDK_REUSED=1
-    return 0
-  }
-  jdk_install() { echo INSTALLED; }
-  step_jdk 2>/dev/null
-)
+# (run in a child shell: the stubs replace the real functions)
+r3=$(sh -c '. ./setup.sh; PLAN_jdk=install; jdk_choose() { JDK_REUSED=1; return 0; }; jdk_install() { echo INSTALLED; }; step_jdk' 2>/dev/null)
 assert_eq "" "$r3" "step_jdk: the plan said install, the recheck found one, nothing is installed"
-r3=$(
-  PLAN_jdk=install
-  jdk_choose() {
-    JDK_REUSED=0
-    return 1
-  }
-  jdk_install() { echo INSTALLED; }
-  step_jdk 2>/dev/null
-)
+r3=$(sh -c '. ./setup.sh; PLAN_jdk=install; jdk_choose() { JDK_REUSED=0; return 1; }; jdk_install() { echo INSTALLED; }; step_jdk' 2>/dev/null)
 assert_match "INSTALLED" "$r3" "step_jdk: still installs when the recheck finds nothing"
 
 t_done
