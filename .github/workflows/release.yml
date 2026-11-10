@@ -47,14 +47,18 @@ jobs:
       - name: Install lefthook
         run: npm install --global "lefthook@$(sed -n 's/^lefthook=//p' scripts/ci-tools.lock)"
       - name: Install actionlint
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        run: go install "github.com/rhysd/actionlint/cmd/actionlint@v$(sed -n 's/^actionlint=//p' scripts/ci-tools.lock)"
       - name: Install addlicense
-        run: go install github.com/google/addlicense@v1.2.0
+        run: go install "github.com/google/addlicense@v$(sed -n 's/^addlicense=//p' scripts/ci-tools.lock)"
       - name: Put Go binaries on PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Install PowerShell modules
         shell: pwsh
-        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force; Install-Module Pester -RequiredVersion 5.9.0 -Force
+        run: |
+          $analyzer = (Select-String -Path scripts/ci-tools.lock -Pattern '^psscriptanalyzer=(.*)$').Matches[0].Groups[1].Value
+          $pester = (Select-String -Path scripts/ci-tools.lock -Pattern '^pester=(.*)$').Matches[0].Groups[1].Value
+          Install-Module PSScriptAnalyzer -RequiredVersion $analyzer -Force
+          Install-Module Pester -RequiredVersion $pester -Force
       - name: Gates
         run: just check
 

@@ -23,6 +23,8 @@ pre-push:
       run: just line-citations
     action-pins:
       run: just action-pins
+    ci-pins:
+      run: just ci-pins
     actionlint:
       run: just actionlint
     md-links:

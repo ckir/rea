@@ -70,6 +70,10 @@ drift:
 action-pins:
     sh scripts/check-action-pins.sh && sh scripts/tests/check-action-pins.sh
 
+# No workflow spells out a tool version that scripts/ci-tools.lock pins, and every lock key a workflow reads exists
+ci-pins:
+    sh scripts/check-ci-tool-pins.sh && sh scripts/tests/check-ci-tool-pins.sh
+
 # Relative Markdown links and anchors resolve (offline; external URLs are the weekly canary's job)
 md-links:
     sh scripts/check-md-links.sh && sh scripts/tests/check-md-links.sh
@@ -104,4 +108,4 @@ test-integration:
     pwsh -NoProfile -File tests/integration/run-win.ps1
 
 # The local gate, cheapest first
-check: tools-check typos license-check line-citations action-pins actionlint md-links fmt-check shellcheck psanalyze suppressions drift tools-doc-check test
+check: tools-check typos license-check line-citations action-pins ci-pins actionlint md-links fmt-check shellcheck psanalyze suppressions drift tools-doc-check test

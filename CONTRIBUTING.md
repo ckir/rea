@@ -21,6 +21,7 @@ suites dominate):
 | `just license-check` | every source file carries `header.txt` |
 | `just line-citations` | no comment cites another file by line number |
 | `just action-pins` | every workflow `uses:` is pinned to a commit SHA |
+| `just ci-pins` | no workflow spells out the version of a tool `scripts/ci-tools.lock` pins, and every lock key a workflow reads exists |
 | `just actionlint` | workflow syntax |
 | `just fmt-check` | shell formatting (`just fmt` rewrites) |
 | `just shellcheck` | every shell file as POSIX `sh` |
@@ -62,6 +63,16 @@ is not): read the FAIL line, then edit the Ghidra pins in BOTH `setup.sh` and `s
 (never from the file you downloaded alone), run `just drift`, run `sh setup.sh --check-upstream --yes`, then
 `just check`. Release a new script version afterwards (below).
 
+## Bumping a CI tool
+
+`scripts/ci-tools.lock` (`name=version`, lower-case names) is the one place the version of a CI-installed tool
+is written: just, shellcheck, shfmt, typos, actionlint, addlicense, Pester, PSScriptAnalyzer and lefthook. The
+workflows read it (`sed -n 's/^actionlint=//p' scripts/ci-tools.lock` under bash, `Select-String` under
+PowerShell) and never type a number, and `just ci-pins` fails when one does. To bump a tool, edit the lock, then
+update the places that name the version for a human: the `install` hint and `pwsh_min_version` in
+`.claude/recommended-tools.json` (then `just tools-doc`) and the `Import-Module ... -RequiredVersion` line in
+`scripts/psanalyze.ps1`. Run `just check`. Dependabot does not see the lock.
+
 ## Releasing
 
 Only the owner pushes; no script or agent pushes a tag.
@@ -89,7 +100,7 @@ coverage is in use.
 <!-- tools:begin — generated from .claude/recommended-tools.json by scripts/gen-tool-table.sh; do not edit by hand -->
 | Tool | Config | `just` recipe | Gates |
 |---|---|---|---|
-| `just` | `justfile` | — | everything: the local gate (`just check`: tools-check, typos, license-check, line-citations, action-pins, actionlint, fmt-check, shellcheck, psanalyze, suppressions, drift, tools-doc-check, test), the pre-push hook, CI and the release workflow all route through the recipes it defines |
+| `just` | `justfile` | — | everything: the local gate (`just check`: tools-check, typos, license-check, line-citations, action-pins, ci-pins, actionlint, fmt-check, shellcheck, psanalyze, suppressions, drift, tools-doc-check, test), the pre-push hook, CI and the release workflow all route through the recipes it defines |
 | `lefthook` | `lefthook.yml` | `setup` | local pre-push |
 | `shellcheck` | — | `shellcheck` | `just check`; CI gates and release jobs |
 | `shfmt` | — | `fmt-check`, `fmt` | `just check`; CI gates and release jobs |

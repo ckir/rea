@@ -6,8 +6,8 @@
 
 # Keeps the SHA-pinned actions in .github/workflows current. Dependabot rewrites `uses: owner/repo@<sha> # vX`
 # lines in place and keeps the `# vX` comment, which scripts/check-action-pins.sh requires. It does NOT see the
-# tool versions in scripts/ci-tools.lock or the pinned `go install` / npm versions in the workflows; those are
-# bumped by hand (see CONTRIBUTING.md).
+# tool versions in scripts/ci-tools.lock, the one place the workflows read them from (scripts/check-ci-tool-pins.sh
+# enforces that); those are bumped by hand (see CONTRIBUTING.md).
 
 version: 2
 updates:

@@ -6,7 +6,7 @@
     "in_path": "just",
     "config": "`justfile`",
     "just": "—",
-    "gates": "everything: the local gate (`just check`: tools-check, typos, license-check, line-citations, action-pins, actionlint, fmt-check, shellcheck, psanalyze, suppressions, drift, tools-doc-check, test), the pre-push hook, CI and the release workflow all route through the recipes it defines"
+    "gates": "everything: the local gate (`just check`: tools-check, typos, license-check, line-citations, action-pins, ci-pins, actionlint, fmt-check, shellcheck, psanalyze, suppressions, drift, tools-doc-check, test), the pre-push hook, CI and the release workflow all route through the recipes it defines"
   },
   {
     "name": "lefthook",
