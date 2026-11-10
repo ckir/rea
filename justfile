@@ -40,7 +40,7 @@ typos:
 
 # No comment cites another file by line number
 line-citations:
-    sh scripts/check-line-citations.sh
+    sh scripts/check-line-citations.sh && sh scripts/tests/check-line-citations.sh
 
 # Regenerate the tool table in CONTRIBUTING.md
 tools-doc:
