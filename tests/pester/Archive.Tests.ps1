@@ -251,6 +251,48 @@ Describe 'Test-ReaPathInside' {
     It 'ignores case when asked (Windows rule)' { Test-ReaPathInside -Path 'C:\DEST\x' -Root 'c:\dest' -Separator '\' -IgnoreCase | Should -BeTrue }
 }
 
+Describe 'Get-ReaTarExe' {
+    # Git for Windows puts a GNU tar ahead of System32 on PATH, and GNU tar reads the C: of `tar -tvzf C:\x.tar.gz` as
+    # a remote host ("cannot list archive"). The bsdtar of System32 does not, so the product names it by path.
+    BeforeEach {
+        $script:SavedSystemRoot = $env:SystemRoot
+        $script:SavedTarForCase = $script:TarExe
+        $script:TarExe = ''
+        $script:FakeRoot = Join-Path $script:T ('sysroot ' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:FakeRoot 'System32') -Force | Out-Null
+        $env:SystemRoot = $script:FakeRoot
+    }
+    AfterEach {
+        $env:SystemRoot = $script:SavedSystemRoot
+        $script:TarExe = $script:SavedTarForCase
+    }
+    It 'prefers the tar.exe of System32 on Windows when it exists' {
+        $sys = Join-Path (Join-Path $script:FakeRoot 'System32') 'tar.exe'
+        [System.IO.File]::WriteAllText($sys, 'x')
+        Mock Test-ReaWindowsHost { return $true }
+        Get-ReaTarExe | Should -Be $sys
+    }
+    It 'falls back to tar.exe on PATH on Windows when System32 has none' {
+        Mock Test-ReaWindowsHost { return $true }
+        Get-ReaTarExe | Should -Be 'tar.exe'
+    }
+    It 'falls back to tar.exe on PATH on Windows when SystemRoot is not set' {
+        $env:SystemRoot = ''
+        Mock Test-ReaWindowsHost { return $true }
+        Get-ReaTarExe | Should -Be 'tar.exe'
+    }
+    It 'is plain tar elsewhere, whatever SystemRoot holds' {
+        [System.IO.File]::WriteAllText((Join-Path (Join-Path $script:FakeRoot 'System32') 'tar.exe'), 'x')
+        Mock Test-ReaWindowsHost { return $false }
+        Get-ReaTarExe | Should -Be 'tar'
+    }
+    It 'lets the TarExe test seam win' {
+        $script:TarExe = '/x/mytar'
+        Mock Test-ReaWindowsHost { return $true }
+        Get-ReaTarExe | Should -Be '/x/mytar'
+    }
+}
+
 Describe 'extraction' {
     It 'on non-Windows hosts (skipped on Windows): extracts a tar.gz with spaces in the names and keeps the execute bit' -Skip:$script:OnWindows {
         # The execute bit is a Unix concept; on Windows tar.exe has nothing to keep.

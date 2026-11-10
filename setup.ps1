@@ -1121,7 +1121,7 @@ function Resolve-ReaAdoptium {
 # --- files, locks, archives and staging ---
 
 # Test seams: how many polls a lock waits (2 s each, so 60 is 120 s), the pause per poll, and the tar program
-# ('tar.exe' is the bsdtar that ships with Windows 10; elsewhere plain 'tar').
+# (the bsdtar that ships with Windows 10 as tar.exe; elsewhere plain 'tar').
 $script:LockPolls = 60
 $script:LockPollSeconds = 2
 $script:LockHeld = New-Object System.Collections.Generic.List[string]
@@ -1393,10 +1393,18 @@ function Test-ReaPathInside {
     return $p.StartsWith($r, $cmp)
 }
 
-# The tar program for this host.
+# The tar program for this host. On Windows it is the bsdtar that ships in System32, named by path: a GNU tar found
+# first on PATH (Git for Windows puts one there) reads the C: of `tar -tvzf C:\x.tar.gz` as a remote host. Without
+# a System32 one (or without SystemRoot) the name is left to the PATH lookup, so the preflight can report it missing.
 function Get-ReaTarExe {
     if ($script:TarExe) { return $script:TarExe }
-    if (Test-ReaWindowsHost) { return 'tar.exe' }
+    if (Test-ReaWindowsHost) {
+        if ($env:SystemRoot) {
+            $system = Join-Path (Join-Path $env:SystemRoot 'System32') 'tar.exe'
+            if (Test-Path -LiteralPath $system -PathType Leaf) { return $system }
+        }
+        return 'tar.exe'
+    }
     return 'tar'
 }
 
