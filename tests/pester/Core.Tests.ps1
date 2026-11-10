@@ -339,13 +339,31 @@ Describe 'Invoke-ReaCommand' {
 
 Describe 'Invoke-Main' {
     BeforeAll {
+        # Runs setup.ps1 in a child pwsh and returns its exit code and both streams as text. The streams are read
+        # through System.Diagnostics.Process, never merged with 2>&1: under $ErrorActionPreference = 'Stop' Windows
+        # PowerShell 5.1 turns each merged stderr line into a terminating error.
+        function Invoke-ReaTestProcess {
+            param([string[]]$ScriptArgs)
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $script:Pwsh
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $all = @('-NoProfile', '-File', $script:SetupPath) + @($ScriptArgs)
+            $psi.Arguments = (@($all | ForEach-Object { '"' + ([string]$_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }) -join ' ')
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            $stdout = $proc.StandardOutput.ReadToEnd()
+            $proc.WaitForExit()
+            [pscustomobject]@{ Code = $proc.ExitCode; Output = ($stdout + $errTask.Result) }
+        }
         function Invoke-Setup {
             param([string[]]$ScriptArgs)
             $saved = $env:REA_SETUP_NO_MAIN
             Remove-Item Env:\REA_SETUP_NO_MAIN
             try {
-                $out = & $script:Pwsh -NoProfile -File $script:SetupPath @ScriptArgs 2>&1
-                [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($out | Out-String) }
+                Invoke-ReaTestProcess -ScriptArgs $ScriptArgs
             } finally {
                 $env:REA_SETUP_NO_MAIN = $saved
             }
@@ -397,9 +415,9 @@ Describe 'Invoke-Main' {
         $saved = $env:REA_SETUP_NO_MAIN
         try {
             $env:REA_SETUP_NO_MAIN = '1'
-            $out = & $script:Pwsh -NoProfile -File $script:SetupPath -InstallHopper -Yes -LogDir $dir 2>&1 | Out-String
-            $LASTEXITCODE | Should -Be 2
-            $out | Should -Match 'not available on Windows'
+            $r = Invoke-ReaTestProcess -ScriptArgs @('-InstallHopper', '-Yes', '-LogDir', $dir)
+            $r.Code | Should -Be 2
+            $r.Output | Should -Match 'not available on Windows'
         } finally {
             $env:REA_SETUP_NO_MAIN = $saved
             Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue

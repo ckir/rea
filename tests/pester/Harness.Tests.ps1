@@ -46,3 +46,13 @@ Describe 'Pester helper functions' {
         $misplaced | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Pester native calls' {
+    # Windows PowerShell 5.1 turns each stderr line merged with 2>&1 from a native command into a terminating
+    # error under $ErrorActionPreference = 'Stop' (Pester sets it), and the script prints its log-path line on stderr
+    # first. A test that runs a child process reads its streams through Invoke-ReaTestProcess, never 2>&1.
+    It 'does not merge the stderr of a native command with 2>&1: <_.Name>' -ForEach @(Get-ChildItem -Path $PSScriptRoot -Filter '*.Tests.ps1' -File | ForEach-Object { @{ Name = $_.Name; Path = $_.FullName } }) {
+        $hits = @([System.IO.File]::ReadAllLines($Path) | Where-Object { $_ -match '^\s*[^#]*&\s+\$script:Pwsh\b.*2>&1' })
+        $hits | Should -BeNullOrEmpty
+    }
+}
