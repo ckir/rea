@@ -14,6 +14,11 @@
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 REA_SETUP_NO_MAIN=1
 export REA_SETUP_NO_MAIN
+# chmod that refuses what BSD chmod refuses (see tests/fixtures/bsd/chmod); the real one is looked up first
+BSD_STRICT_REAL_CHMOD=$(command -v chmod)
+export BSD_STRICT_REAL_CHMOD
+PATH="$ROOT/tests/fixtures/bsd:$PATH"
+export PATH
 T_PASS=0
 T_FAIL=0
 

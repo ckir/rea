@@ -47,6 +47,8 @@ for t in awk basename cat chmod cp curl cut date df dirname env expr find grep g
     /*) ln -sf "$p" "$SYS/$t" ;;
   esac
 done
+# chmod as BSD chmod parses it (tests/fixtures/bsd/chmod), over the link made above
+ln -sf "$ROOT/tests/fixtures/bsd/chmod" "$SYS/chmod"
 CLEAN_PATH=$SYS
 
 ALLOWED_SCHEMES="https http"

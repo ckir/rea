@@ -1,0 +1,28 @@
+#!/bin/sh
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+# Test stub: a chmod that parses its arguments the way BSD chmod (macOS) does, then runs the real one
+# (BSD_STRICT_REAL_CHMOD). Options are read only up to the mode; every later argument is a file name, so
+# `chmod +x -- FILE` asks for a file called `--` and fails there, where GNU chmod accepts it. tests/sh/lib.sh puts
+# this directory first on PATH, so every shell test runs the product's chmod calls under the BSD rule.
+seen_mode=0
+for a in "$@"; do
+  if [ "$seen_mode" -eq 1 ]; then
+    case "$a" in
+      -*)
+        echo "chmod: $a: No such file or directory" >&2
+        exit 1
+        ;;
+    esac
+  else
+    case "$a" in
+      -*) ;;
+      *) seen_mode=1 ;;
+    esac
+  fi
+done
+exec "${BSD_STRICT_REAL_CHMOD:?}" "$@"

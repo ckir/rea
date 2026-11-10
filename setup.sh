@@ -1758,7 +1758,9 @@ install_single_binary() {
   if [ "$isb_count" -ne 1 ] || [ "${isb_found##*/}" != "$isb_expected" ] || [ -L "$isb_found" ] || [ ! -f "$isb_found" ]; then
     die "$EX_VERIFY" tools-bin "the archive of $isb_name must hold exactly one file, $isb_expected (found $isb_count entries)"
   fi
-  chmod +x -- "$isb_found" || die "$EX_STEP" tools-bin "cannot make $isb_expected executable"
+  # No `--`: BSD chmod (macOS) reads everything after the mode as a file name. The path cannot start with `-`:
+  # it is under the absolute staging directory.
+  chmod +x "$isb_found" || die "$EX_STEP" tools-bin "cannot make $isb_expected executable"
   if mv -f -- "$isb_found" "$isb_dest"; then
     rm -rf -- "$isb_stage"
     log DEBUG tools-bin "disk_free_mb $(disk_free_mb "$isb_dir") MB at $isb_dir after installing $isb_name"
