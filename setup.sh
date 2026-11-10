@@ -2804,8 +2804,9 @@ write_env_files() {
     log INFO env "would write $we_file"
     return 0
   fi
-  [ -n "${GHIDRA_DIR_SELECTED:-}" ] && [ -n "${JAVA_HOME_SELECTED:-}" ] ||
+  if [ -z "${GHIDRA_DIR_SELECTED:-}" ] || [ -z "${JAVA_HOME_SELECTED:-}" ]; then
     die "$EX_STEP" env "cannot write $we_file: no Ghidra or JDK was selected"
+  fi
   mkdir -p -- "$1" || die "$EX_STEP" env "cannot create directory: $1"
   we_tmp="$we_file.tmp.$$"
   register_tmp "$we_tmp"
