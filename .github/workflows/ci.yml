@@ -30,7 +30,7 @@ jobs:
           {
             echo "tools=just@$(sed -n 's/^just=//p' scripts/ci-tools.lock),shellcheck@$(sed -n 's/^shellcheck=//p' scripts/ci-tools.lock),shfmt@$(sed -n 's/^shfmt=//p' scripts/ci-tools.lock),typos@$(sed -n 's/^typos=//p' scripts/ci-tools.lock)"
           } >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: ${{ steps.lock.outputs.tools }}
       # lefthook is not in taiki-e/install-action's manifests (manifests/lefthook.json is a 404 at the pinned
@@ -67,7 +67,7 @@ jobs:
         id: lock
         shell: bash
         run: echo "tools=just@$(sed -n 's/^just=//p' scripts/ci-tools.lock)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: ${{ steps.lock.outputs.tools }}
       # Pester at the version in the lock for pwsh, the shell `just test` runs it in; the 5.1 step below installs
