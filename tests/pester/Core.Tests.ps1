@@ -342,28 +342,37 @@ Describe 'Invoke-Main' {
         # Runs setup.ps1 in a child pwsh and returns its exit code and both streams as text. The streams are read
         # through System.Diagnostics.Process, never merged with 2>&1: under $ErrorActionPreference = 'Stop' Windows
         # PowerShell 5.1 turns each merged stderr line into a terminating error.
+        # -AsX64 runs the real Invoke-Main in a wrapper that first answers X64 for the OS architecture: the preflight
+        # refuses anything but x64 with exit 3 before it validates the profile name (spec, section 7, step 1), so a
+        # test of a later step must not depend on the architecture of the machine it runs on (macOS runners are arm64).
         function Invoke-ReaTestProcess {
-            param([string[]]$ScriptArgs)
+            param([string[]]$ScriptArgs, [switch]$AsX64)
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $script:Pwsh
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.CreateNoWindow = $true
-            $all = @('-NoProfile', '-File', $script:SetupPath) + @($ScriptArgs)
+            $target = $script:SetupPath
+            if ($AsX64) {
+                $target = Join-Path ([System.IO.Path]::GetTempPath()) ('rea-x64-wrapper-' + [guid]::NewGuid().ToString('N') + '.ps1')
+                [System.IO.File]::WriteAllText($target, "`$env:REA_SETUP_NO_MAIN = '1'`n. '$($script:SetupPath -replace "'", "''")' @args`nfunction Get-ReaRuntimeArchitecture { 'X64' }`nexit (Invoke-Main)`n")
+            }
+            $all = @('-NoProfile', '-File', $target) + @($ScriptArgs)
             $psi.Arguments = (@($all | ForEach-Object { '"' + ([string]$_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }) -join ' ')
             $proc = [System.Diagnostics.Process]::Start($psi)
             $errTask = $proc.StandardError.ReadToEndAsync()
             $stdout = $proc.StandardOutput.ReadToEnd()
             $proc.WaitForExit()
+            if ($AsX64) { Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }
             [pscustomobject]@{ Code = $proc.ExitCode; Output = ($stdout + $errTask.Result) }
         }
         function Invoke-Setup {
-            param([string[]]$ScriptArgs)
+            param([string[]]$ScriptArgs, [switch]$AsX64)
             $saved = $env:REA_SETUP_NO_MAIN
             Remove-Item Env:\REA_SETUP_NO_MAIN
             try {
-                Invoke-ReaTestProcess -ScriptArgs $ScriptArgs
+                Invoke-ReaTestProcess -ScriptArgs $ScriptArgs -AsX64:$AsX64
             } finally {
                 $env:REA_SETUP_NO_MAIN = $saved
             }
@@ -388,7 +397,7 @@ Describe 'Invoke-Main' {
         try {
             $env:JAVA_HOME = 'Nope:\jdk'
             $env:GHIDRA_INSTALL_DIR = 'Nope:\ghidra'
-            $r = Invoke-Setup -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
+            $r = Invoke-Setup -AsX64 -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
             $r.Output | Should -Not -Match 'GetUnresolvedProviderPathFromPSPath'
             $r.Output | Should -Match 'platform:'
         } finally {
@@ -433,7 +442,7 @@ Describe 'Invoke-Main' {
     It 'rejects an invalid profile name with code 2' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         try {
-            $r = Invoke-Setup -ScriptArgs @('-ProfileName', 'doctor', '-Yes', '-LogDir', $dir)
+            $r = Invoke-Setup -AsX64 -ScriptArgs @('-ProfileName', 'doctor', '-Yes', '-LogDir', $dir)
             $r.Code | Should -Be 2
             $r.Output | Should -Match 'invalid profile name: doctor'
         } finally {
@@ -501,7 +510,7 @@ Describe 'Invoke-Main' {
     It 'a real run off Windows fails at the fixed-NTFS check and still logs the invocation' -Skip:$script:OnWindows {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rea-core-" + [guid]::NewGuid().ToString('N'))
         try {
-            $r = Invoke-Setup -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
+            $r = Invoke-Setup -AsX64 -ScriptArgs @('-DryRun', '-Yes', '-LogDir', $dir)
             $r.Output | Should -Match 'platform: windows'
             $r.Code | Should -Be 1
             $r.Output | Should -Match 'fixed NTFS'

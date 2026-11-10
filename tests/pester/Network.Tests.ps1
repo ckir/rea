@@ -673,6 +673,8 @@ Describe 'setup.ps1 network layer' {
             $script:Opt.LogDir = Join-Path $script:Reg 'logs2'
             $savedName = $script:Opt.ProfileName
             $script:Opt.ProfileName = 'bad name!'
+            # the preflight checks the architecture before the profile name; macOS runners are arm64
+            Mock Get-ReaPlatform { return @{ Os = 'windows'; Arch = 'x64' } }
             try {
                 Invoke-Main | Should -Be $script:EX_USAGE
             } finally {
