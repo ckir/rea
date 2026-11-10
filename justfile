@@ -52,7 +52,7 @@ tools-doc-check:
 
 # Every lint suppression carries a reason and the count stays within the committed baseline
 suppressions:
-    sh scripts/check-suppressions.sh
+    sh scripts/check-suppressions.sh && sh scripts/tests/check-suppressions.sh
 
 # The pins in setup.sh and setup.ps1 are identical and each obeys its own rule
 drift:

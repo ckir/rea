@@ -18,6 +18,13 @@ assert_eq "https://h/p" "$(redact 'https://u:p@h/p?x=1')" "redact userinfo and q
 t_tilde='~'
 assert_eq "$t_tilde/x" "$(HOME=/home/u abbrev_home /home/u/x)" "abbrev home"
 assert_status 2 "unknown flag" sh -c '. ./setup.sh; parse_args --bogus'
+# a value-taking option with nothing after it is a usage error that names the option, not an unbound-variable crash
+for flag in --folder --tools-dir --bin-dir --ghidra-dir --java-home --profile --log-dir; do
+  nv_rc=0
+  nv_out=$(sh -c '. ./setup.sh; parse_args "$1"' sh "$flag" 2>&1) || nv_rc=$?
+  assert_eq 2 "$nv_rc" "$flag without a value exits 2"
+  assert_match "option $flag needs a value" "$nv_out" "$flag without a value names the option"
+done
 assert_status 0 "profile ok" profile_name_valid rea-1.x
 for bad in doctor Doctor CON con.txt -x '' 'a b' 'ok.'; do assert_status 1 "reject $bad" profile_name_valid "$bad"; done
 assert_eq 0.17.0 "$(semver_from_output 'clavity-ls 0.17.0+c356375b')" "semver from clavity-ls"
