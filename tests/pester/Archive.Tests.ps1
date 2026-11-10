@@ -62,7 +62,8 @@ Describe 'archive safety: tar' {
         Test-ReaArchiveSafe -Path (Join-Path $script:T "$name.tar.gz") | Should -BeFalse
     }
     It 'accepts the hardlinks GNU tar neutralises when it lists them' {
-        $listing = & tar --version 2>$null
+        # The tar the product lists with, not the first one on PATH: on Windows that is the bsdtar of System32
+        $listing = & (Get-ReaTarExe) --version 2>$null
         if (-not ($listing -match 'GNU tar')) { Set-ItResult -Skipped -Because 'tar is not GNU tar: the neutralised hardlink listing is not produced'; return }
         Test-ReaArchiveSafe -Path (Join-Path $script:T 'hardlink-rel.tar.gz') | Should -BeTrue
     }
