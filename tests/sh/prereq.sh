@@ -172,7 +172,9 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 
 # Windows: a claude that does not resolve to a .exe (here the extensionless stub) is refused
+# (its own PATH: P was last set inside the Linux-only block above, so on macOS it still lacked node)
 OS=windows
+P=$(mkpath shimbin node npx claude agy)
 rc=0
 run_step claude-shim "$P" step_prereq || rc=$?
 assert_eq 4 "$rc" "windows: claude without .exe is refused"

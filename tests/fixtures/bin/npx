@@ -30,7 +30,16 @@ if [ -n "${STUB_NPX_LOG:-}" ]; then
   c=$((c + 1))
   printf '%s\n' "$c" >"$STUB_NPX_LOG.n"
   printf '%s\n' "$*" >>"$STUB_NPX_LOG"
-  env | grep -E '^(CLAUDE_CONFIG_DIR|GHIDRA_INSTALL_DIR|JAVA_HOME)=' | sed "s/^/$c: /" >>"$STUB_NPX_LOG.env" || :
+  # In a fixed order: `env` lists the environment in whatever order the system keeps it (macOS differs from Linux)
+  for vn in CLAUDE_CONFIG_DIR GHIDRA_INSTALL_DIR JAVA_HOME; do
+    vs=""
+    vv=""
+    eval "vs=\${$vn+set}"
+    if [ "$vs" = set ]; then
+      eval "vv=\$$vn"
+      printf '%s: %s=%s\n' "$c" "$vn" "$vv" >>"$STUB_NPX_LOG.env"
+    fi
+  done
   eval "f=\${STUB_NPX_FILE_$c:-}"
   eval "rc=\${STUB_NPX_EXIT_$c:-0}"
   eval "g=\${STUB_NPX_CONFIG_$c:-}"

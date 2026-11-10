@@ -34,12 +34,14 @@ assert_status 1 "absolute tar refused" archive_check_safe "$T/abs.tar.gz"
 assert_status 1 "symlink out refused" archive_check_safe "$T/symlink.tar.gz"
 assert_status 1 "relative symlink out refused" archive_check_safe "$T/symlink-rel.tar.gz"
 assert_status 1 "deep relative symlink out refused" archive_check_safe "$T/symlink-deep.tar.gz"
-# GNU tar lists (and extracts) a hardlink target with leading ../ and / removed, so these two are safe as
-# listed; bsdtar shows the raw target, which the line checker tests below cover.
-assert_status 0 "GNU-neutralised hardlink listing is safe" archive_check_safe "$T/hardlink-rel.tar.gz"
+# GNU tar lists (and extracts) a hardlink target with leading ../ and / removed, so the listing is safe as
+# listed; bsdtar (macOS) shows the raw ../x target, which the checker refuses (fail closed; the line checker
+# tests below cover the raw form).
 if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+  assert_status 0 "GNU-neutralised hardlink listing is safe" archive_check_safe "$T/hardlink-rel.tar.gz"
   assert_match '^hrw-r--r-- h top/hl -> x$' "$(archive_list "$T/hardlink-rel.tar.gz")" "GNU tar strips ../ from a hardlink target"
 else
+  assert_status 1 "a hardlink listed with its raw ../ target is refused (bsdtar)" archive_check_safe "$T/hardlink-rel.tar.gz"
   t_skip "tar is not GNU tar: the hardlink target neutralising test is skipped"
 fi
 assert_status 1 "entry below an earlier symlink refused" archive_check_safe "$T/symchain.tar.gz"
@@ -105,7 +107,9 @@ if [ -x "${JAVA_HOME_SELECTED:-/nonexistent}/bin/jar" ] || command -v jar >/dev/
   assert_match '^\? \? ghidra_12.1.4_PUBLIC/ok.txt$' "$(printf '%s\n' "$jl" | grep 'ok.txt')" "jar listing: names only, unknown type"
   assert_status 1 "jar listing of a dotdot zip refused" env JAVA_HOME_SELECTED="$jh" ARCHIVE_ZIP_TOOL=jar sh -c ". ./setup.sh; archive_check_safe \"\$1\"" _ "$T/dotdot.zip"
   jx="$T/jar extract"
-  JAVA_HOME_SELECTED=$jh ARCHIVE_ZIP_TOOL=jar archive_extract "$T/exec.zip" "$jx"
+  # In a subshell: a shell in POSIX mode (macOS /bin/sh is bash 3.2) keeps an assignment made in front of a
+  # function call, and ARCHIVE_ZIP_TOOL=jar would then decide every later zip listing
+  (JAVA_HOME_SELECTED=$jh ARCHIVE_ZIP_TOOL=jar archive_extract "$T/exec.zip" "$jx")
   assert_status 0 "jar extract: ghidraRun executable (rule applied)" test -x "$jx/ghidra_12.1.4_PUBLIC/ghidraRun"
   assert_status 0 "jar extract: analyzeHeadless executable (rule applied)" test -x "$jx/ghidra_12.1.4_PUBLIC/support/analyzeHeadless"
   assert_status 1 "jar extract: properties not executable" test -x "$jx/ghidra_12.1.4_PUBLIC/support/launch.properties"
@@ -145,6 +149,23 @@ assert_status 1 "empty tar refused" archive_check_safe "$T/empty.tar.gz"
 sum1=$(cksum <"$T/clean.tar.gz")
 python3 -I "$ROOT/tests/integration/make_archives.py" "$T/again" || exit 1
 assert_eq "$sum1" "$(cksum <"$T/again/clean.tar.gz")" "tar.gz fixtures are reproducible"
+# bsdtar -tv (macOS) lines, hand-written because bsdtar may not be installed here: user and group are two
+# fields, the date is "Mon DD HH:MM" or "Mon DD  YYYY" (three fields, not an ISO date), a hardlink reads
+# `NAME link to TARGET`, and macOS appends @ or + to the mode for extended attributes and ACLs
+bsd_list=$(
+  archive_tarlike_normalise <<'BSD_EOF'
+-rw-r--r--  0 runner staff      5 Nov 10 07:20 top/file one
+-rwxr-xr-x@ 0 runner staff      5 Nov 10  2024 top/run
+drwxr-xr-x  0 runner staff      0 Nov 10 07:20 top/
+lrwxr-xr-x  0 runner staff      0 Nov 10 07:20 top/ln -> file one
+hrw-r--r--  0 runner staff      0 Nov 10 07:20 top/hl link to top/file one
+BSD_EOF
+)
+assert_eq "-rw-r--r-- f top/file one
+-rwxr-xr-x@ f top/run
+drwxr-xr-x d top/
+lrwxr-xr-x l top/ln -> file one
+hrw-r--r-- h top/hl -> top/file one" "$bsd_list" "bsdtar -tv lines are normalised"
 # a SIGINT during archive_list leaves no temp file behind (private TMPDIR)
 mkdir -p "$T/tmpd"
 cat >"$T/killer.sh" <<'KILLER_EOF'
