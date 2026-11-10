@@ -184,6 +184,7 @@ mk_up() {
   done
   if [ -z "$mu_port" ]; then
     echo "upstream.sh: the fake server did not start" >&2
+    echo "upstream.sh: server.out: $(cat "$mu_dir/server.out" 2>&1)" >&2
     cat "$mu_dir/server.err" >&2
     exit 1
   fi

@@ -189,6 +189,7 @@ mk_server() {
   done
   if [ -z "$ms_port" ]; then
     echo "tools-bin.sh: the fake server did not start" >&2
+    echo "tools-bin.sh: server.out: $(cat "$ms_dir/server.out" 2>&1)" >&2
     cat "$ms_dir/server.err" >&2
     exit 1
   fi

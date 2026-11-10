@@ -194,6 +194,7 @@ mk_srv() {
   done
   if [ -z "$ms_port" ]; then
     echo "ghidra.sh: the fake server did not start" >&2
+    echo "ghidra.sh: server.out: $(cat "$ms_dir/server.out" 2>&1)" >&2
     cat "$ms_dir/server.err" >&2
     exit 1
   fi

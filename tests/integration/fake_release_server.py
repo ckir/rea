@@ -32,6 +32,7 @@ GET /__countprefix/<prefix> answers with the number of GET requests whose path s
 import http.server
 import json
 import os
+import socketserver
 import sys
 import threading
 import time
@@ -119,6 +120,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.reply(next_response(self.path, True), False)
 
 
+class Server(http.server.ThreadingHTTPServer):
+    """HTTPServer.server_bind asks socket.getfqdn() for the bound address, a reverse DNS lookup that takes
+    longer than the tests wait for the PORT line on the macOS runners; nothing here uses the name."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+
 def main():
     if len(sys.argv) != 3:
         sys.stderr.write(__doc__)
@@ -127,7 +138,7 @@ def main():
     with open(scenario_file, encoding="utf-8") as handle:
         State.scenario = json.load(handle)
     State.base_dir = os.path.dirname(os.path.abspath(scenario_file))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+    server = Server(("127.0.0.1", int(sys.argv[1])), Handler)
     State.base = "http://127.0.0.1:%d" % server.server_address[1]
     sys.stdout.write("PORT %d\n" % server.server_address[1])
     sys.stdout.flush()
