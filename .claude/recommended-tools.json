@@ -48,10 +48,7 @@
     "name": "PSScriptAnalyzer",
     "why": "PowerShell module that lints `*.ps1`, with `PSUseCompatibleSyntax` targeting Windows PowerShell 5.1. Pinned to 1.25.0.",
     "install": "`pwsh -c \"Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser\"` (any platform)",
-    "file_exists": [
-      "~/.local/share/powershell/Modules/PSScriptAnalyzer",
-      "~/Documents/PowerShell/Modules/PSScriptAnalyzer"
-    ],
+    "pwsh_module": "PSScriptAnalyzer",
     "config": "`scripts/psanalyze.ps1`",
     "just": "`psanalyze`",
     "gates": "`just check`; CI gates and release jobs"
@@ -60,10 +57,7 @@
     "name": "Pester",
     "why": "PowerShell test framework, major version 5 or newer, for `tests/pester/`.",
     "install": "`pwsh -c \"Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force\"` (any platform)",
-    "file_exists": [
-      "~/.local/share/powershell/Modules/Pester",
-      "~/Documents/PowerShell/Modules/Pester"
-    ],
+    "pwsh_module": "Pester",
     "config": "`tests/pester/`",
     "just": "`test`",
     "gates": "`just check`; CI gates, release and matrix jobs"

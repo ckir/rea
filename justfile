@@ -16,7 +16,7 @@ setup:
 
 # Every declared tool is present, with an install hint for each that is not
 tools-check:
-    sh scripts/tools-check.sh
+    sh scripts/tools-check.sh && sh scripts/tests/tools-check.sh
 
 # Every shell file, as POSIX sh; find rather than a glob so an unmatched pattern is not passed literally
 shellcheck:
