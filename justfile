@@ -34,6 +34,14 @@ fmt:
 psanalyze:
     pwsh -NoProfile -File scripts/psanalyze.ps1
 
+# Advisory: rewrite every *.ps1 with PSScriptAnalyzer's Invoke-Formatter (spec 12b: only shfmt is a gate; not in check)
+psfmt:
+    pwsh -NoProfile -File scripts/psfmt.ps1
+
+# Advisory: list the *.ps1 files Invoke-Formatter would change; always exits 0 (not in check or lefthook)
+psfmt-check:
+    pwsh -NoProfile -File scripts/psfmt.ps1 -Check
+
 # Spell check
 typos:
     typos

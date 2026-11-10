@@ -30,6 +30,10 @@ suites dominate):
 | `just tools-doc-check` | the `## Tools` table below matches the JSON |
 | `just test` | `just test-sh` (shell tests under dash, bash and `/bin/sh`), then `just test-pester`. CI runs only `test-pester` on Windows: Git Bash reports a MINGW uname, which `setup.sh` maps to the unsupported `windows` platform |
 
+Two recipes are advisory and in neither `check` nor the hook (only shfmt is a formatting gate, spec section 12b):
+`just psfmt-check` lists the `*.ps1` files PSScriptAnalyzer's `Invoke-Formatter` would change and always exits 0;
+`just psfmt` rewrites them in place. Both go through `scripts/psfmt.ps1`.
+
 The `pre-push` hook and CI call the same recipes, so there is exactly one list. `just test-integration`
 (a local fake release server, Linux; plus `tests/integration/run-win.ps1`) is not part of `check`; CI runs it
 on Ubuntu.
