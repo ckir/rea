@@ -490,6 +490,15 @@ Describe 'redaction corpus shared with tests/sh/rea.sh' {
     It 'redacts <in>' -ForEach $script:Corpus {
         Hide-ReaSecret $In | Should -Be $Want
     }
+    # A JSON string value ends at its closing quote, and that quote cannot also open the next key: the scan resumes
+    # behind the value. (Found by comparing the one-pass rules with the loop they replaced on random input.)
+    It 'does not read the closing quote of a redacted JSON string as the opening quote of the next key' {
+        Hide-ReaSecret '"TOKEN":"EY"TOKEN":_token' | Should -Be '"TOKEN":"<redacted>"TOKEN":_token'
+        Hide-ReaSecret 'x ,"TOKEN":"EY"TOKEN":EY' | Should -Be 'x ,"TOKEN":"<redacted>"TOKEN":EY'
+    }
+    It 'keeps a name that is not secret and redacts a secret that follows it on the same line' {
+        Hide-ReaSecret 'a=KEY=x b: PASSWORD=y' | Should -Be 'a=KEY=<redacted> b: PASSWORD=<redacted>'
+    }
     It 'reads at least 39 corpus lines' {
         @([System.IO.File]::ReadAllLines((Join-Path $script:Fix 'redact-corpus.txt')) | Where-Object { $_ }).Count | Should -BeGreaterOrEqual 39
     }

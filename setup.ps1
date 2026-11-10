@@ -131,58 +131,35 @@ function Format-ReaLogLine {
 }
 
 # Secret names: TOKEN, KEY, SECRET or PASSWORD in any case, and for the JSON and colon forms AUTHORIZATION too.
-$script:ReaRxNameBasic = New-Object System.Text.RegularExpressions.Regex 'TOKEN|KEY|SECRET|PASSWORD', 'IgnoreCase'
-$script:ReaRxNameAuth = New-Object System.Text.RegularExpressions.Regex 'TOKEN|KEY|SECRET|PASSWORD|AUTHORIZATION', 'IgnoreCase'
+# The case folding is local to the name ((?i:...)), so the character classes around it stay plain ASCII.
+$script:ReaSecretName = '(?i:TOKEN|KEY|SECRET|PASSWORD)'
+$script:ReaSecretNameAuth = '(?i:TOKEN|KEY|SECRET|PASSWORD|AUTHORIZATION)'
+$script:ReaSecretNameAuthOnly = '(?i:AUTHORIZATION)'
 
-$script:ReaRxNameAuthOnly = New-Object System.Text.RegularExpressions.Regex 'AUTHORIZATION', 'IgnoreCase'
-$script:ReaRxAuthEquals = New-Object System.Text.RegularExpressions.Regex '(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)[ ]*=[ ]*'
-$script:ReaRxEquals = New-Object System.Text.RegularExpressions.Regex '(?<![A-Za-z0-9_])([A-Za-z0-9_]+)[ ]*=[ ]*'
-$script:ReaRxEqualsValue = New-Object System.Text.RegularExpressions.Regex "\G(`"[^`"\n]*`"[^ \n]*|'[^'\n]*'[^ \n]*|[^ \n]*)"
-$script:ReaRxJsonKey = New-Object System.Text.RegularExpressions.Regex '"([A-Za-z0-9_.-]+)"[ ]*:[ ]*'
-$script:ReaRxJsonValue = New-Object System.Text.RegularExpressions.Regex '\G("(?:[^"\\\n]|\\.)*"?|[A-Za-z0-9_.+-]+)'
-$script:ReaRxColon = New-Object System.Text.RegularExpressions.Regex '(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)([ ]*:)'
-$script:ReaRxColonValue = New-Object System.Text.RegularExpressions.Regex '\G[^\n]*'
+# The redaction rules, applied in this order, each by ONE Regex.Replace over the whole text. A rule matches only
+# where the name is secret: a lookahead at the start of the word (or of the quoted key) looks for the secret name
+# inside that one word, and a name that is not secret is simply not a match, so it costs the engine one scan step and
+# no PowerShell code at all. The earlier form found EVERY `name =` / `name:` candidate and decided in a PowerShell
+# loop: one iteration per candidate (100000 of them in 200000 characters of `a=`), 0.8 ms each on Windows PowerShell
+# 5.1 (160 s measured on a windows-latest runner), where Regex.Replace does the same scan inside the engine.
+# Linear: a match can only start at the first character of a word (the lookbehind) or at a quote, every word is a
+# maximal run of one character class, and a start position reads its own run at most three times (the lookahead for
+# the name, the word itself, backing off one character at a time), never another word's characters; the value that
+# follows is consumed by the match and the scan resumes behind it. Group 1 is the text kept as it was (the name
+# and its separator); the value is replaced. A JSON value that is a string keeps its quotes, a bare one gets none
+# (group 2 is the opening quote or empty). The rules are line-local: no class here crosses a newline.
+$script:ReaRedactRules = @(
+    # AUTHORIZATION=value to the end of the line
+    @{ Rx = (New-Object System.Text.RegularExpressions.Regex ('(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*' + $script:ReaSecretNameAuthOnly + ')([A-Za-z0-9_-]+[ ]*=[ ]*)[^\n]*')); With = '${1}<redacted>' }
+    # NAME = value, a quoted value consumed whole
+    @{ Rx = (New-Object System.Text.RegularExpressions.Regex ('(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]*' + $script:ReaSecretName + ")([A-Za-z0-9_]+[ ]*=[ ]*)(?:`"[^`"\n]*`"[^ \n]*|'[^'\n]*'[^ \n]*|[^ \n]*)")); With = '${1}<redacted>' }
+    # "NAME": value in JSON form: a string (escaped quotes allowed, the closing quote optional) or a bare number, true, false, null
+    @{ Rx = (New-Object System.Text.RegularExpressions.Regex ('("(?=[A-Za-z0-9_.-]*' + $script:ReaSecretNameAuth + ')[A-Za-z0-9_.-]+"[ ]*:[ ]*)(?:(")(?:[^"\\\n]|\\.)*"?|[A-Za-z0-9_.+-]+)')); With = '${1}${2}<redacted>${2}' }
+    # NAME: value to the end of the line
+    @{ Rx = (New-Object System.Text.RegularExpressions.Regex ('(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*' + $script:ReaSecretNameAuth + ')([A-Za-z0-9_-]+[ ]*:)[^\n]*')); With = '${1} <redacted>' }
+)
 
-# One redaction rule. Find locates candidates (Group 1 is the name); a candidate whose name is secret has the value
-# that Take matches right behind it replaced, any other is copied and the scan goes on behind it. The scan visits
-# each character once (no pattern here backtracks over a long run), where one pattern with the name inside the
-# word took seconds on 200000 characters. Mode: authequals, equals, json or colon.
-function Edit-ReaSecretRule {
-    param([string]$Text, $Find, $Take, [string]$Mode)
-    $out = New-Object System.Text.StringBuilder
-    $pos = 0
-    $names = $script:ReaRxNameAuth
-    if ($Mode -eq 'equals') { $names = $script:ReaRxNameBasic }
-    if ($Mode -eq 'authequals') { $names = $script:ReaRxNameAuthOnly }
-    while ($pos -le $Text.Length) {
-        $m = $Find.Match($Text, $pos)
-        if (-not $m.Success) { break }
-        $end = $m.Index + $m.Length
-        $secret = $names.IsMatch($m.Groups[1].Value)
-        $v = $null
-        if ($secret) { $v = $Take.Match($Text, $end) }
-        if ($secret -and $v.Success) {
-            [void]$out.Append($Text, $pos, $m.Index - $pos)
-            if ($Mode -eq 'equals' -or $Mode -eq 'authequals') {
-                [void]$out.Append($m.Value + '<redacted>')
-            } elseif ($Mode -eq 'colon') {
-                [void]$out.Append($m.Groups[1].Value + $m.Groups[2].Value + ' <redacted>')
-            } elseif ($v.Value.StartsWith('"')) {
-                [void]$out.Append($m.Value + '"<redacted>"')
-            } else {
-                [void]$out.Append($m.Value + '<redacted>')
-            }
-            $pos = $end + $v.Length
-        } else {
-            [void]$out.Append($Text, $pos, $end - $pos)
-            $pos = $end
-        }
-    }
-    if ($pos -lt $Text.Length) { [void]$out.Append($Text, $pos, $Text.Length - $pos) }
-    return $out.ToString()
-}
-
-# Hides secrets in a log message, line by line, in the order of setup.sh redact (tests/fixtures/redact-corpus.txt
+# Hides secrets in a log message, in the order of setup.sh redact (tests/fixtures/redact-corpus.txt
 # pins both): URL userinfo and query; AUTHORIZATION=value to the end of the line; NAME = value (optional spaces
 # around the equals sign, quoted values consumed whole); "NAME": value in JSON form
 # (strings with escaped quotes, numbers, true, false, null); NAME: value to the end of the line. NAME contains
@@ -192,10 +169,9 @@ function Hide-ReaSecret {
     param([AllowEmptyString()][string]$Text)
     $r = $Text -replace '(https?://)[^/@ \n]*@', '${1}'
     $r = $r -replace '\?(?<=https?://[^ ?\n]*\?)[^ \n]*', ''
-    $r = Edit-ReaSecretRule -Text $r -Find $script:ReaRxAuthEquals -Take $script:ReaRxColonValue -Mode authequals
-    $r = Edit-ReaSecretRule -Text $r -Find $script:ReaRxEquals -Take $script:ReaRxEqualsValue -Mode equals
-    $r = Edit-ReaSecretRule -Text $r -Find $script:ReaRxJsonKey -Take $script:ReaRxJsonValue -Mode json
-    $r = Edit-ReaSecretRule -Text $r -Find $script:ReaRxColon -Take $script:ReaRxColonValue -Mode colon
+    foreach ($rule in $script:ReaRedactRules) {
+        $r = $rule.Rx.Replace($r, $rule.With)
+    }
     return $r
 }
 
