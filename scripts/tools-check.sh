@@ -7,7 +7,8 @@
 
 # Checks that every tool declared in .claude/recommended-tools.json is present, using the entry's
 # `in_path` (a command on PATH), `pwsh_module` (a PowerShell module that `pwsh` itself can list, wherever
-# Install-Module put it: -Scope and the platform decide the directory, so a path guess misses it) or
+# Install-Module put it: -Scope and the platform decide the directory, so a path guess misses it; the optional
+# `pwsh_min_version` is the lowest acceptable version) or
 # `file_exists` (a list of paths, any one of which suffices; a leading `~` is the home directory).
 # TOOLS_CHECK_JSON overrides the list (the test seam of scripts/tests/tools-check.sh). Prints `missing: <name>  install: <hint>` per gap; exits 1 if any.
 set -eu
@@ -49,9 +50,17 @@ while IFS= read -r entry; do
         exit 1
         ;;
     esac
+    # pwsh_min_version (optional): the lowest acceptable version, as for Install-Module -MinimumVersion
+    minver=$(printf '%s' "$entry" | jq -r '.pwsh_min_version // "0.0"')
+    case "$minver" in
+      *[!0-9.]* | '')
+        echo "tools-check: $name declares an invalid pwsh_min_version: $minver" >&2
+        exit 1
+        ;;
+    esac
     present=0
     if command -v pwsh >/dev/null 2>&1; then
-      pwsh -NoProfile -NonInteractive -Command "if (Get-Module -ListAvailable -Name '$module') { exit 0 } else { exit 1 }" >/dev/null 2>&1 && present=1
+      pwsh -NoProfile -NonInteractive -Command "if (Get-Module -ListAvailable -FullyQualifiedName @{ ModuleName = '$module'; ModuleVersion = '$minver' }) { exit 0 } else { exit 1 }" >/dev/null 2>&1 && present=1
     fi
   else
     paths=$(printf '%s' "$entry" | jq -r '.file_exists // empty | if type == "array" then .[] else . end')

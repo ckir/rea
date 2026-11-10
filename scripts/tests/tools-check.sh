@@ -82,6 +82,16 @@ run "$tmp/yes:$base"
 check "a module name that is not a plain identifier is refused: status" "$status" 1
 check "a module name that is not a plain identifier is refused: message" "$(printf '%s' "$out" | grep -c 'invalid pwsh_module' || true)" 1
 
+printf '[{"name":"Old","install":"x","pwsh_module":"FakeMod","pwsh_min_version":"5.0"}]\n' >"$json"
+run "$tmp/yes:$base"
+check "the minimum version reaches pwsh: status" "$status" 0
+check "the minimum version reaches pwsh: argument" "$(grep -c "ModuleVersion = '5.0'" "$tmp/yes/args")" 1
+
+printf '[{"name":"Odd","install":"x","pwsh_module":"FakeMod","pwsh_min_version":"5; rm"}]\n' >"$json"
+run "$tmp/yes:$base"
+check "a version that is not digits and dots is refused: status" "$status" 1
+check "a version that is not digits and dots is refused: message" "$(printf '%s' "$out" | grep -c 'invalid pwsh_min_version' || true)" 1
+
 printf '[{"name":"Plain","install":"x","in_path":"sh"}]\n' >"$json"
 run "$base"
 check "in_path still works: status" "$status" 0
