@@ -1,0 +1,27 @@
+# Paths the Antigravity agent should not index or read. Mirrors .gitignore plus agent and editor state.
+# .claude/recommended-tools.json is a real project file, so only the local settings file is listed.
+
+# Version control
+.git/
+.worktrees/
+
+# Test output and logs
+tests/.tmp/
+testResults.xml
+*.log
+
+# Agent and AI runtime data, caches, and scratch
+.claude/settings.local.json
+.clavity/
+.superpowers/
+.gemini/
+.serena/
+__pycache__/
+*.pyc
+
+# Editors and OS files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
