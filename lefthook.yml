@@ -25,6 +25,8 @@ pre-push:
       run: just action-pins
     actionlint:
       run: just actionlint
+    md-links:
+      run: just md-links
     fmt-check:
       run: just fmt-check
     shellcheck:

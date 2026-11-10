@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+# Keeps the SHA-pinned actions in .github/workflows current. Dependabot rewrites `uses: owner/repo@<sha> # vX`
+# lines in place and keeps the `# vX` comment, which scripts/check-action-pins.sh requires. It does NOT see the
+# tool versions in scripts/ci-tools.lock or the pinned `go install` / npm versions in the workflows; those are
+# bumped by hand (see CONTRIBUTING.md).
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]

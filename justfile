@@ -62,6 +62,14 @@ drift:
 action-pins:
     sh scripts/check-action-pins.sh && sh scripts/tests/check-action-pins.sh
 
+# Relative Markdown links and anchors resolve (offline; external URLs are the weekly canary's job)
+md-links:
+    sh scripts/check-md-links.sh && sh scripts/tests/check-md-links.sh
+
+# External URLs in Markdown still answer (needs lychee; network; not part of check, run weekly by the canary)
+links-external:
+    lychee --config lychee.toml .
+
 # Workflow syntax
 actionlint:
     actionlint
@@ -88,4 +96,4 @@ test-integration:
     pwsh -NoProfile -File tests/integration/run-win.ps1
 
 # The local gate, cheapest first
-check: tools-check typos license-check line-citations action-pins actionlint fmt-check shellcheck psanalyze suppressions drift tools-doc-check test
+check: tools-check typos license-check line-citations action-pins actionlint md-links fmt-check shellcheck psanalyze suppressions drift tools-doc-check test

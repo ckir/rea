@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+# Configuration for the weekly external link check (just links-external, canary.yml job `links`).
+# Relative links are the offline gate's job (scripts/check-md-links.sh), so lychee only fetches URLs.
+
+no_progress = true
+include_fragments = false
+scheme = ["https", "http"]
+max_retries = 3
+retry_wait_time = 5
+timeout = 30
+# A rate limit is not a dead link.
+accept = ["200..=299", "429"]
+exclude_path = ["docs/superpowers", ".clavity", ".git", ".superpowers", "tests"]
+# Placeholders and the loopback servers the tests and docs use.
+exclude = ["^https?://127\\.0\\.0\\.1", "^https?://localhost", "example\\.invalid"]

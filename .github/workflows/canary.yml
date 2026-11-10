@@ -40,3 +40,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -CheckUpstream -Yes
+
+  # External URLs in the Markdown files still answer. The offline relative-link gate is `just md-links`; this is
+  # the part that needs the network, so it runs weekly here and never blocks a push.
+  links:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          lycheeVersion: v0.24.2
+          args: --config lychee.toml .
