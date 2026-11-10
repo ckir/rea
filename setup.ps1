@@ -2779,14 +2779,17 @@ function Resolve-ReaLinkedPath {
             if ($item -and ([string]$item.LinkType -eq 'SymbolicLink' -or [string]$item.LinkType -eq 'Junction') -and $item.Target) {
                 $target = [string]@($item.Target)[0]
                 if (-not [System.IO.Path]::IsPathRooted($target)) {
-                    $target = Join-Path (Split-Path -Parent $probe) $target
+                    $target = Join-Path ([System.IO.Path]::GetDirectoryName($probe)) $target
                 }
                 $current = [System.IO.Path]::GetFullPath($target + $current.Substring($probe.Length))
                 $changed = $true
                 break
             }
-            $parent = Split-Path -Parent $probe
-            if ($parent -eq $probe) { break }
+            # GetDirectoryName, not Split-Path: for a path directly under the root (/var on macOS, a symlink to
+            # private/var) Split-Path -Parent gives the empty string, GetDirectoryName gives the root; at the root
+            # itself it gives nothing, which ends the walk.
+            $parent = [System.IO.Path]::GetDirectoryName($probe)
+            if (-not $parent -or $parent -eq $probe) { break }
             $probe = $parent
         }
         if (-not $changed) { break }

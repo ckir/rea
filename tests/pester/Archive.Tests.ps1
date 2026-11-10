@@ -867,3 +867,16 @@ Describe 'Move-ReaItemRetry' {
         Test-Path -LiteralPath $script:Src | Should -BeTrue
     }
 }
+
+Describe 'Resolve-ReaLinkedPath' {
+    # macOS has relative symlinks directly under the root (/var -> private/var, /tmp -> private/tmp), and the parent
+    # of a root-level path is the empty string for Split-Path: the relative target must still be joined to the root.
+    It 'resolves a relative symlink that sits directly under the root' {
+        $sep = [System.IO.Path]::DirectorySeparatorChar
+        $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())
+        $link = $root + 'rea-fake-link'
+        Mock Get-Item { [pscustomobject]@{ LinkType = 'SymbolicLink'; Target = @('rea-fake-real') } } -ParameterFilter { $LiteralPath -eq $link }
+        Mock Get-Item { $null } -ParameterFilter { $LiteralPath -ne $link }
+        Resolve-ReaLinkedPath -Path ($link + $sep + 'child') | Should -Be ($root + 'rea-fake-real' + $sep + 'child')
+    }
+}
