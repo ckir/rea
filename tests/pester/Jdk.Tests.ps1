@@ -356,25 +356,29 @@ Describe 'jdk' {
                 }
             }
         }
-        # Builds the archive for Layout, serves it (and its sidecar unless Side is 'none'; Side 'bad' serves a
-        # different digest) and records the digest the API will report (ApiSha, or wrong with -BadApi).
-        function script:Initialize-Serve {
-            param([string]$Layout = 'normal', [string]$Side = 'ok', [switch]$BadApi)
-            $arc = New-JdkArchive -Dir $script:Srv -Name $script:Name -Layout $Layout
-            $sha = Get-ReaFileSha256 $arc
-            $script:ApiSha = $sha
-            if ($BadApi) { $script:ApiSha = '0' * 64 }
-            $script:Served[$script:Url] = $arc
-            if ($Side -ne 'none') {
-                $sidePath = Join-Path $script:Srv 'side.txt'
-                $shown = $sha
-                if ($Side -eq 'bad') { $shown = '1' * 64 }
-                Set-Sidecar -Path $sidePath -Hash $shown -Name $script:Name
-                $script:Served[$script:Url + '.sha256.txt'] = $sidePath
+        # Defined in a BeforeAll, not in the Context body: a body runs at discovery, where a same-named helper of another
+        # file would overwrite this one (see tests/pester/Harness.Tests.ps1).
+        BeforeAll {
+            # Builds the archive for Layout, serves it (and its sidecar unless Side is 'none'; Side 'bad' serves a
+            # different digest) and records the digest the API will report (ApiSha, or wrong with -BadApi).
+            function script:Initialize-JdkServe {
+                param([string]$Layout = 'normal', [string]$Side = 'ok', [switch]$BadApi)
+                $arc = New-JdkArchive -Dir $script:Srv -Name $script:Name -Layout $Layout
+                $sha = Get-ReaFileSha256 $arc
+                $script:ApiSha = $sha
+                if ($BadApi) { $script:ApiSha = '0' * 64 }
+                $script:Served[$script:Url] = $arc
+                if ($Side -ne 'none') {
+                    $sidePath = Join-Path $script:Srv 'side.txt'
+                    $shown = $sha
+                    if ($Side -eq 'bad') { $shown = '1' * 64 }
+                    Set-Sidecar -Path $sidePath -Hash $shown -Name $script:Name
+                    $script:Served[$script:Url + '.sha256.txt'] = $sidePath
+                }
             }
         }
         It 'installs a zip: final dir, sentinel, no archive or staging left, JAVA_HOME set, size logged' {
-            Initialize-Serve
+            Initialize-JdkServe
             $home_ = Install-ReaJdk
             $final = Join-Path $script:ToolsDir 'jdk-21.0.13+9'
             $home_ | Should -Be $final
@@ -390,20 +394,20 @@ Describe 'jdk' {
         It 'installs a tar.gz' {
             $script:Name = 'OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz'
             $script:Url = 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/' + $script:Name
-            Initialize-Serve
+            Initialize-JdkServe
             Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
             Get-ListingName $script:ToolsDir | Should -Be @('jdk-21.0.13+9')
         }
         It 'installs the macOS layout and returns Contents\Home' {
             Mock Get-ReaPlatform { return @{ Os = 'mac'; Arch = 'x64' } }
-            Initialize-Serve -Layout mac
+            Initialize-JdkServe -Layout mac
             $home_ = Install-ReaJdk
             $expected = Join-Path (Join-Path (Join-Path $script:ToolsDir 'jdk-21.0.13+9') 'Contents') 'Home'
             $home_ | Should -Be $expected
             Test-Path -LiteralPath (Join-Path (Join-Path $script:ToolsDir 'jdk-21.0.13+9') '.install-complete') | Should -BeTrue
         }
         It 'goes through Select-ReaJdk and Invoke-ReaStepJdk, and a second run reuses the install' {
-            Initialize-Serve
+            Initialize-JdkServe
             Invoke-ReaStepJdk
             $script:JavaHomeSelected | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
             Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
@@ -412,7 +416,7 @@ Describe 'jdk' {
             Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
         }
         It 'rechecks an install plan under the lock: a JDK another run installed meanwhile is reused, not downloaded again' {
-            Initialize-Serve
+            Initialize-JdkServe
             Invoke-ReaStepJdk
             Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
             $script:PlanJdk = 'install'
@@ -422,7 +426,7 @@ Describe 'jdk' {
             $script:JavaHomeSelected | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
         }
         It 'uses the embedded pin with the verbatim WARN when Adoptium is unreachable' {
-            Initialize-Serve
+            Initialize-JdkServe
             $script:ApiCode = 2
             $saved = $script:PIN_JDK_FALLBACK_WINDOWS_X64
             try {
@@ -436,7 +440,7 @@ Describe 'jdk' {
             $log | Should -Match 'resolved jdk-21\.0\.13\+9: https://github\.com/adoptium/temurin21-binaries/releases/download/jdk-21\.0\.13%2B9/OpenJDK21U-jdk_x64_windows'
         }
         It 'refuses a fallback pin whose checksum does not match, with 5' {
-            Initialize-Serve
+            Initialize-JdkServe
             $script:ApiCode = 2
             Get-Code { Install-ReaJdk } | Should -Be 5
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
@@ -446,13 +450,13 @@ Describe 'jdk' {
             Get-Code { Install-ReaJdk } | Should -Be 5
         }
         It 'exits 5 and installs nothing on an archive checksum mismatch' {
-            Initialize-Serve -BadApi -Side none
+            Initialize-JdkServe -BadApi -Side none
             Get-Code { Install-ReaJdk } | Should -Be 5
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'checksum mismatch'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 when the sidecar disagrees with the API, before downloading the archive' {
-            Initialize-Serve -Side bad
+            Initialize-JdkServe -Side bad
             Get-Code { Install-ReaJdk } | Should -Be 5
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'checksum mismatch for jdk-21\.0\.13\+9'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
@@ -460,29 +464,29 @@ Describe 'jdk' {
             Should -Invoke Invoke-ReaHttpGet -Times 0 -Exactly -ParameterFilter { $Url -notlike '*sha256.txt' }
         }
         It 'warns and goes on when the sidecar is unreachable' {
-            Initialize-Serve -Side none
+            Initialize-JdkServe -Side none
             Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*checksum sidecar of jdk-21\.0\.13\+9 is unreachable'
         }
         It 'exits 5 and installs nothing for two top directories' {
-            Initialize-Serve -Layout two
+            Initialize-JdkServe -Layout two
             Get-Code { Install-ReaJdk } | Should -Be 5
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'exactly one top directory'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 and installs nothing for a wrongly named top directory' {
-            Initialize-Serve -Layout badname
+            Initialize-JdkServe -Layout badname
             Get-Code { Install-ReaJdk } | Should -Be 5
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 and installs nothing when the downloaded JDK is a 17' {
-            Initialize-Serve -Layout j17
+            Initialize-JdkServe -Layout j17
             Get-Code { Install-ReaJdk } | Should -Be 5
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'not a usable JDK: major 17 < 21'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'a dry run logs the release, URL and size and writes nothing' {
-            Initialize-Serve
+            Initialize-JdkServe
             $script:Opt.DryRun = $true
             Install-ReaJdk | Should -BeNullOrEmpty
             $log = Get-Content -LiteralPath $script:LogFile -Raw
@@ -492,7 +496,7 @@ Describe 'jdk' {
             Should -Invoke Invoke-ReaHttpGet -Times 0 -Exactly
         }
         It 'prunes old installs, keeping the newest two, and never touches jdk-notes' {
-            Initialize-Serve
+            Initialize-JdkServe
             foreach ($v in @('21.0.1+1', '21.0.2+1', '21.0.3+1')) {
                 $d = Join-Path $script:ToolsDir "jdk-$v"
                 New-FakeJdk -Dir $d

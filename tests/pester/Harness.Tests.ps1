@@ -25,3 +25,24 @@ Describe 'Pester files that read $script:OnWindows' {
         $m.Groups[1].Value | Should -Match '\$script:OnWindows\s*='
     }
 }
+
+Describe 'Pester helper functions' {
+    # A function defined in a Describe or Context body (or at the top of a file) is defined while Pester DISCOVERS
+    # every file, before any file runs, so two files that give a helper the same name overwrite each other and the
+    # last discovered wins: Ghidra.Tests.ps1 once ran Jdk.Tests.ps1's Initialize-Serve that way (CommandNotFound
+    # for New-JdkArchive), on Pester 5.9.0 only. A helper belongs in a BeforeAll or BeforeEach, which runs per file.
+    It 'is defined inside BeforeAll or BeforeEach, never in a Describe/Context body: <_.Name>' -ForEach @(Get-ChildItem -Path $PSScriptRoot -Filter '*.Tests.ps1' -File | ForEach-Object { @{ Name = $_.Name; Path = $_.FullName } }) {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+        $misplaced = @()
+        foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+            $ok = $false
+            for ($p = $fn.Parent; $null -ne $p; $p = $p.Parent) {
+                if ($p -is [System.Management.Automation.Language.CommandAst] -and $p.GetCommandName() -in @('BeforeAll', 'BeforeEach')) { $ok = $true; break }
+            }
+            if (-not $ok) { $misplaced += "$($fn.Name) (line $($fn.Extent.StartLineNumber))" }
+        }
+        $misplaced | Should -BeNullOrEmpty
+    }
+}

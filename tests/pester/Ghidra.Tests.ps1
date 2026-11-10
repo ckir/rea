@@ -221,19 +221,23 @@ Describe 'ghidra' {
     }
 
     Context 'Install-ReaGhidra' {
-        # Builds the zip for Layout, serves it at the pinned URL and points the embedded digest and size at it.
-        function script:Initialize-Serve {
-            param([string]$Layout = 'normal')
-            $srv = Join-Path $script:Case 'srv dir'
-            New-Item -ItemType Directory -Path $srv -Force | Out-Null
-            $zip = New-GhidraZip -Dir $srv -Layout $Layout
-            $script:ZipSize = (Get-Item -LiteralPath $zip).Length
-            $script:PIN_GHIDRA_SHA256 = Get-ReaFileSha256 $zip
-            $script:PIN_GHIDRA_ZIP_BYTES = [string]$script:ZipSize
-            $script:Served[$script:PIN_GHIDRA_URL] = $zip
+        # Defined in a BeforeAll, not in the Context body: a body runs at discovery, where a same-named helper of another
+        # file would overwrite this one (see tests/pester/Harness.Tests.ps1).
+        BeforeAll {
+            # Builds the zip for Layout, serves it at the pinned URL and points the embedded digest and size at it.
+            function script:Initialize-GhidraServe {
+                param([string]$Layout = 'normal')
+                $srv = Join-Path $script:Case 'srv dir'
+                New-Item -ItemType Directory -Path $srv -Force | Out-Null
+                $zip = New-GhidraZip -Dir $srv -Layout $Layout
+                $script:ZipSize = (Get-Item -LiteralPath $zip).Length
+                $script:PIN_GHIDRA_SHA256 = Get-ReaFileSha256 $zip
+                $script:PIN_GHIDRA_ZIP_BYTES = [string]$script:ZipSize
+                $script:Served[$script:PIN_GHIDRA_URL] = $zip
+            }
         }
         It 'installs: final dir, sentinel, no zip or staging left, selected dir and summary set, size logged' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $final = Join-Path $script:ToolsDir $script:Top
             Install-ReaGhidra | Should -Be $final
             $script:GhidraDirSelected | Should -Be $final
@@ -247,7 +251,7 @@ Describe 'ghidra' {
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
         }
         It 'refuses a tools directory that makes the longest path too long before anything is downloaded' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $script:MaxPathLength = 240
             $script:ToolsDir = Join-Path $script:Case ('d' * 120)
             Get-Code { Install-ReaGhidra } | Should -Be 5
@@ -255,7 +259,7 @@ Describe 'ghidra' {
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'shorter -ToolsDir'
         }
         It 'goes through Select-ReaGhidra and Invoke-ReaStepGhidra, and a second run reuses the install' {
-            Initialize-Serve
+            Initialize-GhidraServe
             Invoke-ReaStepGhidra
             $script:GhidraDirSelected | Should -Be (Join-Path $script:ToolsDir $script:Top)
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
@@ -264,7 +268,7 @@ Describe 'ghidra' {
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
         }
         It 'rechecks an install plan under the lock: a Ghidra another run installed meanwhile is reused, not downloaded again' {
-            Initialize-Serve
+            Initialize-GhidraServe
             Invoke-ReaStepGhidra
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
             $script:PlanGhidra = 'install'
@@ -274,7 +278,7 @@ Describe 'ghidra' {
             $script:GhidraDirSelected | Should -Be (Join-Path $script:ToolsDir $script:Top)
         }
         It 'replaces an install directory without .install-complete (rename over the existing directory)' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $old = Join-Path $script:ToolsDir $script:Top
             New-GhidraProperty -Dir $old -Text "application.version=12.1.4`n"
             [System.IO.File]::WriteAllText((Join-Path $old 'stale-file'), 'half')
@@ -286,7 +290,7 @@ Describe 'ghidra' {
         }
         It 'on macOS installs, logs the verbatim WARN, sets a warn summary and does not fail' {
             Mock Get-ReaPlatform { return @{ Os = 'mac'; Arch = 'x64' } }
-            Initialize-Serve
+            Initialize-GhidraServe
             Invoke-ReaStepGhidra
             Test-Path -LiteralPath (Join-Path (Join-Path $script:ToolsDir $script:Top) '.install-complete') | Should -BeTrue
             $log = Get-Content -LiteralPath $script:LogFile -Raw
@@ -294,7 +298,7 @@ Describe 'ghidra' {
             $script:Summary['ghidra'] | Should -Match '^warn: 12\.1\.4 installed'
         }
         It 'installs alongside a 12.2 GHIDRA_INSTALL_DIR after the verbatim WARN' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $env:GHIDRA_INSTALL_DIR = $script:F122
             Invoke-ReaStepGhidra
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*12\.2 is not accepted by rea 6\.8\.0; installing 12\.1\.4 alongside'
@@ -302,31 +306,31 @@ Describe 'ghidra' {
             Test-Path -LiteralPath (Join-Path (Join-Path $script:ToolsDir $script:Top) '.install-complete') | Should -BeTrue
         }
         It 'exits 5 and installs nothing when the archive reports another version' {
-            Initialize-Serve -Layout badver
+            Initialize-GhidraServe -Layout badver
             Get-Code { Install-ReaGhidra } | Should -Be 5
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match "reports version '12\.1\.3', expected 12\.1\.4"
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 and installs nothing for two top directories' {
-            Initialize-Serve -Layout two
+            Initialize-GhidraServe -Layout two
             Get-Code { Install-ReaGhidra } | Should -Be 5
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'exactly one top directory'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 and installs nothing for a wrongly named top directory' {
-            Initialize-Serve -Layout badname
+            Initialize-GhidraServe -Layout badname
             Get-Code { Install-ReaGhidra } | Should -Be 5
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 and installs nothing on a size mismatch' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $script:PIN_GHIDRA_ZIP_BYTES = [string]($script:ZipSize + 1)
             Get-Code { Install-ReaGhidra } | Should -Be 5
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Match "is $($script:ZipSize) bytes, expected $($script:ZipSize + 1)"
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 and installs nothing on a hash mismatch, leaving an old directory as it was' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $script:PIN_GHIDRA_SHA256 = '0' * 64
             $old = Join-Path $script:ToolsDir $script:Top
             New-Item -ItemType Directory -Path $old -Force | Out-Null
@@ -337,7 +341,7 @@ Describe 'ghidra' {
             Test-Path -LiteralPath (Join-Path $old 'old-file') | Should -BeTrue
         }
         It 'a dry run logs URL, size and target and downloads nothing' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $script:Opt.DryRun = $true
             Install-ReaGhidra | Should -BeNullOrEmpty
             $log = Get-Content -LiteralPath $script:LogFile -Raw
@@ -347,7 +351,7 @@ Describe 'ghidra' {
             Should -Invoke Invoke-ReaHttpGet -Times 0 -Exactly
         }
         It 'a check-upstream run writes nothing either' {
-            Initialize-Serve
+            Initialize-GhidraServe
             $script:Opt.CheckUpstream = $true
             Install-ReaGhidra | Should -BeNullOrEmpty
             Test-Path -LiteralPath $script:ToolsDir | Should -BeFalse
