@@ -1457,7 +1457,7 @@ jdk_build() {
   echo "${jb:-0}"
 }
 
-# jdk_newer A B: 0 when directory name A (jdk-21.0.13+9) is a newer release than B: the X.Y.Z first, then
+# jdk_newer A B: 0 when directory name A (jdk-25.0.5.1+2) is a newer release than B: the X.Y.Z first, then
 # the build number
 jdk_newer() {
   jn_a=${1#jdk-}
@@ -2628,8 +2628,9 @@ PLAN_jdk_text=""
 PLAN_ghidra_text=""
 PLAN_jdk_bytes=0
 PLAN_ghidra_bytes=0
-# the size of the Temurin 21 archive (208 MiB, measured) when the release listing gave none
-JDK_DOWNLOAD_ESTIMATE_BYTES=218103808
+# the size of the Temurin 25 archive (135 MiB, measured: the largest of the four platform archives, linux-x64) when the
+# release listing gave none
+JDK_DOWNLOAD_ESTIMATE_BYTES=141362230
 
 # mb_of BYTES: BYTES in megabytes (MiB), one decimal
 mb_of() {
@@ -3028,7 +3029,7 @@ cu_clavity_ls() {
   printf 'ok clavity-ls: %s %s sha256 %s\n' "$CL_TAG" "$CL_ASSET" "$cu_hash"
 }
 
-# cu_adoptium: the Adoptium API answers a Temurin 21 release for this host and its .sha256.txt sidecar equals
+# cu_adoptium: the Adoptium API answers a Temurin PIN_JDK_MAJOR release for this host and its .sha256.txt sidecar equals
 # the checksum of the API
 cu_adoptium() {
   cu_rc=0

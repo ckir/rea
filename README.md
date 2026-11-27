@@ -94,7 +94,7 @@ Flags are the same in both scripts: kebab-case in `setup.sh`, PascalCase paramet
 | `--profile NAME` | `-ProfileName NAME` | `rea` | Profile name, validated with `agent-profile`'s rules |
 | `--folder PATH` | `-Folder PATH` | current directory | Folder handed to `clavity-ls start` |
 | `--ghidra-dir PATH` | `-GhidraDir PATH` | env `GHIDRA_INSTALL_DIR` | Use this Ghidra (must be 12.2.x). Invalid by flag: exit 1. Invalid only from the environment: warning, the search continues |
-| `--java-home PATH` | `-JavaHome PATH` | env `JAVA_HOME` | Use this JDK (21 or later, a full JDK). Same validity rules |
+| `--java-home PATH` | `-JavaHome PATH` | env `JAVA_HOME` | Use this JDK (25 or later, a full JDK). Same validity rules |
 | `--tools-dir PATH` | `-ToolsDir PATH` | see below | Where the JDK and Ghidra are installed |
 | `--bin-dir PATH` | `-BinDir PATH` | `~/.local/bin`; `%LOCALAPPDATA%\rea-tools\bin` | Where `agent-profile` and `clavity-ls` are installed |
 | `--log-dir PATH` | `-LogDir PATH` | see below | Where the log files go |

@@ -1771,7 +1771,7 @@ function Get-ReaJdkBuild {
     return [int64]0
 }
 
-# True when directory name A (jdk-21.0.13+9) is a newer release than B: the X.Y.Z first, then the build number.
+# True when directory name A (jdk-25.0.5.1+2) is a newer release than B: the X.Y.Z first, then the build number.
 function Test-ReaJdkNewer {
     param([string]$A, [string]$B)
     $va = ($A -replace '^jdk-', '') -replace '\+.*$', ''
@@ -2602,7 +2602,7 @@ function Install-ReaGhidra {
     } catch {
         Stop-Rea -Code $script:EX_STEP -Step ghidra -Message "cannot create directory: $tools"
     }
-    # The longest entry of the pinned archive is 149 characters below the extraction directory; refuse now, not
+    # The longest entry of the pinned archive is 147 characters below the extraction directory; refuse now, not
     # after a 570 MB download
     $extractRoot = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $tools "ghidra.work.tmp.$PID") 'x')).TrimEnd('/', '\')
     if (($extractRoot.Length + 1 + $script:GhidraLongestEntry) -gt $script:MaxPathLength) {
@@ -3183,8 +3183,9 @@ $script:PlanGhidraText = ''
 $script:PlanJdkBytes = [int64]0
 $script:PlanGhidraBytes = [int64]0
 $script:ToolsBinPlanned = $null
-# The size of the Temurin 21 archive (208 MiB, measured) when the release listing gave none.
-$script:JdkDownloadEstimateBytes = [int64]218103808
+# The size of the Temurin 25 archive (135 MiB, measured: the largest of the four platform archives, linux-x64) when the
+# release listing gave none.
+$script:JdkDownloadEstimateBytes = [int64]141362230
 $script:EnvFile = ''
 
 # Writes one line on stdout (the final summary and the answers a caller may read). One function so a test can
@@ -3605,7 +3606,7 @@ function Test-ReaUpstreamClavity {
     Write-ReaOutput "ok clavity-ls: $($cl.Tag) $($cl.Asset) sha256 $hash"
 }
 
-# The Adoptium API answers a Temurin 21 release for this host and its .sha256.txt sidecar equals the checksum of
+# The Adoptium API answers a Temurin PIN_JDK_MAJOR release for this host and its .sha256.txt sidecar equals the checksum of
 # the API.
 function Test-ReaUpstreamAdoptium {
     param($Platform)
