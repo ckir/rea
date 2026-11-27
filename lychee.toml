@@ -8,7 +8,7 @@
 # Relative links are the offline gate's job (scripts/check-md-links.sh), so lychee only fetches URLs.
 
 no_progress = true
-include_fragments = false
+include_fragments = "none"
 scheme = ["https", "http"]
 max_retries = 3
 retry_wait_time = 5
