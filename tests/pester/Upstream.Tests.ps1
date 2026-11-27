@@ -2,7 +2,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for -CheckUpstream: Get-ReaRuntimeSupportedGhidra, Test-ReaUpstream and Invoke-ReaStepCheckUpstream. They
 # mirror tests/sh/upstream.sh. The network is replaced at its two lowest seams: Invoke-ReaHttpGet copies a prepared

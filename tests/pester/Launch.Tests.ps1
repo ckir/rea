@@ -2,7 +2,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for the plan phase, the disclosures, the confirmation, the env file, the summary and the launch step of
 # setup.ps1; they mirror tests/sh/launch.sh. What a step writes on stdout goes through Write-ReaOutput and what

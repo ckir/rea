@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Runs every tests/sh/*.sh except lib.sh and run.sh under each named shell, or under each of dash, bash
 # and /bin/sh that exists when none is named. Prints one `ok <shell> <file>` per pair. Fails on a zero

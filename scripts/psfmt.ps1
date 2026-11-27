@@ -2,7 +2,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # PowerShell formatting with PSScriptAnalyzer's Invoke-Formatter, over every *.ps1 outside .clavity,
 # tests/.tmp and .git. ADVISORY: spec section 12b makes shfmt the only formatting gate, so nothing in

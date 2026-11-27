@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # End-to-end runs of setup.sh (main, in a subshell) on Linux against a fake release server on 127.0.0.1: tiny
 # stand-in archives under the real asset names (agent-profile and clavity-ls with one file each, a Temurin-shaped

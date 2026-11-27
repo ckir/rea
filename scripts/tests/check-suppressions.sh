@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for scripts/check-suppressions.sh, the gate that every lint suppression carries a written reason
 # and that the total stays within scripts/suppressions.baseline.

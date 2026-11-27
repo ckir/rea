@@ -2,7 +2,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for the setup.ps1 step tools-bin; they mirror tests/sh/tools-bin.sh. The network is replaced at three
 # seams: the latest-tag and asset-list functions, the redirect walk and the HTTP GET (which copies a prepared file

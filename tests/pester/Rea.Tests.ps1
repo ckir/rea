@@ -2,7 +2,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for the setup.ps1 steps rea-setup and rea-doctor; they mirror tests/sh/rea.sh. The run of npx is replaced by
 # a mock of Invoke-ReaCommand (the npx.cmd stub of tests/fixtures/bin-win is not used: a mock behaves the same on

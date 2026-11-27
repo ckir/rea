@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for the setup.sh step jdk: jdk_valid on the fake JDK (tests/fixtures/fake-jdk), jdk_home_candidate, the
 # fallback pins, the precedence of jdk_select and the whole install against the fake release server of

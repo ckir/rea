@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for --check-upstream: rea_supported_ghidra and step_check_upstream against the fake server of
 # tests/integration (python3, loopback only). A curl wrapper maps every allow-listed host onto it, so the product

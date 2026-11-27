@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for scripts/check-md-links.sh, the offline Markdown link gate. Each case is its own tree under a
 # temporary directory; the gate takes that tree as its ROOT argument. A broken link must be named with its

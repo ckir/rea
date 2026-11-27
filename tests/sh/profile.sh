@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for the setup.sh step profile. The agent-profile stub of tests/fixtures/bin (a private directory that holds
 # only a link to it, so the real node stays on PATH) answers doctor with a fixture and create with a directory

@@ -2,7 +2,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Runs PSScriptAnalyzer over every *.ps1 in scripts/, tests/ and the repository root (non-recursive, so an
 # absent setup.ps1 is tolerated) and exits 1 on any finding at Warning or above, or when no file was found.

@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for the setup.sh step ghidra: ghidra_version and ghidra_valid on the fixtures
 # (tests/fixtures/fake-ghidra, fake-ghidra-12.1.4), the precedence of ghidra_select and the whole install against

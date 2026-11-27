@@ -3,7 +3,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Generates the "## Tools" table in CONTRIBUTING.md from .claude/recommended-tools.json, so the
 # two lists (the doc a human reads, the JSON a hook reads) cannot drift apart the way they already had:

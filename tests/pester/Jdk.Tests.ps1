@@ -2,7 +2,7 @@
 #
 # This software is licensed under the PolyForm Noncommercial License 1.0.0.
 # You may obtain a copy of the License at:
-# https://polyformproject.org/licenses/noncommercial/1.0.0/
+# https://polyformproject.org/licenses/noncommercial/1.0.0
 
 # Tests for the setup.ps1 step jdk; they mirror tests/sh/jdk.sh. java is replaced by $script:JavaRunner, which
 # answers from the files next to bin\ exactly as the stub of tests/fixtures/fake-jdk does (banner, arch, stream,
