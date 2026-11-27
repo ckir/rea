@@ -30,7 +30,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # --- pins begin ---
-$script:PIN_SCRIPT_VERSION = '0.1.0'
+$script:PIN_SCRIPT_VERSION = '0.1.1'
 $script:PIN_GHIDRA_VERSION = '12.2'
 $script:PIN_GHIDRA_TOPDIR = 'ghidra_12.2_PUBLIC'
 $script:PIN_GHIDRA_URL = 'https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip'

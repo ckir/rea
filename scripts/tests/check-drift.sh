@@ -46,7 +46,7 @@ case_ "a host outside the allow list fails" 1 "s#github.com/NationalSecurityAgen
 case_ "empty ps1 pin list fails" 1 "" "s/pins begin/pins start/" "exactly one"
 case_ "empty sh pin list fails" 1 "s/pins end/pins stop/" "" "exactly one"
 
-case_ "version 0.1.0 passes" 0 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1.0/" "" "pins identical"
+case_ "version 0.1.0 passes" 0 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1.0/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = '0.1.0'/" "pins identical"
 case_ "a two-part version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = '0.1'/" "not X.Y.Z"
 case_ "a v-prefixed version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=v0.1.0/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = 'v0.1.0'/" "not X.Y.Z"
 case_ "a four-part version fails in both files" 1 "s/^PIN_SCRIPT_VERSION=.*/PIN_SCRIPT_VERSION=0.1.0.1/" "s/PIN_SCRIPT_VERSION = '.*'/PIN_SCRIPT_VERSION = '0.1.0.1'/" "not X.Y.Z"

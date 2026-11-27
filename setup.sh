@@ -9,7 +9,7 @@
 # isolated agent-profile Claude profile. POSIX sh, one file. Run with --help for the flags.
 
 # --- pins begin ---
-PIN_SCRIPT_VERSION=0.1.0
+PIN_SCRIPT_VERSION=0.1.1
 PIN_GHIDRA_VERSION=12.2
 PIN_GHIDRA_TOPDIR=ghidra_12.2_PUBLIC
 PIN_GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip
