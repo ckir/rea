@@ -166,14 +166,14 @@ assert_match 'Download: nothing for Ghidra and the JDK' "$(print_disclosures)" "
 setv PLAN_tools_bin update
 setv PLAN_tools_bin_text "clavity-ls 1.0.0 (update)"
 setv PLAN_jdk install
-setv PLAN_jdk_text "jdk-21.0.13+9 into $TOOLS_DIR"
+setv PLAN_jdk_text "jdk-25.0.5.1+2 into $TOOLS_DIR"
 PLAN_jdk_bytes=218103808
 setv PLAN_ghidra reuse
 setv PLAN_ghidra_text "$GHIDRA_DIR_SELECTED"
 plan=$(plan_summary)
 assert_eq 7 "$(printf '%s\n' "$plan" | grep -c '^  [a-z-]*: ')" "plan: one line per step (tools-bin jdk ghidra profile rea-setup rea-doctor launch)"
 assert_match 'tools-bin: +would update clavity-ls' "$plan" "plan: tools-bin update"
-assert_match 'jdk: +would install jdk-21\.0\.13\+9 into .* \(208\.0 MB\)' "$plan" "plan: jdk install with its size"
+assert_match 'jdk: +would install jdk-25\.0\.5\.1\+2 into .* \(208\.0 MB\)' "$plan" "plan: jdk install with its size"
 assert_match 'ghidra: +would reuse ' "$plan" "plan: ghidra reuse"
 setv PLAN_ghidra skip
 assert_match 'ghidra: +skip ' "$(plan_summary)" "plan: skip"
@@ -270,8 +270,8 @@ rc=0
   printf '%s|%s|%s\n' "$(getv PLAN_jdk)" "$PLAN_jdk_bytes" "$(getv JAVA_HOME_SELECTED)" >"$T/jplan1"
   OPT_JAVA_HOME=""
   eval 'adoptium_resolve() {
-    JDK_RELEASE=jdk-21.0.13+9
-    JDK_URL=https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/x.tar.gz
+    JDK_RELEASE=jdk-25.0.5.1+2
+    JDK_URL=https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/x.tar.gz
     JDK_SHA256=0000000000000000000000000000000000000000000000000000000000000000
     JDK_SIDECAR_URL=""
     JDK_BYTES=12345678
@@ -295,7 +295,7 @@ assert_eq 1 "$rc" "ghidra_plan: an invalid --ghidra-dir fails before the prompt"
 # --- print_summary ---
 summary_set profile "created rea: /p/claude"
 summary_set tools_bin "agent-profile 1.0.0: install${NL}clavity-ls 1.0.0: skip (already latest)"
-summary_set jdk "jdk-21.0.13+9 installed: /j"
+summary_set jdk "jdk-25.0.5.1+2 installed: /j"
 summary_set ghidra "12.1.4 installed: /g"
 summary_set rea_setup "registered rea in /p/claude"
 summary_set rea_doctor "ok: ghidra 12.1.4"
@@ -306,7 +306,7 @@ LOG_FILE=$T/unit.log
 assert_match 'profile: +created rea: /p/claude' "$sum" "summary: profile"
 assert_match 'agent-profile 1\.0\.0: install' "$sum" "summary: agent-profile"
 assert_match 'clavity-ls 1\.0\.0: skip' "$sum" "summary: clavity-ls"
-assert_match 'jdk: +jdk-21\.0\.13\+9 installed: /j' "$sum" "summary: jdk"
+assert_match 'jdk: +jdk-25\.0\.5\.1\+2 installed: /j' "$sum" "summary: jdk"
 assert_match 'ghidra: +12\.1\.4 installed: /g' "$sum" "summary: ghidra"
 assert_match 'rea doctor: +ok: ghidra 12\.1\.4' "$sum" "summary: rea doctor"
 assert_match 'log file: +/some/log file\.log' "$sum" "summary: the log path"

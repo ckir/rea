@@ -54,7 +54,7 @@ tested against GNU tar and `unzip -Z` here.
    ```
    Expected: exit 0; steps `preflight`, `prereq`, `tools-bin`, `jdk`, `ghidra`, `profile`, `rea-setup`,
    `rea-doctor` each log an INFO result line (`ok`, or `skip (already valid)` when reused); the WARN line
-   `the official 12.1.4 archive has no macOS native decompiler` at step `ghidra`; the launch step logs
+   `the official 12.2 archive has no macOS native decompiler` at step `ghidra`; the launch step logs
    `no terminal can be opened from here: two-terminal instructions printed`. The log path is shown on the
    summary's `log file:` line (the console does not print it earlier). The stdout then continues with
    `Setup is complete. clavity-ls cannot open a terminal here, so start it from two terminals.`, the Terminal 1 and
@@ -70,7 +70,7 @@ tested against GNU tar and `unzip -Z` here.
 4. **Temurin layout.** `ls -d ~/.local/share/rea-tools/jdk-*/` and
    `ls ~/.local/share/rea-tools/jdk-*/Contents/Home/bin | head`; the summary and `env.sh` must show `JAVA_HOME`
    ending in `/Contents/Home`. Run `. ~/.local/share/rea-tools/env.sh; "$JAVA_HOME/bin/java" -version` and quote
-   the output (expected: 21).
+   the output (expected: 25).
 5. **Two-terminal flow.** Open two new terminals. In both: `. ~/.local/share/rea-tools/env.sh`. Terminal 1:
    `clavity-ls agy "<folder>"`; terminal 2: `clavity-ls start "<folder>" --attach --profile rea` (exactly the
    commands the script printed, do not use the attach hint `clavity-ls agy` prints). Report whether Claude starts

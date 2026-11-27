@@ -10,20 +10,20 @@
 
 # --- pins begin ---
 PIN_SCRIPT_VERSION=0.1.0
-PIN_GHIDRA_VERSION=12.1.4
-PIN_GHIDRA_TOPDIR=ghidra_12.1.4_PUBLIC
-PIN_GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip
-PIN_GHIDRA_SHA256=ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db
-PIN_GHIDRA_ZIP_BYTES=569649598
-PIN_GHIDRA_UNPACKED_MB=882
-PIN_JDK_MAJOR=21
-PIN_JDK_UNPACKED_MB=346
-PIN_JDK_FALLBACK_RELEASE=jdk-21.0.13+9
-PIN_JDK_FALLBACK_LINUX_X64=OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz:d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c
-PIN_JDK_FALLBACK_MAC_X64=OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz:9aa1d1c17ae5467a022679e7e0af5c00797d94ac462ed1a46f4db07a8a34a6dd
-PIN_JDK_FALLBACK_MAC_AARCH64=OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz:bf036b35b071bfb2f54f2c0af8ee8d88afa95ee6eb3dce02c0f94cfc2524d04a
-PIN_JDK_FALLBACK_WINDOWS_X64=OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip:a4dbaa05fca4bd89d84584e58c459bd732efebb1722af80ab13c6516832004f9
-PIN_JDK_FALLBACK_URL_BASE=https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/
+PIN_GHIDRA_VERSION=12.2
+PIN_GHIDRA_TOPDIR=ghidra_12.2_PUBLIC
+PIN_GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip
+PIN_GHIDRA_SHA256=2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67
+PIN_GHIDRA_ZIP_BYTES=569712708
+PIN_GHIDRA_UNPACKED_MB=879
+PIN_JDK_MAJOR=25
+PIN_JDK_UNPACKED_MB=350
+PIN_JDK_FALLBACK_RELEASE=jdk-25.0.5.1+2
+PIN_JDK_FALLBACK_LINUX_X64=OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz:760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0
+PIN_JDK_FALLBACK_MAC_X64=OpenJDK25U-jdk_x64_mac_hotspot_25.0.5.1_2.tar.gz:b4b96fb7b9babd1b4faab1238e1835d0d7dd77b0690d220643c749a9ac00db36
+PIN_JDK_FALLBACK_MAC_AARCH64=OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz:248353ea41be39d5d2c1c67c7ce0ae4d1668966aacd0c5308464bc1be42f677b
+PIN_JDK_FALLBACK_WINDOWS_X64=OpenJDK25U-jdk_x64_windows_hotspot_25.0.5.1_2.zip:849d380ab0a64d9098e7d3a2de28beb73841c3b255c8284f019ccd8748c5eb5b
+PIN_JDK_FALLBACK_URL_BASE=https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/
 PIN_AGENT_PROFILE_REPO=ckir/aiprofiles
 PIN_CLAVITY_REPO=ckir/clavity
 PIN_REA_SPEC=rea-agents@latest
@@ -836,14 +836,14 @@ github_release_assets_scrape() {
   return "$gs_rc"
 }
 
-# jdk_release_valid TAG: 0 when TAG is a Temurin 21 release name such as jdk-21.0.13+9
+# jdk_release_valid TAG: 0 when TAG is a Temurin PIN_JDK_MAJOR release name such as jdk-25.0.5.1+2
 jdk_release_valid() {
-  printf '%s\n' "$1" | grep -Eq '^jdk-21(\.[0-9]+)*\+[0-9]+$'
+  printf '%s\n' "$1" | grep -Eq "^jdk-$PIN_JDK_MAJOR(\\.[0-9]+)*\\+[0-9]+\$"
 }
 
 # adoptium_parse FILE: reads the first asset of an Adoptium response and sets JDK_RELEASE, JDK_URL,
 # JDK_SHA256, JDK_SIDECAR_URL and JDK_BYTES. Returns 1 unless the release name, the download link (host
-# github.com, path /adoptium/temurin21-binaries/), the sidecar link and the checksum all pass.
+# github.com, path /adoptium/temurin<PIN_JDK_MAJOR>-binaries/), the sidecar link and the checksum all pass.
 adoptium_parse() {
   ap_vals=$(json_query "$1" '[d[0].release_name, d[0].binary.package.link, d[0].binary.package.checksum, d[0].binary.package.checksum_link, d[0].binary.package.size]') || return 1
   JDK_RELEASE=$(printf '%s\n' "$ap_vals" | sed -n 1p)
@@ -862,7 +862,7 @@ adoptium_parse() {
   }
   [ "$(url_host "$JDK_URL")" = github.com ] || return 1
   case "${JDK_URL#*://*/}" in
-    adoptium/temurin21-binaries/?*) ;;
+    adoptium/temurin"$PIN_JDK_MAJOR"-binaries/?*) ;;
     *)
       log ERROR net "unexpected JDK download path: $JDK_URL"
       return 1
@@ -877,11 +877,11 @@ adoptium_parse() {
   return 0
 }
 
-# adoptium_resolve OS ARCH: asks the Adoptium API for the latest Temurin 21 JDK and parses it. Returns 2
+# adoptium_resolve OS ARCH: asks the Adoptium API for the latest Temurin PIN_JDK_MAJOR JDK and parses it. Returns 2
 # when the API cannot be reached (the caller uses the fallback pin) and 1 when the answer fails validation.
 adoptium_resolve() {
   ar_tmp=$(mktemp "${TMPDIR:-/tmp}/rea-setup-json.XXXXXX") || return 2
-  if ! http_get "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=$2&image_type=jdk&os=$1&vendor=eclipse" "$ar_tmp"; then
+  if ! http_get "https://api.adoptium.net/v3/assets/latest/$PIN_JDK_MAJOR/hotspot?architecture=$2&image_type=jdk&os=$1&vendor=eclipse" "$ar_tmp"; then
     rm -f "$ar_tmp"
     return 2
   fi
@@ -2136,7 +2136,7 @@ ghidra_version() {
   tr -d '\r' <"$gv_file" | sed -n -E 's/^[[:space:]]*application\.version[[:space:]]*=[[:space:]]*([^[:space:]]*)[[:space:]]*$/\1/p' | head -n 1
 }
 
-# ghidra_valid DIR: 0 when DIR holds a Ghidra of the 12.1 line (12.1 or 12.1.N); otherwise 1 with the reason
+# ghidra_valid DIR: 0 when DIR holds a Ghidra of the 12.2 line (12.2 or 12.2.N); otherwise 1 with the reason
 # on stdout
 ghidra_valid() {
   gl_ver=$(ghidra_version "$1")
@@ -2144,10 +2144,10 @@ ghidra_valid() {
     echo "no application.version in Ghidra/application.properties"
     return 1
   fi
-  if printf '%s\n' "$gl_ver" | grep -Eq '^12\.1(\.[0-9]+)?$'; then
+  if printf '%s\n' "$gl_ver" | grep -Eq '^12\.2(\.[0-9]+)?$'; then
     return 0
   fi
-  echo "version $gl_ver is not in the 12.1 line"
+  echo "version $gl_ver is not in the 12.2 line"
   return 1
 }
 
@@ -2233,9 +2233,9 @@ ghidra_choose() {
       return 0
     fi
     case "$(ghidra_version "$GHIDRA_INSTALL_DIR")" in
-      12.2 | 12.2.*)
-        log DEBUG ghidra "GHIDRA_INSTALL_DIR $GHIDRA_INSTALL_DIR is a 12.2 install"
-        log WARN ghidra "12.2 is not accepted by rea 6.8.0; installing 12.1.4 alongside"
+      12.1 | 12.1.*)
+        log DEBUG ghidra "GHIDRA_INSTALL_DIR $GHIDRA_INSTALL_DIR is a 12.1 install"
+        log WARN ghidra "12.1 is not accepted by rea 6.10.1; installing 12.2 alongside"
         ;;
       *) log WARN ghidra "GHIDRA_INSTALL_DIR $GHIDRA_INSTALL_DIR is not a usable Ghidra ($gs_why); ignoring it" ;;
     esac
@@ -2274,7 +2274,7 @@ step_ghidra() {
   esac
   log DEBUG ghidra "selected: $GHIDRA_DIR_SELECTED"
   if [ "$OS" = mac ] && [ "$GHIDRA_OFFICIAL" -eq 1 ]; then
-    log WARN ghidra 'the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
+    log WARN ghidra 'the official 12.2 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
     summary_set ghidra "warn: $(summary_get ghidra); no macOS native decompiler in the official archive"
   fi
   if [ "${GHIDRA_REUSED:-0}" -eq 1 ]; then
@@ -2442,7 +2442,7 @@ step_profile() {
 
 # --- steps rea-setup and rea-doctor ---
 
-HINT_REA_GHIDRA_LINE='rea 6.8.0 accepts Ghidra 12.1.x; if rea now requires another line, update the pins block (PIN_GHIDRA_*)'
+HINT_REA_GHIDRA_LINE='rea 6.10.1 accepts Ghidra 12.2.x; if rea now requires another line, update the pins block (PIN_GHIDRA_*)'
 NOTE_MAC_DECOMPILER='build it as rea docs/installation.md describes (sections "Missing macOS native decompiler" and "macOS arm64 native decompiler")'
 
 # rea_env_ready STEP: the three directories rea needs are known and the profile directory is not the shared

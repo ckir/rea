@@ -48,20 +48,20 @@ unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
 
 # --- the stand-in release assets ---
 SRV=$TMP/srv
-mkdir -p "$SRV/src ap" "$SRV/src cl" "$SRV/src jdk/jdk-21.0.13+9" || exit 1
+mkdir -p "$SRV/src ap" "$SRV/src cl" "$SRV/src jdk/jdk-25.0.5.1+2" || exit 1
 cp "$FIX/bin/agent-profile" "$SRV/src ap/agent-profile"
 cp "$FIX/bin/clavity-ls" "$SRV/src cl/clavity-ls"
-cp -R "$FIX/fake-jdk/bin" "$SRV/src jdk/jdk-21.0.13+9/bin"
+cp -R "$FIX/fake-jdk/bin" "$SRV/src jdk/jdk-25.0.5.1+2/bin"
 tar -czf "$SRV/ap.tgz" -C "$SRV/src ap" agent-profile
 tar -czf "$SRV/cl.tgz" -C "$SRV/src cl" clavity-ls
-tar -czf "$SRV/jdk.tgz" -C "$SRV/src jdk" jdk-21.0.13+9
+tar -czf "$SRV/jdk.tgz" -C "$SRV/src jdk" jdk-25.0.5.1+2
 cat >"$SRV/mkzip.py" <<'PYEOF'
 import sys
 import zipfile
 
-top = "ghidra_12.1.4_PUBLIC"
+top = "ghidra_12.2_PUBLIC"
 files = [
-    ("Ghidra/application.properties", "application.name=Ghidra\napplication.version=12.1.4\n", 0o644),
+    ("Ghidra/application.properties", "application.name=Ghidra\napplication.version=12.2\n", 0o644),
     ("ghidraRun", "#!/bin/sh\n", 0o755),
     ("support/analyzeHeadless", "#!/bin/sh\n", 0o755),
     ("Ghidra/Features/Decompiler/os/linux_x86_64/decompile", "ELF\n", 0o755),
@@ -75,7 +75,7 @@ PYEOF
 python3 -I "$SRV/mkzip.py" "$SRV/ghidra.zip" || exit 1
 AP_ASSET=agent-profile-x86_64-unknown-linux-gnu.tar.gz
 CL_ASSET=clavity-ls-linux-x64-1.0.0.tar.gz
-JDK_ASSET=OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz
+JDK_ASSET=OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz
 printf '%s  %s\n' "$(sha256_file "$SRV/ap.tgz")" "$AP_ASSET" >"$SRV/ap.sha256"
 printf '%s *%s\n' "$(sha256_file "$SRV/cl.tgz")" "$CL_ASSET" >"$SRV/cl.sha256"
 JDK_SHA=$(sha256_file "$SRV/jdk.tgz")
@@ -100,7 +100,7 @@ scn_ent() {
   printf '%s"%s": [%s]' "$SCN_SEP" "$1" "$se_list" >>"$SCN"
   SCN_SEP=,
 }
-JDK_REL=/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9
+JDK_REL=/github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2
 scn_ent /github.com/ckir/aiprofiles/releases/latest '{"status":302,"location":"{base}/r/aiprofiles/releases/tag/v1.0.0"}'
 scn_ent /github.com/ckir/clavity/releases/latest '{"status":302,"location":"{base}/r/clavity/releases/tag/clavity-v31"}'
 scn_ent "/github.com/ckir/aiprofiles/releases/latest/download/$AP_ASSET" '{"status":302,"location":"{base}/dl/ap.tgz"}'
@@ -108,10 +108,10 @@ scn_ent "/github.com/ckir/aiprofiles/releases/latest/download/$AP_ASSET.sha256" 
 scn_ent "/github.com/ckir/clavity/releases/download/clavity-v31/$CL_ASSET" '{"status":302,"location":"{base}/dl/cl.tgz"}'
 scn_ent "/github.com/ckir/clavity/releases/download/clavity-v31/$CL_ASSET.sha256" '{"status":302,"location":"{base}/dl/cl.sha256"}'
 scn_ent /api.github.com/repos/ckir/clavity/releases/latest '{"status":200,"body_file":"clavity-api.json"}'
-scn_ent "/api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse" '{"status":200,"body_file":"adoptium.json"}'
+scn_ent "/api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse" '{"status":200,"body_file":"adoptium.json"}'
 scn_ent "$JDK_REL/$JDK_ASSET" '{"status":302,"location":"{base}/dl/jdk.tgz"}'
 scn_ent "$JDK_REL/$JDK_ASSET.sha256.txt" '{"status":302,"location":"{base}/dl/jdk.sha256"}'
-scn_ent /github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip '{"status":302,"location":"{base}/dl/ghidra.zip"}'
+scn_ent /github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip '{"status":302,"location":"{base}/dl/ghidra.zip"}'
 for e2e_f in ap.tgz:ap.tgz ap.sha256:ap.sha256 cl.tgz:cl.tgz cl.sha256:cl.sha256 jdk.tgz:jdk.tgz jdk.sha256:jdk.sha256 ghidra.zip:ghidra.zip; do
   scn_ent "/dl/${e2e_f%%:*}" "{\"status\":200,\"body_file\":\"${e2e_f#*:}\"}"
 done
@@ -308,9 +308,9 @@ scenario_end
 scenario_start install
 run_setup install "" --yes --no-launch
 assert_eq 0 "$RC" "install: exit 0"
-assert_file "$TOOLS/jdk-21.0.13+9/.install-complete" "install: the JDK is installed and marked"
-assert_file "$TOOLS/ghidra_12.1.4_PUBLIC/.install-complete" "install: Ghidra is installed and marked"
-assert_file "$TOOLS/ghidra_12.1.4_PUBLIC/Ghidra/application.properties" "install: Ghidra has its files"
+assert_file "$TOOLS/jdk-25.0.5.1+2/.install-complete" "install: the JDK is installed and marked"
+assert_file "$TOOLS/ghidra_12.2_PUBLIC/.install-complete" "install: Ghidra is installed and marked"
+assert_file "$TOOLS/ghidra_12.2_PUBLIC/Ghidra/application.properties" "install: Ghidra has its files"
 assert_file "$BIN/agent-profile" "install: agent-profile is in the bin dir"
 assert_file "$BIN/clavity-ls" "install: clavity-ls is in the bin dir"
 assert_file "$TOOLS/env.sh" "install: env.sh exists"
@@ -322,19 +322,19 @@ assert_file "$APH/profiles/rea/claude/.claude.json" "install: rea is registered 
 assert_match 'launch skipped \(--no-launch\); run: clavity-ls start ".*my folder" --profile rea' "$(cat "$TMP/install.out")" "install: the launch command on stdout"
 assert_match 'Setup summary' "$(cat "$TMP/install.out")" "install: the summary is on stdout"
 assert_match "env file: +$TOOLS/env.sh" "$(cat "$TMP/install.out")" "install: the summary names the env file"
-assert_match "ghidra: +12\\.1\\.4 installed: $TOOLS/ghidra_12\\.1\\.4_PUBLIC" "$(cat "$TMP/install.out")" "install: the summary names the Ghidra version and path"
+assert_match "ghidra: +12\\.2 installed: $TOOLS/ghidra_12\\.2_PUBLIC" "$(cat "$TMP/install.out")" "install: the summary names the Ghidra version and path"
 cat >"$TMP/source.sh" <<'SRC'
 . "$1"
 printf '%s\n%s\n%s' "$GHIDRA_INSTALL_DIR" "$JAVA_HOME" "${PATH%%:*}"
 SRC
 sourced=$(env -i PATH=/usr/bin:/bin sh "$TMP/source.sh" "$TOOLS/env.sh")
-assert_eq "$TOOLS/ghidra_12.1.4_PUBLIC
-$TOOLS/jdk-21.0.13+9
+assert_eq "$TOOLS/ghidra_12.2_PUBLIC
+$TOOLS/jdk-25.0.5.1+2
 $BIN" "$sourced" "install: env.sh sets the three values (spaces)"
 assert_eq 4 "$(cat "$TMP/npx.log.n")" "install: rea was called four times (setup dry, setup, two doctors)"
 assert_match 'setup --client claude_code --dry-run' "$(sed -n 1p "$TMP/npx.log")" "install: rea setup --dry-run first"
 assert_match 'setup --client claude_code --yes' "$(sed -n 2p "$TMP/npx.log")" "install: then the real setup"
-assert_match "GHIDRA_INSTALL_DIR=$TOOLS/ghidra_12.1.4_PUBLIC" "$(cat "$TMP/npx.log.env")" "install: rea got the Ghidra directory"
+assert_match "GHIDRA_INSTALL_DIR=$TOOLS/ghidra_12.2_PUBLIC" "$(cat "$TMP/npx.log.env")" "install: rea got the Ghidra directory"
 inst_log=$(cat "$(newest_log)")
 assert_eq 1 "$(printf '%s\n' "$inst_log" | grep -c 'disk_free_mb .*before the download of agent-profile')" "install: free space logged before the agent-profile download"
 assert_eq 8 "$(printf '%s\n' "$inst_log" | grep -c 'DEBUG .*disk_free_mb')" "install: free space logged before and after each of the four installs"
@@ -384,8 +384,8 @@ assert_eq "arg: start
 arg: $FOLDER
 arg: --profile
 arg: rea" "$(grep '^arg: ' "$TMP/cl.rec")" "launch: the stub saw start <folder> --profile rea"
-assert_eq "env GHIDRA_INSTALL_DIR=$TOOLS/ghidra_12.1.4_PUBLIC" "$(grep '^env GHIDRA_INSTALL_DIR=' "$TMP/cl.rec")" "launch: the child has GHIDRA_INSTALL_DIR"
-assert_eq "env JAVA_HOME=$TOOLS/jdk-21.0.13+9" "$(grep '^env JAVA_HOME=' "$TMP/cl.rec")" "launch: the child has JAVA_HOME"
+assert_eq "env GHIDRA_INSTALL_DIR=$TOOLS/ghidra_12.2_PUBLIC" "$(grep '^env GHIDRA_INSTALL_DIR=' "$TMP/cl.rec")" "launch: the child has GHIDRA_INSTALL_DIR"
+assert_eq "env JAVA_HOME=$TOOLS/jdk-25.0.5.1+2" "$(grep '^env JAVA_HOME=' "$TMP/cl.rec")" "launch: the child has JAVA_HOME"
 assert_eq "path-head: $BIN" "$(grep '^path-head: ' "$TMP/cl.rec")" "launch: the bin dir heads the child's PATH"
 assert_eq 0 "$(grep -c CLAUDE_CONFIG_DIR "$TMP/cl.rec")" "launch: no CLAUDE_CONFIG_DIR (--profile sets it)"
 assert_match 'launch exited 0' "$(cat "$(newest_log)")" "launch: the exit is logged"

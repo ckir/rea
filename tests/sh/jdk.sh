@@ -51,9 +51,9 @@ LOG_FILE=$T/unit.log
 CONSOLE_LEVEL=ERROR
 export ALLOWED_SCHEMES ALLOWED_HOSTS RETRY_WAITS SLEEP OS ARCH OPT_DRY_RUN OPT_CHECK_UPSTREAM OPT_JAVA_HOME TOOLS_DIR LOG_FILE CONSOLE_LEVEL
 FAKE=$ROOT/tests/fixtures/fake-jdk
-REL=jdk-21.0.13+9
-ARCHIVE=OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz
-API_PATH=/v3/assets/latest/21/hotspot
+REL=jdk-25.0.5.1+2
+ARCHIVE=OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz
+API_PATH=/v3/assets/latest/25/hotspot
 
 # curl_local ARG...: curl with api.adoptium.net and github.com URLs sent to the fake server (BASE) instead
 curl_local() {
@@ -83,60 +83,60 @@ mk_fake() {
   fi
 }
 
-BAN21='openjdk version "21.0.13" 2026-10-21 LTS\nOpenJDK Runtime Environment (build 21.0.13+9-LTS)\nOpenJDK 64-Bit Server VM (build 21.0.13+9-LTS, mixed mode)\n'
+BAN25='openjdk version "25.0.5.1" 2026-10-21 LTS\nOpenJDK Runtime Environment (build 25.0.5.1+2-LTS)\nOpenJDK 64-Bit Server VM (build 25.0.5.1+2-LTS, mixed mode)\n'
 BAN17='openjdk version "17.0.2" 2022-01-18\nOpenJDK 64-Bit Server VM (build 17.0.2+8, mixed mode)\n'
 
 # --- jdk_valid ---
-mk_fake "$T/j 21" "$BAN21"
-assert_status 0 "jdk_valid: 21.0.13 64-bit amd64 on x64" jdk_valid "$T/j 21"
-assert_eq "" "$(jdk_valid "$T/j 21")" "jdk_valid: nothing is printed on success"
+mk_fake "$T/j 25" "$BAN25"
+assert_status 0 "jdk_valid: 25.0.5.1 64-bit amd64 on x64" jdk_valid "$T/j 25"
+assert_eq "" "$(jdk_valid "$T/j 25")" "jdk_valid: nothing is printed on success"
 
 mk_fake "$T/j 17" "$BAN17"
 assert_status 1 "jdk_valid: 17 is refused" jdk_valid "$T/j 17"
-assert_eq "major 17 < 21" "$(jdk_valid "$T/j 17")" "jdk_valid: the reason names the major"
+assert_eq "major 17 < 25" "$(jdk_valid "$T/j 17")" "jdk_valid: the reason names the major"
 
-mk_fake "$T/j 32" 'openjdk version "21"\nOpenJDK Client VM (build 21+35, mixed mode)\nOpenJDK 32-Bit Server VM\n'
+mk_fake "$T/j 32" 'openjdk version "25"\nOpenJDK Client VM (build 25+35, mixed mode)\nOpenJDK 32-Bit Server VM\n'
 assert_status 1 "jdk_valid: a 32-bit banner is refused" jdk_valid "$T/j 32"
 assert_match '64-bit' "$(jdk_valid "$T/j 32")" "jdk_valid: 32-bit reason"
 
-mk_fake "$T/j jre" "$BAN21"
+mk_fake "$T/j jre" "$BAN25"
 rm -f "$T/j jre/bin/javac"
 assert_status 1 "jdk_valid: a JRE (no javac) is refused" jdk_valid "$T/j jre"
 assert_match 'javac.*JRE' "$(jdk_valid "$T/j jre")" "jdk_valid: JRE reason"
 
-mk_fake "$T/j nojava" "$BAN21"
+mk_fake "$T/j nojava" "$BAN25"
 rm -f "$T/j nojava/bin/java"
 assert_status 1 "jdk_valid: no java is refused" jdk_valid "$T/j nojava"
-mk_fake "$T/j noexec" "$BAN21"
+mk_fake "$T/j noexec" "$BAN25"
 chmod -x "$T/j noexec/bin/java"
 assert_status 1 "jdk_valid: a non-executable java is refused" jdk_valid "$T/j noexec"
 assert_status 1 "jdk_valid: a missing directory is refused" jdk_valid "$T/does not exist"
 
 mk_fake "$T/j 8" 'java version "1.8.0_392"\nJava(TM) SE Runtime Environment (build 1.8.0_392-b08)\nJava HotSpot(TM) 64-Bit Server VM (build 25.392-b08, mixed mode)\n'
 assert_status 1 "jdk_valid: 1.8.0_392 is refused" jdk_valid "$T/j 8"
-assert_eq "major 8 < 21" "$(jdk_valid "$T/j 8")" "jdk_valid: 1.8 reads as major 8"
+assert_eq "major 8 < 25" "$(jdk_valid "$T/j 8")" "jdk_valid: 1.8 reads as major 8"
 
-mk_fake "$T/j bare" 'openjdk version "21"\nOpenJDK 64-Bit Server VM (build 21+35, mixed mode)\n'
-assert_status 0 "jdk_valid: openjdk version \"21\" without dots" jdk_valid "$T/j bare"
-mk_fake "$T/j 22" 'openjdk version "22.0.1" 2024-04-16\nOpenJDK 64-Bit Server VM (build 22.0.1+8, mixed mode)\n'
-assert_status 0 "jdk_valid: a later major is accepted" jdk_valid "$T/j 22"
-mk_fake "$T/j crlf" 'openjdk version "21.0.13" 2026-10-21 LTS\r\nOpenJDK 64-Bit Server VM (build 21.0.13+9-LTS, mixed mode)\r\n' 'amd64'
+mk_fake "$T/j bare" 'openjdk version "25"\nOpenJDK 64-Bit Server VM (build 25+35, mixed mode)\n'
+assert_status 0 "jdk_valid: openjdk version \"25\" without dots" jdk_valid "$T/j bare"
+mk_fake "$T/j 26" 'openjdk version "26.0.1" 2027-04-16\nOpenJDK 64-Bit Server VM (build 26.0.1+8, mixed mode)\n'
+assert_status 0 "jdk_valid: a later major is accepted" jdk_valid "$T/j 26"
+mk_fake "$T/j crlf" 'openjdk version "25.0.5.1" 2026-10-21 LTS\r\nOpenJDK 64-Bit Server VM (build 25.0.5.1+2-LTS, mixed mode)\r\n' 'amd64'
 printf 'amd64\r\n' >"$T/j crlf/arch"
 assert_status 0 "jdk_valid: CRLF output" jdk_valid "$T/j crlf"
-mk_fake "$T/j out" "$BAN21"
+mk_fake "$T/j out" "$BAN25"
 : >"$T/j out/stream"
 assert_status 0 "jdk_valid: the banner on stdout" jdk_valid "$T/j out"
 mk_fake "$T/j nover" 'something odd\n'
 assert_status 1 "jdk_valid: no version in the output" jdk_valid "$T/j nover"
 assert_match 'cannot read the version' "$(jdk_valid "$T/j nover")" "jdk_valid: unreadable version reason"
-mk_fake "$T/j fail" "$BAN21"
+mk_fake "$T/j fail" "$BAN25"
 : >"$T/j fail/fail"
 assert_status 1 "jdk_valid: a failing java is refused" jdk_valid "$T/j fail"
 
 # architecture mapping
-mk_fake "$T/j x86" "$BAN21" x86_64
+mk_fake "$T/j x86" "$BAN25" x86_64
 assert_status 0 "jdk_valid: x86_64 is x64" jdk_valid "$T/j x86"
-mk_fake "$T/j arm" "$BAN21" aarch64
+mk_fake "$T/j arm" "$BAN25" aarch64
 assert_status 1 "jdk_valid: aarch64 on an x64 host is refused" jdk_valid "$T/j arm"
 assert_match 'architecture aarch64 does not match this host \(x64\)' "$(jdk_valid "$T/j arm")" "jdk_valid: architecture reason"
 assert_eq 0 "$(
@@ -144,7 +144,7 @@ assert_eq 0 "$(
   jdk_valid "$T/j arm" >/dev/null
   echo $?
 )" "jdk_valid: aarch64 on an aarch64 host"
-mk_fake "$T/j arm64" "$BAN21" arm64
+mk_fake "$T/j arm64" "$BAN25" arm64
 assert_eq 0 "$(
   ARCH=aarch64
   jdk_valid "$T/j arm64" >/dev/null
@@ -152,14 +152,14 @@ assert_eq 0 "$(
 )" "jdk_valid: arm64 is aarch64"
 assert_eq 1 "$(
   ARCH=aarch64
-  jdk_valid "$T/j 21" >/dev/null
+  jdk_valid "$T/j 25" >/dev/null
   echo $?
 )" "jdk_valid: amd64 on an aarch64 host is refused"
-mk_fake "$T/j 386" "$BAN21" x86
+mk_fake "$T/j 386" "$BAN25" x86
 assert_status 1 "jdk_valid: an x86 os.arch is refused" jdk_valid "$T/j 386"
 
 # Windows names
-mk_fake "$T/j win" "$BAN21"
+mk_fake "$T/j win" "$BAN25"
 mv "$T/j win/bin/java" "$T/j win/bin/java.exe"
 mv "$T/j win/bin/javac" "$T/j win/bin/javac.exe"
 assert_eq 0 "$(
@@ -196,7 +196,7 @@ EOF
   assert_eq "$PIN_JDK_FALLBACK_RELEASE $PIN_JDK_FALLBACK_URL_BASE$fb_name $fb_sha $PIN_JDK_FALLBACK_URL_BASE$fb_name.sha256.txt" "$got" "fallback: $fb_os $fb_arch"
 done
 assert_status 1 "fallback: linux aarch64 has none" jdk_fallback linux aarch64
-assert_match '^jdk-21\.0\.13\+9$' "$PIN_JDK_FALLBACK_RELEASE" "fallback release name"
+assert_match '^jdk-25\.0\.5\.1\+2$' "$PIN_JDK_FALLBACK_RELEASE" "fallback release name"
 
 # --- fake release server ---
 scn_start() {
@@ -221,15 +221,15 @@ scn_end() {
   printf '}\n' >>"$SCN"
 }
 
-# mk_archive FILE LAYOUT: a tar.gz of a fake JDK. LAYOUT is normal (jdk-21.0.13+9/bin), mac
-# (jdk-21.0.13+9/Contents/Home/bin), two (a second top directory), badname (jdk-21.0.99+1) or j17 (a JDK 17)
+# mk_archive FILE LAYOUT: a tar.gz of a fake JDK. LAYOUT is normal (jdk-25.0.5.1+2/bin), mac
+# (jdk-25.0.5.1+2/Contents/Home/bin), two (a second top directory), badname (jdk-25.0.99+1) or j17 (a JDK 17)
 mk_archive() {
   ma_src="$T/archive src"
   rm -rf "$ma_src"
   mkdir -p "$ma_src"
   ma_top=$REL
   if [ "$2" = badname ]; then
-    ma_top=jdk-21.0.99+1
+    ma_top=jdk-25.0.99+1
   fi
   ma_home="$ma_src/$ma_top"
   if [ "$2" = mac ]; then
@@ -274,7 +274,7 @@ mk_srv() {
   if [ "$4" != down ]; then
     scn_ent "/api.adoptium.net$API_PATH?architecture=x64&image_type=jdk&os=$ms_os&vendor=eclipse" '{"status":200,"body_file":"api.json"}'
   fi
-  ms_rel=/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9
+  ms_rel=/github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2
   scn_ent "$ms_rel/$ARCHIVE" '{"status":302,"location":"{base}/dl/jdk.tgz"}'
   scn_ent /dl/jdk.tgz '{"status":200,"body_file":"jdk.tgz"}'
   if [ "$5" != none ]; then
@@ -362,8 +362,8 @@ select_with() {
 }
 
 fresh
-mk_fake "$T/j 21" "$BAN21"
-mk_fake "$T/j jre" "$BAN21"
+mk_fake "$T/j 25" "$BAN25"
+mk_fake "$T/j jre" "$BAN25"
 rm -f "$T/j jre/bin/javac"
 
 rc=0
@@ -383,16 +383,16 @@ rc=0
   jdk_select
 ) >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "select: --java-home at a JDK 17 dies with 1"
-assert_match 'major 17 < 21' "$(cat "$T/sel1b.log")" "select: JDK 17 reason is logged"
+assert_match 'major 17 < 25' "$(cat "$T/sel1b.log")" "select: JDK 17 reason is logged"
 
-assert_eq "$T/j 21" "$(
-  OPT_JAVA_HOME="$T/j 21"
+assert_eq "$T/j 25" "$(
+  OPT_JAVA_HOME="$T/j 25"
   LOG_FILE=$T/sel2.log
   jdk_select
   echo "$JAVA_HOME_SELECTED"
 )" "select: a valid --java-home is used"
 assert_eq "$T/h mac/Contents/Home" "$(
-  mk_fake "$T/h mac/Contents/Home" "$BAN21"
+  mk_fake "$T/h mac/Contents/Home" "$BAN25"
   OS=mac
   OPT_JAVA_HOME="$T/h mac"
   LOG_FILE=$T/sel2m.log
@@ -401,16 +401,16 @@ assert_eq "$T/h mac/Contents/Home" "$(
 )" "select: macOS --java-home resolves to Contents/Home"
 
 # JAVA_HOME at the JRE and a valid tools-dir install: WARN, the tools-dir one wins
-mk_fake "$TOOLS_DIR/jdk-21.0.13+9" "$BAN21"
-: >"$TOOLS_DIR/jdk-21.0.13+9/.install-complete"
+mk_fake "$TOOLS_DIR/jdk-25.0.5.1+2" "$BAN25"
+: >"$TOOLS_DIR/jdk-25.0.5.1+2/.install-complete"
 out=$(select_with "$T/j jre" "$T/sel3.log")
-assert_eq "$TOOLS_DIR/jdk-21.0.13+9" "$out" "select: an invalid JAVA_HOME falls through to the tools dir"
+assert_eq "$TOOLS_DIR/jdk-25.0.5.1+2" "$out" "select: an invalid JAVA_HOME falls through to the tools dir"
 assert_match 'WARN.*JAVA_HOME .*j jre is not a usable JDK .*JRE.*ignoring it' "$(cat "$T/sel3.log")" "select: the invalid JAVA_HOME is a WARN with the reason"
-assert_match 'reusing jdk-21\.0\.13\+9' "$(cat "$T/sel3.log")" "select: the tools-dir reuse is logged"
+assert_match 'reusing jdk-25\.0\.5\.1\+2' "$(cat "$T/sel3.log")" "select: the tools-dir reuse is logged"
 
 # JAVA_HOME valid: used, the tools dir ignored
-out=$(select_with "$T/j 21" "$T/sel4.log")
-assert_eq "$T/j 21" "$out" "select: a valid JAVA_HOME wins over the tools dir"
+out=$(select_with "$T/j 25" "$T/sel4.log")
+assert_eq "$T/j 25" "$out" "select: a valid JAVA_HOME wins over the tools dir"
 if grep -q WARN "$T/sel4.log"; then
   t_fail "select: a valid JAVA_HOME logs no WARN"
 else
@@ -418,19 +418,19 @@ else
 fi
 
 # the newest of several valid installs; one without the sentinel and one that is a JDK 17 are skipped
-mk_fake "$TOOLS_DIR/jdk-21.0.20+1" "$BAN21"
-: >"$TOOLS_DIR/jdk-21.0.20+1/.install-complete"
-mk_fake "$TOOLS_DIR/jdk-21.0.99+1" "$BAN21"
-mk_fake "$TOOLS_DIR/jdk-21.1.0+1" "$BAN17"
-: >"$TOOLS_DIR/jdk-21.1.0+1/.install-complete"
+mk_fake "$TOOLS_DIR/jdk-25.0.20+1" "$BAN25"
+: >"$TOOLS_DIR/jdk-25.0.20+1/.install-complete"
+mk_fake "$TOOLS_DIR/jdk-25.0.99+1" "$BAN25"
+mk_fake "$TOOLS_DIR/jdk-25.1.0+1" "$BAN17"
+: >"$TOOLS_DIR/jdk-25.1.0+1/.install-complete"
 out=$(
   LOG_FILE=$T/sel5.log
   jdk_select
   echo "$JAVA_HOME_SELECTED"
 )
-assert_eq "$TOOLS_DIR/jdk-21.0.20+1" "$out" "select: newest valid install, skipping no-sentinel and wrong-major ones"
-assert_match 'WARN.*ignoring the install jdk-21\.1\.0\+1: major 17 < 21' "$(cat "$T/sel5.log")" "select: the wrong-major install is a WARN with the reason"
-assert_match 'DEBUG.*ignoring jdk-21\.0\.99\+1: no \.install-complete' "$(cat "$T/sel5.log")" "select: the no-sentinel install is logged"
+assert_eq "$TOOLS_DIR/jdk-25.0.20+1" "$out" "select: newest valid install, skipping no-sentinel and wrong-major ones"
+assert_match 'WARN.*ignoring the install jdk-25\.1\.0\+1: major 17 < 25' "$(cat "$T/sel5.log")" "select: the wrong-major install is a WARN with the reason"
+assert_match 'DEBUG.*ignoring jdk-25\.0\.99\+1: no \.install-complete' "$(cat "$T/sel5.log")" "select: the no-sentinel install is logged"
 
 # --- install: success, layouts ---
 mk_srv ok linux normal good ok
@@ -438,20 +438,20 @@ fresh
 rc=0
 run_step i-ok || rc=$?
 assert_eq 0 "$rc" "install: success"
-assert_eq "$REL" "$(listing "$TOOLS_DIR")" "install: only jdk-21.0.13+9 is left in the tools dir (no staging, archive or lock)"
+assert_eq "$REL" "$(listing "$TOOLS_DIR")" "install: only jdk-25.0.5.1+2 is left in the tools dir (no staging, archive or lock)"
 assert_file "$TOOLS_DIR/$REL/.install-complete" "install: .install-complete exists"
 assert_file "$TOOLS_DIR/$REL/bin/java" "install: bin/java is in place"
 assert_eq "home=$TOOLS_DIR/$REL" "$(sed -n 1p "$T/i-ok.state")" "install: JAVA_HOME_SELECTED is the install"
-assert_match '^summary=jdk-21\.0\.13\+9 installed' "$(cat "$T/i-ok.state")" "install: SUMMARY_jdk is set"
-assert_match 'jdk.* resolved jdk-21\.0\.13\+9: https://github\.com/adoptium/temurin21-binaries/.*\.tar\.gz \([0-9]+ bytes\)' "$(logtext i-ok)" "install: the resolved release, URL and size are logged"
-assert_match 'installed jdk-21\.0\.13\+9' "$(logtext i-ok)" "install: the install is logged"
+assert_match '^summary=jdk-25\.0\.5\.1\+2 installed' "$(cat "$T/i-ok.state")" "install: SUMMARY_jdk is set"
+assert_match 'jdk.* resolved jdk-25\.0\.5\.1\+2: https://github\.com/adoptium/temurin25-binaries/.*\.tar\.gz \([0-9]+ bytes\)' "$(logtext i-ok)" "install: the resolved release, URL and size are logged"
+assert_match 'installed jdk-25\.0\.5\.1\+2' "$(logtext i-ok)" "install: the install is logged"
 assert_eq 1 "$(count_of "$DL_PATH")" "install: the archive was fetched once"
 
 # a second run reuses it without touching the network
 rc=0
 run_step i-again || rc=$?
 assert_eq 0 "$rc" "reuse: second run succeeds"
-assert_match 'reusing jdk-21\.0\.13\+9' "$(logtext i-again)" "reuse: the install is reused"
+assert_match 'reusing jdk-25\.0\.5\.1\+2' "$(logtext i-again)" "reuse: the install is reused"
 assert_eq 1 "$(count_of "$DL_PATH")" "reuse: no second download"
 
 # macOS layout: Contents/Home inside the top directory
@@ -472,7 +472,7 @@ fresh
 rc=0
 run_step i-sbad || rc=$?
 assert_eq 5 "$rc" "sidecar mismatch: exit 5"
-assert_match 'checksum mismatch for jdk-21\.0\.13\+9' "$(logtext i-sbad)" "sidecar mismatch: logged"
+assert_match 'checksum mismatch for jdk-25\.0\.5\.1\+2' "$(logtext i-sbad)" "sidecar mismatch: logged"
 assert_eq "" "$(listing "$TOOLS_DIR")" "sidecar mismatch: nothing installed or left"
 assert_eq 0 "$(count_of "$DL_PATH")" "sidecar mismatch: the archive was never downloaded"
 
@@ -496,7 +496,7 @@ fresh
 rc=0
 run_step i-noside || rc=$?
 assert_eq 0 "$rc" "sidecar unreachable: success"
-assert_match 'WARN.*checksum sidecar of jdk-21\.0\.13\+9 is unreachable' "$(logtext i-noside)" "sidecar unreachable: WARN"
+assert_match 'WARN.*checksum sidecar of jdk-25\.0\.5\.1\+2 is unreachable' "$(logtext i-noside)" "sidecar unreachable: WARN"
 assert_eq "$REL" "$(listing "$TOOLS_DIR")" "sidecar unreachable: installed"
 
 mk_srv two linux two good ok
@@ -519,7 +519,7 @@ fresh
 rc=0
 run_step i-j17 || rc=$?
 assert_eq 5 "$rc" "downloaded JDK 17: exit 5"
-assert_match 'not a usable JDK: major 17 < 21' "$(logtext i-j17)" "downloaded JDK 17: the reason is logged"
+assert_match 'not a usable JDK: major 17 < 25' "$(logtext i-j17)" "downloaded JDK 17: the reason is logged"
 assert_eq "" "$(listing "$TOOLS_DIR")" "downloaded JDK 17: nothing installed"
 
 # --- fallback pin when Adoptium is unreachable ---
@@ -530,9 +530,9 @@ RS_PRE="PIN_JDK_FALLBACK_LINUX_X64=$ARCHIVE:$ARCHIVE_SHA"
 run_step i-down || rc=$?
 RS_PRE=""
 assert_eq 0 "$rc" "fallback: success with the embedded pin"
-assert_match 'WARN.*Adoptium API unreachable; installing the embedded fallback jdk-21\.0\.13\+9, possibly outdated' "$(logtext i-down)" "fallback: the WARN text"
+assert_match 'WARN.*Adoptium API unreachable; installing the embedded fallback jdk-25\.0\.5\.1\+2, possibly outdated' "$(logtext i-down)" "fallback: the WARN text"
 assert_eq "$REL" "$(listing "$TOOLS_DIR")" "fallback: installed"
-assert_match 'resolved jdk-21\.0\.13\+9: https://github\.com/adoptium/temurin21-binaries/releases/download/jdk-21\.0\.13%2B9/OpenJDK21U-jdk_x64_linux' "$(logtext i-down)" "fallback: the pin URL is used"
+assert_match 'resolved jdk-25\.0\.5\.1\+2: https://github\.com/adoptium/temurin25-binaries/releases/download/jdk-25\.0\.5\.1%2B2/OpenJDK25U-jdk_x64_linux' "$(logtext i-down)" "fallback: the pin URL is used"
 
 # the fallback with its real pinned checksum does not match this fake archive: nothing is installed
 mk_srv down2 linux normal down ok
@@ -550,7 +550,7 @@ OPT_DRY_RUN=1
 run_step i-dry || rc=$?
 OPT_DRY_RUN=0
 assert_eq 0 "$rc" "dry run: success"
-assert_match 'resolved jdk-21\.0\.13\+9: https://github\.com/.*\.tar\.gz \([0-9]+ bytes\)' "$(logtext i-dry)" "dry run: release, URL and size are logged"
+assert_match 'resolved jdk-25\.0\.5\.1\+2: https://github\.com/.*\.tar\.gz \([0-9]+ bytes\)' "$(logtext i-dry)" "dry run: release, URL and size are logged"
 assert_match 'read-only run, nothing installed' "$(logtext i-dry)" "dry run: says nothing was installed"
 if [ -e "$TOOLS_DIR" ]; then
   t_fail "dry run: the tools dir must not be created"
@@ -562,24 +562,24 @@ assert_eq 0 "$(count_of "$DL_PATH")" "dry run: the archive is not downloaded"
 # --- prune: keeps the newest two, never touches jdk-notes ---
 mk_srv prune linux normal good ok
 fresh
-for v in 21.0.1+1 21.0.2+1 21.0.3+1; do
-  mk_fake "$TOOLS_DIR/jdk-$v" "$BAN21"
+for v in 25.0.1+1 25.0.2+1 25.0.3+1; do
+  mk_fake "$TOOLS_DIR/jdk-$v" "$BAN25"
   : >"$TOOLS_DIR/jdk-$v/.install-complete"
   : >"$TOOLS_DIR/jdk-$v/bin/marker"
 done
 mkdir -p "$TOOLS_DIR/jdk-notes"
 printf 'keep\n' >"$TOOLS_DIR/jdk-notes/readme.txt"
-mkdir -p "$TOOLS_DIR/jdk-21.0.0+1 stray"
-printf 'x\n' >"$TOOLS_DIR/jdk-21.0.0+1 stray/file"
-# the newest valid install is jdk-21.0.3+1, so the step reuses it; call jdk_install to force the new one
+mkdir -p "$TOOLS_DIR/jdk-25.0.0+1 stray"
+printf 'x\n' >"$TOOLS_DIR/jdk-25.0.0+1 stray/file"
+# the newest valid install is jdk-25.0.3+1, so the step reuses it; call jdk_install to force the new one
 rc=0
 RS_PRE="jdk_install"
 run_step i-prune || rc=$?
 RS_PRE=""
 assert_eq 0 "$rc" "prune: success"
-assert_eq "jdk-21.0.0+1 stray
-jdk-21.0.13+9
-jdk-21.0.3+1
+assert_eq "jdk-25.0.0+1 stray
+jdk-25.0.3+1
+jdk-25.0.5.1+2
 jdk-notes" "$(listing "$TOOLS_DIR" | LC_ALL=C sort)" "prune: the two newest stay and the older ones go; jdk-notes and a no-marker directory are untouched"
 assert_file "$TOOLS_DIR/jdk-notes/readme.txt" "prune: jdk-notes content is intact"
 

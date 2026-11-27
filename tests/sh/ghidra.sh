@@ -6,7 +6,7 @@
 # https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 # Tests for the setup.sh step ghidra: ghidra_version and ghidra_valid on the fixtures
-# (tests/fixtures/fake-ghidra, fake-ghidra-12.2.0), the precedence of ghidra_select and the whole install against
+# (tests/fixtures/fake-ghidra, fake-ghidra-12.1.4), the precedence of ghidra_select and the whole install against
 # the fake release server of tests/integration (python3, loopback only) with a real, small zip shaped like the
 # Ghidra release. The test replaces the embedded digest and size with those of the small zip by assigning the
 # shell variables after setup.sh is sourced; the product never reads them from the environment. Every directory
@@ -52,11 +52,11 @@ TOOLS_DIR="$T/tools dir"
 LOG_FILE=$T/unit.log
 CONSOLE_LEVEL=ERROR
 export ALLOWED_SCHEMES ALLOWED_HOSTS RETRY_WAITS SLEEP OS ARCH OPT_DRY_RUN OPT_CHECK_UPSTREAM OPT_GHIDRA_DIR TOOLS_DIR LOG_FILE CONSOLE_LEVEL
-F412=$ROOT/tests/fixtures/fake-ghidra
-F122=$ROOT/tests/fixtures/fake-ghidra-12.2.0
-REL_PATH=/github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip
+FPIN=$ROOT/tests/fixtures/fake-ghidra
+FOLD=$ROOT/tests/fixtures/fake-ghidra-12.1.4
+REL_PATH=/github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip
 DL_PATH=/dl/ghidra.zip
-WARN_MAC='the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
+WARN_MAC='the official 12.2 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
 
 # curl_local ARG...: curl with github.com URLs sent to the fake server (BASE) instead
 curl_local() {
@@ -86,8 +86,8 @@ mk_props() {
 }
 
 # --- ghidra_version and ghidra_valid ---
-assert_eq 12.1.4 "$(ghidra_version "$F412")" "version: fixture 12.1.4"
-assert_eq 12.2.0 "$(ghidra_version "$F122")" "version: fixture 12.2.0"
+assert_eq 12.2 "$(ghidra_version "$FPIN")" "version: fixture 12.2"
+assert_eq 12.1.4 "$(ghidra_version "$FOLD")" "version: fixture 12.1.4"
 assert_eq "" "$(ghidra_version "$T/nothing here")" "version: a missing directory is empty"
 mkdir -p "$T/no props/Ghidra"
 assert_eq "" "$(ghidra_version "$T/no props")" "version: a directory without application.properties is empty"
@@ -99,19 +99,19 @@ assert_eq 12.1.5 "$(ghidra_version "$T/crlf")" "version: blanks around the value
 printf 'application.layout.version=2\n' >"$T/crlf/Ghidra/application.properties"
 assert_eq "" "$(ghidra_version "$T/crlf")" "version: only application.layout.version is not the version"
 
-assert_status 0 "valid: 12.1.4" ghidra_valid "$F412"
-mk_props "$T/v 12.1" 12.1
-assert_status 0 "valid: 12.1" ghidra_valid "$T/v 12.1"
-mk_props "$T/v 12.1.9" 12.1.9
-assert_status 0 "valid: 12.1.9" ghidra_valid "$T/v 12.1.9"
-assert_status 1 "valid: 12.2.0 is refused" ghidra_valid "$F122"
-assert_match '12\.2\.0' "$(ghidra_valid "$F122")" "valid: the reason names the version"
+assert_status 0 "valid: 12.2" ghidra_valid "$FPIN"
+mk_props "$T/v 12.2" 12.2.1
+assert_status 0 "valid: 12.2.1" ghidra_valid "$T/v 12.2"
+mk_props "$T/v 12.2.9" 12.2.9
+assert_status 0 "valid: 12.2.9" ghidra_valid "$T/v 12.2.9"
+assert_status 1 "valid: 12.1.4 is refused" ghidra_valid "$FOLD"
+assert_match 'version 12\.1\.4 is not in the 12\.2 line' "$(ghidra_valid "$FOLD")" "valid: the reason names the version and the line"
 mk_props "$T/v 11" 11.3.1
 assert_status 1 "valid: 11.3.1 is refused" ghidra_valid "$T/v 11"
-mk_props "$T/v 12.10" 12.10.0
-assert_status 1 "valid: 12.10.0 is not the 12.1 line" ghidra_valid "$T/v 12.10"
-mk_props "$T/v 12.1x" 12.1.x
-assert_status 1 "valid: 12.1.x is refused" ghidra_valid "$T/v 12.1x"
+mk_props "$T/v 12.20" 12.20.0
+assert_status 1 "valid: 12.20.0 is not the 12.2 line" ghidra_valid "$T/v 12.20"
+mk_props "$T/v 12.2x" 12.2.x
+assert_status 1 "valid: 12.2.x is refused" ghidra_valid "$T/v 12.2x"
 mk_props "$T/v empty" ""
 assert_status 1 "valid: an empty version is refused" ghidra_valid "$T/v empty"
 assert_status 1 "valid: a directory without application.properties is refused" ghidra_valid "$T/no props"
@@ -147,8 +147,8 @@ import zipfile
 # usage: mkzip.py OUT LAYOUT; LAYOUT is normal, badver (application.version 12.1.3), two (a second top
 # directory) or badname (the top directory ghidra_12.1.9_PUBLIC)
 out, layout = sys.argv[1], sys.argv[2]
-top = "ghidra_12.1.9_PUBLIC" if layout == "badname" else "ghidra_12.1.4_PUBLIC"
-version = "12.1.3" if layout == "badver" else "12.1.4"
+top = "ghidra_12.1.9_PUBLIC" if layout == "badname" else "ghidra_12.2_PUBLIC"
+version = "12.1.3" if layout == "badver" else "12.2"
 files = [
     ("Ghidra/application.properties", "application.name=Ghidra\napplication.version=%s\n" % version, 0o644),
     ("ghidraRun", "#!/bin/sh\n", 0o755),
@@ -251,12 +251,12 @@ run_step() {
 fresh
 rc=0
 (
-  OPT_GHIDRA_DIR="$F122"
+  OPT_GHIDRA_DIR="$FOLD"
   LOG_FILE=$T/sel1.log
   ghidra_select
 ) >/dev/null 2>&1 || rc=$?
-assert_eq 1 "$rc" "select: --ghidra-dir at a 12.2 install dies with 1"
-assert_match 'not a usable Ghidra: version 12\.2\.0' "$(cat "$T/sel1.log")" "select: the --ghidra-dir reason is logged"
+assert_eq 1 "$rc" "select: --ghidra-dir at a 12.1 install dies with 1"
+assert_match 'not a usable Ghidra: version 12\.1\.4' "$(cat "$T/sel1.log")" "select: the --ghidra-dir reason is logged"
 assert_eq "" "$(listing "$TOOLS_DIR")" "select: a failed --ghidra-dir installs nothing"
 rc=0
 (
@@ -275,8 +275,8 @@ select_with() {
   ghidra_select
   echo "$GHIDRA_DIR_SELECTED"
 }
-assert_eq "$F412" "$(select_with "$F412" "$F122" "$T/sel2.log")" "select: a valid flag wins over the environment"
-assert_eq "$F412" "$(select_with "" "$F412" "$T/sel3.log")" "select: a valid GHIDRA_INSTALL_DIR is used"
+assert_eq "$FPIN" "$(select_with "$FPIN" "$FOLD" "$T/sel2.log")" "select: a valid flag wins over the environment"
+assert_eq "$FPIN" "$(select_with "" "$FPIN" "$T/sel3.log")" "select: a valid GHIDRA_INSTALL_DIR is used"
 if grep -q WARN "$T/sel3.log"; then
   t_fail "select: a valid GHIDRA_INSTALL_DIR logs no WARN"
 else
@@ -284,22 +284,22 @@ else
 fi
 
 # an invalid environment value with a valid, marked tools-dir install: WARN and the tools-dir one wins
-mkdir -p "$TOOLS_DIR/ghidra_12.1.4_PUBLIC"
-cp -R "$F412/Ghidra" "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/Ghidra"
-: >"$TOOLS_DIR/ghidra_12.1.4_PUBLIC/.install-complete"
+mkdir -p "$TOOLS_DIR/ghidra_12.2_PUBLIC"
+cp -R "$FPIN/Ghidra" "$TOOLS_DIR/ghidra_12.2_PUBLIC/Ghidra"
+: >"$TOOLS_DIR/ghidra_12.2_PUBLIC/.install-complete"
 out=$(select_with "" "$T/no props" "$T/sel4.log")
-assert_eq "$TOOLS_DIR/ghidra_12.1.4_PUBLIC" "$out" "select: an invalid GHIDRA_INSTALL_DIR falls through to the tools dir"
+assert_eq "$TOOLS_DIR/ghidra_12.2_PUBLIC" "$out" "select: an invalid GHIDRA_INSTALL_DIR falls through to the tools dir"
 assert_match 'WARN.*GHIDRA_INSTALL_DIR .*no props is not a usable Ghidra .*ignoring it' "$(cat "$T/sel4.log")" "select: the invalid environment value is a WARN with the reason"
-assert_match 'reusing ghidra_12\.1\.4_PUBLIC' "$(cat "$T/sel4.log")" "select: the tools-dir reuse is logged"
+assert_match 'reusing ghidra_12\.2_PUBLIC' "$(cat "$T/sel4.log")" "select: the tools-dir reuse is logged"
 
-# a 12.2 environment value: the verbatim WARN, then the tools dir
-out=$(select_with "" "$F122" "$T/sel5.log")
-assert_eq "$TOOLS_DIR/ghidra_12.1.4_PUBLIC" "$out" "select: a 12.2 GHIDRA_INSTALL_DIR falls through to the tools dir"
-assert_match 'WARN +\[ghidra\] 12\.2 is not accepted by rea 6\.8\.0; installing 12\.1\.4 alongside$' "$(cat "$T/sel5.log")" "select: the 12.2 WARN is verbatim"
+# a 12.1 environment value: the verbatim WARN, then the tools dir
+out=$(select_with "" "$FOLD" "$T/sel5.log")
+assert_eq "$TOOLS_DIR/ghidra_12.2_PUBLIC" "$out" "select: a 12.1 GHIDRA_INSTALL_DIR falls through to the tools dir"
+assert_match 'WARN +\[ghidra\] 12\.1 is not accepted by rea 6\.10\.1; installing 12\.2 alongside$' "$(cat "$T/sel5.log")" "select: the 12.2 WARN is verbatim"
 
 # a tools-dir install of another version and one without the mark are not reused (the install path is run
 # against a dry run, which logs what it would fetch and writes nothing)
-rm -f "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/.install-complete"
+rm -f "$TOOLS_DIR/ghidra_12.2_PUBLIC/.install-complete"
 out=$(
   OPT_DRY_RUN=1
   OPT_GHIDRA_DIR=""
@@ -309,10 +309,10 @@ out=$(
   echo "$GHIDRA_DIR_SELECTED"
 )
 assert_eq "" "$out" "select: a tools-dir install without .install-complete is treated as absent"
-assert_match 'will install Ghidra 12\.1\.4 from https://github\.com/NationalSecurityAgency/' "$(cat "$T/sel6.log")" "select: it goes to the install path"
-assert_match 'DEBUG.*ignoring ghidra_12\.1\.4_PUBLIC: no \.install-complete' "$(cat "$T/sel6.log")" "select: the unmarked install is logged"
-: >"$TOOLS_DIR/ghidra_12.1.4_PUBLIC/.install-complete"
-mk_props "$TOOLS_DIR/ghidra_12.1.4_PUBLIC" 12.2.0
+assert_match 'will install Ghidra 12\.2 from https://github\.com/NationalSecurityAgency/' "$(cat "$T/sel6.log")" "select: it goes to the install path"
+assert_match 'DEBUG.*ignoring ghidra_12\.2_PUBLIC: no \.install-complete' "$(cat "$T/sel6.log")" "select: the unmarked install is logged"
+: >"$TOOLS_DIR/ghidra_12.2_PUBLIC/.install-complete"
+mk_props "$TOOLS_DIR/ghidra_12.2_PUBLIC" 12.1.4
 out=$(
   OPT_DRY_RUN=1
   OPT_GHIDRA_DIR=""
@@ -321,8 +321,8 @@ out=$(
   ghidra_select
   echo "$GHIDRA_DIR_SELECTED"
 )
-assert_eq "" "$out" "select: a marked tools-dir install of 12.2 is not reused"
-assert_match 'WARN.*ignoring the install ghidra_12\.1\.4_PUBLIC: version 12\.2\.0' "$(cat "$T/sel7.log")" "select: the wrong-version install is a WARN with the reason"
+assert_eq "" "$out" "select: a marked tools-dir install of 12.1 is not reused"
+assert_match 'WARN.*ignoring the install ghidra_12\.2_PUBLIC: version 12\.1\.4' "$(cat "$T/sel7.log")" "select: the wrong-version install is a WARN with the reason"
 
 # --- install: success ---
 mk_srv ok normal
@@ -330,17 +330,17 @@ fresh
 rc=0
 run_step i-ok || rc=$?
 assert_eq 0 "$rc" "install: success"
-assert_eq ghidra_12.1.4_PUBLIC "$(listing "$TOOLS_DIR")" "install: only ghidra_12.1.4_PUBLIC is left in the tools dir (no staging, zip or lock)"
-assert_file "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/.install-complete" "install: .install-complete exists"
-assert_file "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/Ghidra/application.properties" "install: application.properties is in place"
-assert_status 0 "install: ghidraRun is executable" test -x "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/ghidraRun"
-assert_status 0 "install: analyzeHeadless is executable" test -x "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/support/analyzeHeadless"
-assert_status 0 "install: the linux decompiler is executable" test -x "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/Ghidra/Features/Decompiler/os/linux_x86_64/decompile"
-assert_status 1 "install: a properties file is not executable" test -x "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/support/launch.properties"
-assert_eq "dir=$TOOLS_DIR/ghidra_12.1.4_PUBLIC" "$(sed -n 1p "$T/i-ok.state")" "install: GHIDRA_DIR_SELECTED is the install"
-assert_match '^summary=12\.1\.4 installed' "$(cat "$T/i-ok.state")" "install: SUMMARY_ghidra is set"
-assert_match "will install Ghidra 12\\.1\\.4 from https://github\\.com/.*\\.zip \\($ZIP_SIZE bytes\\) into" "$(logtext i-ok)" "install: URL, size and target are logged"
-assert_match 'installed Ghidra 12\.1\.4' "$(logtext i-ok)" "install: the install is logged"
+assert_eq ghidra_12.2_PUBLIC "$(listing "$TOOLS_DIR")" "install: only ghidra_12.2_PUBLIC is left in the tools dir (no staging, zip or lock)"
+assert_file "$TOOLS_DIR/ghidra_12.2_PUBLIC/.install-complete" "install: .install-complete exists"
+assert_file "$TOOLS_DIR/ghidra_12.2_PUBLIC/Ghidra/application.properties" "install: application.properties is in place"
+assert_status 0 "install: ghidraRun is executable" test -x "$TOOLS_DIR/ghidra_12.2_PUBLIC/ghidraRun"
+assert_status 0 "install: analyzeHeadless is executable" test -x "$TOOLS_DIR/ghidra_12.2_PUBLIC/support/analyzeHeadless"
+assert_status 0 "install: the linux decompiler is executable" test -x "$TOOLS_DIR/ghidra_12.2_PUBLIC/Ghidra/Features/Decompiler/os/linux_x86_64/decompile"
+assert_status 1 "install: a properties file is not executable" test -x "$TOOLS_DIR/ghidra_12.2_PUBLIC/support/launch.properties"
+assert_eq "dir=$TOOLS_DIR/ghidra_12.2_PUBLIC" "$(sed -n 1p "$T/i-ok.state")" "install: GHIDRA_DIR_SELECTED is the install"
+assert_match '^summary=12\.2 installed' "$(cat "$T/i-ok.state")" "install: SUMMARY_ghidra is set"
+assert_match "will install Ghidra 12\\.2 from https://github\\.com/.*\\.zip \\($ZIP_SIZE bytes\\) into" "$(logtext i-ok)" "install: URL, size and target are logged"
+assert_match 'installed Ghidra 12\.2' "$(logtext i-ok)" "install: the install is logged"
 if grep -q WARN "$T/i-ok.log"; then
   t_fail "install on Linux: no WARN"
 else
@@ -352,23 +352,23 @@ assert_eq 1 "$(count_of "$DL_PATH")" "install: the zip was fetched once"
 rc=0
 run_step i-again || rc=$?
 assert_eq 0 "$rc" "reuse: second run succeeds"
-assert_match 'reusing ghidra_12\.1\.4_PUBLIC' "$(logtext i-again)" "reuse: the install is reused"
+assert_match 'reusing ghidra_12\.2_PUBLIC' "$(logtext i-again)" "reuse: the install is reused"
 assert_eq 1 "$(count_of "$DL_PATH")" "reuse: no second download"
 
 # --- install over an aborted earlier install (Review Focus 4) ---
 fresh
-mkdir -p "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/Ghidra"
-cp "$F412/Ghidra/application.properties" "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/Ghidra/"
-printf 'half\n' >"$TOOLS_DIR/ghidra_12.1.4_PUBLIC/stale-file"
+mkdir -p "$TOOLS_DIR/ghidra_12.2_PUBLIC/Ghidra"
+cp "$FPIN/Ghidra/application.properties" "$TOOLS_DIR/ghidra_12.2_PUBLIC/Ghidra/"
+printf 'half\n' >"$TOOLS_DIR/ghidra_12.2_PUBLIC/stale-file"
 rc=0
 run_step i-over || rc=$?
 assert_eq 0 "$rc" "over an unmarked directory: success"
-assert_file "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/.install-complete" "over an unmarked directory: the new install is marked"
-assert_file "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/ghidraRun" "over an unmarked directory: the new content is in place"
+assert_file "$TOOLS_DIR/ghidra_12.2_PUBLIC/.install-complete" "over an unmarked directory: the new install is marked"
+assert_file "$TOOLS_DIR/ghidra_12.2_PUBLIC/ghidraRun" "over an unmarked directory: the new content is in place"
 assert_eq 0 "$(
-  [ -e "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/stale-file" ] && echo 1 || echo 0
+  [ -e "$TOOLS_DIR/ghidra_12.2_PUBLIC/stale-file" ] && echo 1 || echo 0
 )" "over an unmarked directory: the old content is gone"
-assert_eq ghidra_12.1.4_PUBLIC "$(listing "$TOOLS_DIR")" "over an unmarked directory: no .old or staging left"
+assert_eq ghidra_12.2_PUBLIC "$(listing "$TOOLS_DIR")" "over an unmarked directory: no .old or staging left"
 
 # --- macOS: installed, WARN, warn summary, exit 0 ---
 fresh
@@ -377,20 +377,20 @@ RS_PRE="OS=mac"
 run_step i-mac || rc=$?
 RS_PRE=""
 assert_eq 0 "$rc" "install mac: exit 0"
-assert_file "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/.install-complete" "install mac: .install-complete exists"
+assert_file "$TOOLS_DIR/ghidra_12.2_PUBLIC/.install-complete" "install mac: .install-complete exists"
 assert_eq 1 "$(grep -cF "WARN  [ghidra] $WARN_MAC" "$T/i-mac.log")" "install mac: the verbatim WARN is logged once"
-assert_match '^summary=warn: 12\.1\.4 installed' "$(cat "$T/i-mac.state")" "install mac: the summary is warn-class"
+assert_match '^summary=warn: 12\.2 installed' "$(cat "$T/i-mac.state")" "install mac: the summary is warn-class"
 
-# --- env GHIDRA_INSTALL_DIR at a 12.2 install: WARN, then the install proceeds ---
+# --- env GHIDRA_INSTALL_DIR at a 12.1 install: WARN, then the install proceeds ---
 fresh
 rc=0
-RS_PRE="GHIDRA_INSTALL_DIR='$F122'; export GHIDRA_INSTALL_DIR"
+RS_PRE="GHIDRA_INSTALL_DIR='$FOLD'; export GHIDRA_INSTALL_DIR"
 run_step i-122 || rc=$?
 RS_PRE=""
-assert_eq 0 "$rc" "env 12.2: exit 0"
-assert_eq 1 "$(grep -cF 'WARN  [ghidra] 12.2 is not accepted by rea 6.8.0; installing 12.1.4 alongside' "$T/i-122.log")" "env 12.2: the verbatim WARN is logged"
-assert_file "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/.install-complete" "env 12.2: Ghidra 12.1.4 is installed alongside"
-assert_eq "dir=$TOOLS_DIR/ghidra_12.1.4_PUBLIC" "$(sed -n 1p "$T/i-122.state")" "env 12.2: the new install is selected"
+assert_eq 0 "$rc" "env 12.1: exit 0"
+assert_eq 1 "$(grep -cF 'WARN  [ghidra] 12.1 is not accepted by rea 6.10.1; installing 12.2 alongside' "$T/i-122.log")" "env 12.1: the verbatim WARN is logged"
+assert_file "$TOOLS_DIR/ghidra_12.2_PUBLIC/.install-complete" "env 12.1: Ghidra 12.2 is installed alongside"
+assert_eq "dir=$TOOLS_DIR/ghidra_12.2_PUBLIC" "$(sed -n 1p "$T/i-122.state")" "env 12.1: the new install is selected"
 
 # --- install: failures leave nothing ---
 mk_srv badver badver
@@ -398,7 +398,7 @@ fresh
 rc=0
 run_step i-badver || rc=$?
 assert_eq 5 "$rc" "wrong version in the archive: exit 5"
-assert_match "reports version '12\\.1\\.3', expected 12\\.1\\.4" "$(logtext i-badver)" "wrong version: logged"
+assert_match "reports version '12\\.1\\.3', expected 12\\.2" "$(logtext i-badver)" "wrong version: logged"
 assert_eq "" "$(listing "$TOOLS_DIR")" "wrong version: nothing installed or left"
 
 mk_srv two two
@@ -436,13 +436,13 @@ assert_eq "" "$(listing "$TOOLS_DIR")" "hash mismatch: nothing installed, no zip
 assert_eq 1 "$(count_of "$DL_PATH")" "hash mismatch: the zip was fetched (and refused)"
 
 # an unmarked earlier directory survives a failed install untouched
-mkdir -p "$TOOLS_DIR/ghidra_12.1.4_PUBLIC"
-printf 'keep\n' >"$TOOLS_DIR/ghidra_12.1.4_PUBLIC/old-file"
+mkdir -p "$TOOLS_DIR/ghidra_12.2_PUBLIC"
+printf 'keep\n' >"$TOOLS_DIR/ghidra_12.2_PUBLIC/old-file"
 rc=0
 run_step i-hash2 || rc=$?
 assert_eq 5 "$rc" "hash mismatch over an old directory: exit 5"
-assert_file "$TOOLS_DIR/ghidra_12.1.4_PUBLIC/old-file" "hash mismatch over an old directory: it is left as it was"
-assert_eq ghidra_12.1.4_PUBLIC "$(listing "$TOOLS_DIR")" "hash mismatch over an old directory: nothing else is left"
+assert_file "$TOOLS_DIR/ghidra_12.2_PUBLIC/old-file" "hash mismatch over an old directory: it is left as it was"
+assert_eq ghidra_12.2_PUBLIC "$(listing "$TOOLS_DIR")" "hash mismatch over an old directory: nothing else is left"
 
 # --- dry run: logs URL, size and target; no download; writes nothing ---
 mk_srv dry normal
@@ -452,7 +452,7 @@ OPT_DRY_RUN=1
 run_step i-dry || rc=$?
 OPT_DRY_RUN=0
 assert_eq 0 "$rc" "dry run: success"
-assert_match "will install Ghidra 12\\.1\\.4 from https://github\\.com/.*\\.zip \\($ZIP_SIZE bytes\\) into .*ghidra_12\\.1\\.4_PUBLIC" "$(logtext i-dry)" "dry run: URL, size and target are logged"
+assert_match "will install Ghidra 12\\.2 from https://github\\.com/.*\\.zip \\($ZIP_SIZE bytes\\) into .*ghidra_12\\.2_PUBLIC" "$(logtext i-dry)" "dry run: URL, size and target are logged"
 assert_match 'read-only run, nothing installed' "$(logtext i-dry)" "dry run: says nothing was installed"
 if [ -e "$TOOLS_DIR" ]; then
   t_fail "dry run: the tools dir must not be created"

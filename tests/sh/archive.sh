@@ -84,8 +84,8 @@ assert_match '^-rw-r--r-- f top/file with spaces.txt$' "$(printf '%s\n' "$ml" | 
 assert_match '^lrw-r--r-- l top/bin/libjli.so -> \.\./lib/libjli.so$' "$(printf '%s\n' "$ml" | grep 'bin/libjli')" "tar symlink with target"
 assert_match '^hrw-r--r-- h top/hard -> top/lib/libjli.so$' "$(printf '%s\n' "$ml" | grep 'top/hard')" "tar hardlink with target"
 zl=$(archive_list "$T/exec.zip")
-assert_match '^-rwxr-xr-x f ghidra_12.1.4_PUBLIC/ghidraRun$' "$(printf '%s\n' "$zl" | grep 'ghidraRun')" "zip regular entry via unzip"
-assert_match '^drwxr-xr-x d ghidra_12.1.4_PUBLIC/$' "$(archive_list "$T/clean.zip" | head -n 1)" "zip directory entry"
+assert_match '^-rwxr-xr-x f ghidra_12.2_PUBLIC/ghidraRun$' "$(printf '%s\n' "$zl" | grep 'ghidraRun')" "zip regular entry via unzip"
+assert_match '^drwxr-xr-x d ghidra_12.2_PUBLIC/$' "$(archive_list "$T/clean.zip" | head -n 1)" "zip directory entry"
 assert_match 'dir with space/inner file.txt$' "$(archive_list "$T/clean.zip")" "zip name with spaces"
 assert_match '^lrwxrwxrwx l passwd -> /etc/passwd$' "$(archive_list "$T/symlink.zip")" "zip symlink target read from the entry"
 assert_eq 5 "$(printf '%s\n' "$zl" | wc -l | tr -d ' ')" "zip listing has one line per entry and no header or footer"
@@ -104,15 +104,15 @@ if [ -x "${JAVA_HOME_SELECTED:-/nonexistent}/bin/jar" ] || command -v jar >/dev/
     jh=$(CDPATH='' cd -- "$(dirname -- "$(command -v jar)")/.." && pwd)
   fi
   jl=$(JAVA_HOME_SELECTED=$jh ARCHIVE_ZIP_TOOL=jar archive_list "$T/clean.zip")
-  assert_match '^\? \? ghidra_12.1.4_PUBLIC/ok.txt$' "$(printf '%s\n' "$jl" | grep 'ok.txt')" "jar listing: names only, unknown type"
+  assert_match '^\? \? ghidra_12.2_PUBLIC/ok.txt$' "$(printf '%s\n' "$jl" | grep 'ok.txt')" "jar listing: names only, unknown type"
   assert_status 1 "jar listing of a dotdot zip refused" env JAVA_HOME_SELECTED="$jh" ARCHIVE_ZIP_TOOL=jar sh -c ". ./setup.sh; archive_check_safe \"\$1\"" _ "$T/dotdot.zip"
   jx="$T/jar extract"
   # In a subshell: a shell in POSIX mode (macOS /bin/sh is bash 3.2) keeps an assignment made in front of a
   # function call, and ARCHIVE_ZIP_TOOL=jar would then decide every later zip listing
   (JAVA_HOME_SELECTED=$jh ARCHIVE_ZIP_TOOL=jar archive_extract "$T/exec.zip" "$jx")
-  assert_status 0 "jar extract: ghidraRun executable (rule applied)" test -x "$jx/ghidra_12.1.4_PUBLIC/ghidraRun"
-  assert_status 0 "jar extract: analyzeHeadless executable (rule applied)" test -x "$jx/ghidra_12.1.4_PUBLIC/support/analyzeHeadless"
-  assert_status 1 "jar extract: properties not executable" test -x "$jx/ghidra_12.1.4_PUBLIC/support/launch.properties"
+  assert_status 0 "jar extract: ghidraRun executable (rule applied)" test -x "$jx/ghidra_12.2_PUBLIC/ghidraRun"
+  assert_status 0 "jar extract: analyzeHeadless executable (rule applied)" test -x "$jx/ghidra_12.2_PUBLIC/support/analyzeHeadless"
+  assert_status 1 "jar extract: properties not executable" test -x "$jx/ghidra_12.2_PUBLIC/support/launch.properties"
 else
   t_skip "jar not installed: jar listing and extraction tests skipped"
 fi
@@ -122,7 +122,7 @@ assert_eq jar "$(ARCHIVE_ZIP_TOOL=jar archive_tool_for "$T/exec.zip")" "zip tool
 # --- review fixes: fail closed on odd zip records and hidden tool failures ---
 assert_status 1 "zip entry without type bits and a ../ name refused" archive_check_safe "$T/notype-evil.zip"
 assert_status 0 "zip entry without type bits and a harmless name is treated as a regular file" archive_check_safe "$T/notype-ok.zip"
-assert_match '^\?rw-------  *f ghidra_12.1.4_PUBLIC/ok.txt$|^\?rw------- f ' "$(archive_list "$T/notype-ok.zip")" "no-type-bit record listed as f"
+assert_match '^\?rw-------  *f ghidra_12.2_PUBLIC/ok.txt$|^\?rw------- f ' "$(archive_list "$T/notype-ok.zip")" "no-type-bit record listed as f"
 assert_status 1 "entry count differing from the header refused" archive_check_safe "$T/mismatch.zip"
 assert_status 1 "empty zip refused" archive_check_safe "$T/empty.zip"
 assert_status 1 "non-zip file refused" archive_check_safe "$T/notzip.zip"
@@ -191,10 +191,10 @@ assert_status 0 "extracted tar file with spaces" test -f "$ex/top/file with spac
 assert_status 0 "extracted tar keeps exec bit" test -x "$ex/top/bin/java"
 ez="$T/extract zip"
 assert_status 0 "extract zip" archive_extract "$T/exec.zip" "$ez"
-assert_status 0 "unzip extract: ghidraRun executable" test -x "$ez/ghidra_12.1.4_PUBLIC/ghidraRun"
-assert_status 0 "unzip extract: rule makes analyzeHeadless executable" test -x "$ez/ghidra_12.1.4_PUBLIC/support/analyzeHeadless"
-assert_status 0 "unzip extract: rule makes decompile executable" test -x "$ez/ghidra_12.1.4_PUBLIC/Ghidra/Features/Decompiler/os/linux_x86_64/decompile"
-assert_status 1 "unzip extract: plain.txt not executable" test -x "$ez/ghidra_12.1.4_PUBLIC/plain.txt"
+assert_status 0 "unzip extract: ghidraRun executable" test -x "$ez/ghidra_12.2_PUBLIC/ghidraRun"
+assert_status 0 "unzip extract: rule makes analyzeHeadless executable" test -x "$ez/ghidra_12.2_PUBLIC/support/analyzeHeadless"
+assert_status 0 "unzip extract: rule makes decompile executable" test -x "$ez/ghidra_12.2_PUBLIC/Ghidra/Features/Decompiler/os/linux_x86_64/decompile"
+assert_status 1 "unzip extract: plain.txt not executable" test -x "$ez/ghidra_12.2_PUBLIC/plain.txt"
 assert_status 1 "extract of a missing archive fails" archive_extract "$T/nope.tar.gz" "$T/never"
 assert_status 1 "no extraction directory is created for a missing archive" test -e "$T/never"
 
@@ -285,45 +285,45 @@ sh -c ". ./setup.sh; install_traps; staging_new \"\$1\" w >/dev/null; staging_ne
 assert_eq "" "$(find "$T/trap dir" -name '*.tmp.*' | head -n 1)" "staging made in the main shell removed on exit (names with spaces)"
 
 # --- orphan cleanup ---
-mkdir -p "$T/tools/agent-profile.tmp.999999" "$T/tools/jdk-21.0.1+1.tmp.$$" "$T/tools/clavity-ls.exe.old.999999" "$T/tools/jdk-21 old live.tmp.$$" "$T/tools/jdk-21.0.2+1.tmp.abc" "$T/tools/other.dir"
-touch -d "3 days ago" "$T/tools/jdk-21 old live.tmp.$$" 2>/dev/null || touch -t 200001010000 "$T/tools/jdk-21 old live.tmp.$$"
+mkdir -p "$T/tools/agent-profile.tmp.999999" "$T/tools/jdk-25.0.1+1.tmp.$$" "$T/tools/clavity-ls.exe.old.999999" "$T/tools/jdk-25 old live.tmp.$$" "$T/tools/jdk-25.0.2+1.tmp.abc" "$T/tools/other.dir"
+touch -d "3 days ago" "$T/tools/jdk-25 old live.tmp.$$" 2>/dev/null || touch -t 200001010000 "$T/tools/jdk-25 old live.tmp.$$"
 cleanup_orphans "$T/tools"
 assert_status 1 "dead-pid staging removed" test -d "$T/tools/agent-profile.tmp.999999"
 assert_status 1 "dead-pid .old removed (Windows leftovers)" test -d "$T/tools/clavity-ls.exe.old.999999"
-assert_status 0 "live young staging kept" test -d "$T/tools/jdk-21.0.1+1.tmp.$$"
-assert_status 1 "live but older than 24 h removed" test -d "$T/tools/jdk-21 old live.tmp.$$"
-assert_status 0 "non-numeric suffix kept" test -d "$T/tools/jdk-21.0.2+1.tmp.abc"
+assert_status 0 "live young staging kept" test -d "$T/tools/jdk-25.0.1+1.tmp.$$"
+assert_status 1 "live but older than 24 h removed" test -d "$T/tools/jdk-25 old live.tmp.$$"
+assert_status 0 "non-numeric suffix kept" test -d "$T/tools/jdk-25.0.2+1.tmp.abc"
 assert_status 0 "unrelated dir kept" test -d "$T/tools/other.dir"
 assert_status 0 "cleanup of an empty or missing dir is fine" cleanup_orphans "$T/nothing here"
 # names the script does not create are never touched, even with a dead pid (the bin dir is shared)
 mkdir -p "$T/foreign"
 for n in vim.tmp.3999998 notes.old.3999999 my.backup.old.3999997 jdk-notes.tmp.3999996 ghidra-notes.old.3999995; do mkdir "$T/foreign/$n"; done
-for n in agent-profile.tmp.3999998 clavity-ls.old.3999997 jdk-21.0.1+1.work.tmp.3999996 ghidra.work.tmp.3999995 ghidra_12.1.4_PUBLIC.old.3999994 env.sh.tmp.3999993; do mkdir "$T/foreign/$n"; done
+for n in agent-profile.tmp.3999998 clavity-ls.old.3999997 jdk-25.0.1+1.work.tmp.3999996 ghidra.work.tmp.3999995 ghidra_12.2_PUBLIC.old.3999994 env.sh.tmp.3999993; do mkdir "$T/foreign/$n"; done
 cleanup_orphans "$T/foreign"
 for n in vim.tmp.3999998 notes.old.3999999 my.backup.old.3999997 jdk-notes.tmp.3999996 ghidra-notes.old.3999995; do
   assert_status 0 "foreign $n kept" test -d "$T/foreign/$n"
 done
-for n in agent-profile.tmp.3999998 clavity-ls.old.3999997 jdk-21.0.1+1.work.tmp.3999996 ghidra.work.tmp.3999995 ghidra_12.1.4_PUBLIC.old.3999994 env.sh.tmp.3999993; do
+for n in agent-profile.tmp.3999998 clavity-ls.old.3999997 jdk-25.0.1+1.work.tmp.3999996 ghidra.work.tmp.3999995 ghidra_12.2_PUBLIC.old.3999994 env.sh.tmp.3999993; do
   assert_status 1 "own $n removed" test -d "$T/foreign/$n"
 done
-rm -rf "$T/tools/jdk-21.0.1+1.tmp.$$" "$T/tools/jdk-21.0.2+1.tmp.abc" "$T/tools/other.dir"
+rm -rf "$T/tools/jdk-25.0.1+1.tmp.$$" "$T/tools/jdk-25.0.2+1.tmp.abc" "$T/tools/other.dir"
 
 # --- staging and install_commit ---
-s=$(staging_new "$T/tools" ghidra_12.1.4_PUBLIC)
-assert_eq "$T/tools/ghidra_12.1.4_PUBLIC.tmp.$$" "$s" "staging path"
+s=$(staging_new "$T/tools" ghidra_12.2_PUBLIC)
+assert_eq "$T/tools/ghidra_12.2_PUBLIC.tmp.$$" "$s" "staging path"
 assert_status 0 "staging directory created" test -d "$s"
-mkdir -p "$T/tools/ghidra_12.1.4_PUBLIC"
-touch "$T/tools/ghidra_12.1.4_PUBLIC/incomplete-leftover"
+mkdir -p "$T/tools/ghidra_12.2_PUBLIC"
+touch "$T/tools/ghidra_12.2_PUBLIC/incomplete-leftover"
 touch "$s/marker"
-install_commit "$s" "$T/tools/ghidra_12.1.4_PUBLIC"
-assert_file "$T/tools/ghidra_12.1.4_PUBLIC/.install-complete" "sentinel"
-assert_file "$T/tools/ghidra_12.1.4_PUBLIC/marker" "replaced incomplete dir"
-assert_status 1 "old content gone" test -e "$T/tools/ghidra_12.1.4_PUBLIC/incomplete-leftover"
+install_commit "$s" "$T/tools/ghidra_12.2_PUBLIC"
+assert_file "$T/tools/ghidra_12.2_PUBLIC/.install-complete" "sentinel"
+assert_file "$T/tools/ghidra_12.2_PUBLIC/marker" "replaced incomplete dir"
+assert_status 1 "old content gone" test -e "$T/tools/ghidra_12.2_PUBLIC/incomplete-leftover"
 assert_status 1 "staging gone after commit" test -e "$s"
-assert_status 1 "no .old left behind" test -e "$T/tools/ghidra_12.1.4_PUBLIC.old.$$"
-assert_match "^[0-9]{4}-.*$PIN_SCRIPT_VERSION" "$(cat "$T/tools/ghidra_12.1.4_PUBLIC/.install-complete")" "sentinel holds timestamp and version"
-assert_status 0 "install_valid with sentinel and file" install_valid "$T/tools/ghidra_12.1.4_PUBLIC" marker
-assert_status 1 "install_valid with a missing file" install_valid "$T/tools/ghidra_12.1.4_PUBLIC" marker nope
+assert_status 1 "no .old left behind" test -e "$T/tools/ghidra_12.2_PUBLIC.old.$$"
+assert_match "^[0-9]{4}-.*$PIN_SCRIPT_VERSION" "$(cat "$T/tools/ghidra_12.2_PUBLIC/.install-complete")" "sentinel holds timestamp and version"
+assert_status 0 "install_valid with sentinel and file" install_valid "$T/tools/ghidra_12.2_PUBLIC" marker
+assert_status 1 "install_valid with a missing file" install_valid "$T/tools/ghidra_12.2_PUBLIC" marker nope
 assert_status 1 "no sentinel invalid" install_valid "$T/tools/nosentinel" x
 mkdir -p "$T/tools/nosent2"
 touch "$T/tools/nosent2/x"
@@ -373,19 +373,19 @@ assert_status 0 "exec analyzeHeadless" test -x "$T/g/support/analyzeHeadless"
 assert_status 0 "exec decompile" test -x "$T/g/Ghidra/Features/Decompiler/os/linux_x86_64/decompile"
 assert_status 1 "properties not exec" test -x "$T/g/support/launch.properties"
 
-# rule coverage against the measured list (134 paths from the real 12.1.4 zip, top directory removed).
+# rule coverage against the measured list (140 paths from the real 12.2 zip, top directory removed).
 # The rule is meant to cover the launchers and native binaries Ghidra needs; the zip also carries
 # execute bits on data files (BSim xml, jars, sources, class-room exercise binaries) that nothing runs.
 # Recreate every measured path as an empty file, apply the rule, and demand: the needed set is exactly
 # executable, the rest is exactly untouched. Both counts are pinned so a change to the list or the rule shows.
-assert_eq 134 "$(wc -l <"$FIX/ghidra-12.1.4-exec.list" | tr -d ' ')" "measured list has 134 paths"
+assert_eq 140 "$(wc -l <"$FIX/ghidra-12.2-exec.list" | tr -d ' ')" "measured list has 140 paths"
 rc_root="$T/rule root"
 rm -rf "$rc_root"
 mkdir -p "$rc_root"
 while IFS= read -r p; do
   mkdir -p "$rc_root/$(dirname -- "$p")"
   : >"$rc_root/$p"
-done <"$FIX/ghidra-12.1.4-exec.list"
+done <"$FIX/ghidra-12.2-exec.list"
 # negatives the rule must not touch, in the directories it does touch
 for n in support/launch.properties support/x.bat support/readme.txt support/index.html support/x.cmd server/x.properties server/x.bat; do
   : >"$rc_root/$n"
@@ -395,8 +395,8 @@ mkdir -p "$rc_root/support/sub" "$rc_root/Ghidra/Debug/Debugger-gdb/data" "$rc_r
 : >"$rc_root/Ghidra/Debug/Debugger-gdb/data/not-a-launcher.txt"
 : >"$rc_root/Ghidra/Features/X/data/os-neutral.bin"
 ghidra_set_exec_bits "$rc_root"
-required=$(grep -E '^(ghidraRun|support/[^/]+|server/[^/]+|.*\.sh|.*/?os/linux_x86_64/.*|Ghidra/Debug/[^/]+/data/debugger-launchers/.*|Ghidra/Debug/Debugger-isf/support/runISFServer|support/gradle/gradlew|support/GhidraGo/ghidraGo)$' "$FIX/ghidra-12.1.4-exec.list" | grep -v -E '\.(bat|properties|txt|html|cmd)$')
-assert_eq 51 "$(printf '%s\n' "$required" | wc -l | tr -d ' ')" "rule covers 51 of the 134 measured paths"
+required=$(grep -E '^(ghidraRun|support/[^/]+|server/[^/]+|.*\.sh|.*/?os/linux_x86_64/.*|Ghidra/Debug/[^/]+/data/debugger-launchers/.*|Ghidra/Debug/Debugger-isf/support/runISFServer|support/gradle/gradlew|support/GhidraGo/ghidraGo)$' "$FIX/ghidra-12.2-exec.list" | grep -v -E '\.(bat|properties|txt|html|cmd)$')
+assert_eq 57 "$(printf '%s\n' "$required" | wc -l | tr -d ' ')" "rule covers 57 of the 140 measured paths"
 missing=""
 while IFS= read -r p; do
   [ -x "$rc_root/$p" ] || missing="$missing $p"
@@ -405,7 +405,7 @@ $required
 EOF
 assert_eq "" "$missing" "every required path is executable"
 uncovered=$(
-  grep -v -x -F -f - "$FIX/ghidra-12.1.4-exec.list" <<EOF
+  grep -v -x -F -f - "$FIX/ghidra-12.2-exec.list" <<EOF
 $required
 EOF
 )
@@ -430,37 +430,37 @@ mkjdk() {
     : >"$pj/$mj_n/.install-complete"
   done
 }
-mkjdk jdk-21.0.13+9 jdk-21.0.9+10 jdk-21.0.13+10 jdk-17.0.1+1
-mkdir -p "$pj/jdk-21.0.13+9" "$pj/jdk-21.0.9+10" "$pj/jdk-21.0.13+10" "$pj/jdk-17.0.1+1" "$pj/not-a-jdk" "$pj/jdk-21.0.13+9.tmp.1" "$pj/ghidra_12.1.4_PUBLIC"
-mkdir -p "$pj/jdk-notes" "$pj/jdk-21-scratch" "$pj/jdk-0.0.1-user/sub"
+mkjdk jdk-25.0.13+9 jdk-25.0.9+10 jdk-25.0.13+10 jdk-17.0.1+1
+mkdir -p "$pj/jdk-25.0.13+9" "$pj/jdk-25.0.9+10" "$pj/jdk-25.0.13+10" "$pj/jdk-17.0.1+1" "$pj/not-a-jdk" "$pj/jdk-25.0.13+9.tmp.1" "$pj/ghidra_12.2_PUBLIC"
+mkdir -p "$pj/jdk-notes" "$pj/jdk-25-scratch" "$pj/jdk-0.0.1-user/sub"
 touch "$pj/jdk-notes/keep.txt" "$pj/jdk-0.0.1-user/sub/f"
 mkdir -p "$pj/jdk-mac-old/Contents/Home" "$pj/jdk-1.8.0+1/Contents/Home"
 : >"$pj/jdk-1.8.0+1/Contents/Home/release"
 JAVA_HOME="" JAVA_HOME_SELECTED="" prune_jdks "$pj"
 assert_status 0 "jdk-notes (user directory) untouched" test -f "$pj/jdk-notes/keep.txt"
-assert_status 0 "jdk-21-scratch (no marker) untouched" test -d "$pj/jdk-21-scratch"
+assert_status 0 "jdk-25-scratch (no marker) untouched" test -d "$pj/jdk-25-scratch"
 assert_status 0 "jdk-0.0.1-user (no marker) untouched" test -d "$pj/jdk-0.0.1-user/sub"
 assert_status 0 "jdk-mac-old (not a version name) untouched" test -d "$pj/jdk-mac-old"
 assert_status 0 "a jdk with only its own release file (no sentinel) is a user's, never pruned" test -d "$pj/jdk-1.8.0+1"
-assert_status 0 "newest jdk kept" test -d "$pj/jdk-21.0.13+10"
-assert_status 0 "second newest jdk kept" test -d "$pj/jdk-21.0.13+9"
-assert_status 1 "21.0.9+10 pruned (older release)" test -d "$pj/jdk-21.0.9+10"
+assert_status 0 "newest jdk kept" test -d "$pj/jdk-25.0.13+10"
+assert_status 0 "second newest jdk kept" test -d "$pj/jdk-25.0.13+9"
+assert_status 1 "25.0.9+10 pruned (older release)" test -d "$pj/jdk-25.0.9+10"
 assert_status 1 "17.0.1+1 pruned" test -d "$pj/jdk-17.0.1+1"
 assert_status 0 "non-jdk dirs untouched" test -d "$pj/not-a-jdk"
-assert_status 0 "ghidra untouched" test -d "$pj/ghidra_12.1.4_PUBLIC"
-assert_status 0 "staging-named jdk untouched" test -d "$pj/jdk-21.0.13+9.tmp.1"
-mkjdk jdk-21.0.9+10
-mkdir -p "$pj/jdk-21.0.9+10/Contents/Home"
-mkjdk jdk-21.0.20+1
-JAVA_HOME="$pj/jdk-21.0.9+10/Contents/Home" prune_jdks "$pj"
-assert_status 0 "JAVA_HOME's jdk never pruned (even below it)" test -d "$pj/jdk-21.0.9+10"
-assert_status 0 "newest kept" test -d "$pj/jdk-21.0.20+1"
-assert_status 0 "second newest kept" test -d "$pj/jdk-21.0.13+10"
-assert_status 1 "third newest pruned" test -d "$pj/jdk-21.0.13+9"
-JAVA_HOME="" JAVA_HOME_SELECTED="$pj/jdk-21.0.9+10" prune_jdks "$pj"
-assert_status 0 "JAVA_HOME_SELECTED's jdk never pruned" test -d "$pj/jdk-21.0.9+10"
+assert_status 0 "ghidra untouched" test -d "$pj/ghidra_12.2_PUBLIC"
+assert_status 0 "staging-named jdk untouched" test -d "$pj/jdk-25.0.13+9.tmp.1"
+mkjdk jdk-25.0.9+10
+mkdir -p "$pj/jdk-25.0.9+10/Contents/Home"
+mkjdk jdk-25.0.20+1
+JAVA_HOME="$pj/jdk-25.0.9+10/Contents/Home" prune_jdks "$pj"
+assert_status 0 "JAVA_HOME's jdk never pruned (even below it)" test -d "$pj/jdk-25.0.9+10"
+assert_status 0 "newest kept" test -d "$pj/jdk-25.0.20+1"
+assert_status 0 "second newest kept" test -d "$pj/jdk-25.0.13+10"
+assert_status 1 "third newest pruned" test -d "$pj/jdk-25.0.13+9"
+JAVA_HOME="" JAVA_HOME_SELECTED="$pj/jdk-25.0.9+10" prune_jdks "$pj"
+assert_status 0 "JAVA_HOME_SELECTED's jdk never pruned" test -d "$pj/jdk-25.0.9+10"
 JAVA_HOME="" JAVA_HOME_SELECTED="" prune_jdks "$pj"
-assert_status 1 "unprotected old jdk pruned" test -d "$pj/jdk-21.0.9+10"
+assert_status 1 "unprotected old jdk pruned" test -d "$pj/jdk-25.0.9+10"
 assert_status 0 "prune of a missing dir is fine" prune_jdks "$T/no such tools"
 # hand-extracted JDKs (a release file, no sentinel) are never pruned, however old
 pu="$T/prune user"
@@ -468,12 +468,12 @@ mkdir -p "$pu/jdk-11.0.2+9" "$pu/jdk-17.0.2+8"
 : >"$pu/jdk-11.0.2+9/release"
 : >"$pu/jdk-17.0.2+8/release"
 mkjdk_in() { mkdir -p "$pu/$1" && : >"$pu/$1/.install-complete"; }
-mkjdk_in jdk-21.0.13+9
-mkjdk_in jdk-21.0.14+1
-mkjdk_in jdk-21.0.15+1
+mkjdk_in jdk-25.0.13+9
+mkjdk_in jdk-25.0.14+1
+mkjdk_in jdk-25.0.15+1
 JAVA_HOME="" JAVA_HOME_SELECTED="" prune_jdks "$pu"
 assert_status 0 "user jdk-11 kept" test -d "$pu/jdk-11.0.2+9"
 assert_status 0 "user jdk-17 kept" test -d "$pu/jdk-17.0.2+8"
-assert_status 1 "oldest script-made jdk pruned" test -d "$pu/jdk-21.0.13+9"
+assert_status 1 "oldest script-made jdk pruned" test -d "$pu/jdk-25.0.13+9"
 
 t_done

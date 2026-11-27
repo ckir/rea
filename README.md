@@ -7,8 +7,8 @@ engineering): `setup.sh` for Linux and macOS, `setup.ps1` for Windows.
 
 Each script takes a machine that has only the operating system, Claude Code, agy and a recent Node to a
 running Claude Code session paired with a live agy peer, with `rea` registered in an isolated Claude Code
-profile. It installs `agent-profile` and `clavity-ls` (always the latest release), a JDK (Temurin 21) and
-Ghidra 12.1.4 when they are missing, creates the profile, runs `rea setup` and `rea doctor` against it, and
+profile. It installs `agent-profile` and `clavity-ls` (always the latest release), a JDK (Temurin 25) and
+Ghidra 12.2 when they are missing, creates the profile, runs `rea setup` and `rea doctor` against it, and
 starts the session with `clavity-ls start`. Where `clavity-ls` cannot open an agy terminal itself (macOS, and
 Linux without a display) it prints a two-terminal flow instead.
 
@@ -93,7 +93,7 @@ Flags are the same in both scripts: kebab-case in `setup.sh`, PascalCase paramet
 |---|---|---|---|
 | `--profile NAME` | `-ProfileName NAME` | `rea` | Profile name, validated with `agent-profile`'s rules |
 | `--folder PATH` | `-Folder PATH` | current directory | Folder handed to `clavity-ls start` |
-| `--ghidra-dir PATH` | `-GhidraDir PATH` | env `GHIDRA_INSTALL_DIR` | Use this Ghidra (must be 12.1.x). Invalid by flag: exit 1. Invalid only from the environment: warning, the search continues |
+| `--ghidra-dir PATH` | `-GhidraDir PATH` | env `GHIDRA_INSTALL_DIR` | Use this Ghidra (must be 12.2.x). Invalid by flag: exit 1. Invalid only from the environment: warning, the search continues |
 | `--java-home PATH` | `-JavaHome PATH` | env `JAVA_HOME` | Use this JDK (21 or later, a full JDK). Same validity rules |
 | `--tools-dir PATH` | `-ToolsDir PATH` | see below | Where the JDK and Ghidra are installed |
 | `--bin-dir PATH` | `-BinDir PATH` | `~/.local/bin`; `%LOCALAPPDATA%\rea-tools\bin` | Where `agent-profile` and `clavity-ls` are installed |

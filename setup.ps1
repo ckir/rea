@@ -31,20 +31,20 @@ $ErrorActionPreference = 'Stop'
 
 # --- pins begin ---
 $script:PIN_SCRIPT_VERSION = '0.1.0'
-$script:PIN_GHIDRA_VERSION = '12.1.4'
-$script:PIN_GHIDRA_TOPDIR = 'ghidra_12.1.4_PUBLIC'
-$script:PIN_GHIDRA_URL = 'https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip'
-$script:PIN_GHIDRA_SHA256 = 'ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db'
-$script:PIN_GHIDRA_ZIP_BYTES = '569649598'
-$script:PIN_GHIDRA_UNPACKED_MB = '882'
-$script:PIN_JDK_MAJOR = '21'
-$script:PIN_JDK_UNPACKED_MB = '346'
-$script:PIN_JDK_FALLBACK_RELEASE = 'jdk-21.0.13+9'
-$script:PIN_JDK_FALLBACK_LINUX_X64 = 'OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz:d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c'
-$script:PIN_JDK_FALLBACK_MAC_X64 = 'OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz:9aa1d1c17ae5467a022679e7e0af5c00797d94ac462ed1a46f4db07a8a34a6dd'
-$script:PIN_JDK_FALLBACK_MAC_AARCH64 = 'OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz:bf036b35b071bfb2f54f2c0af8ee8d88afa95ee6eb3dce02c0f94cfc2524d04a'
-$script:PIN_JDK_FALLBACK_WINDOWS_X64 = 'OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip:a4dbaa05fca4bd89d84584e58c459bd732efebb1722af80ab13c6516832004f9'
-$script:PIN_JDK_FALLBACK_URL_BASE = 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/'
+$script:PIN_GHIDRA_VERSION = '12.2'
+$script:PIN_GHIDRA_TOPDIR = 'ghidra_12.2_PUBLIC'
+$script:PIN_GHIDRA_URL = 'https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip'
+$script:PIN_GHIDRA_SHA256 = '2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67'
+$script:PIN_GHIDRA_ZIP_BYTES = '569712708'
+$script:PIN_GHIDRA_UNPACKED_MB = '879'
+$script:PIN_JDK_MAJOR = '25'
+$script:PIN_JDK_UNPACKED_MB = '350'
+$script:PIN_JDK_FALLBACK_RELEASE = 'jdk-25.0.5.1+2'
+$script:PIN_JDK_FALLBACK_LINUX_X64 = 'OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz:760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0'
+$script:PIN_JDK_FALLBACK_MAC_X64 = 'OpenJDK25U-jdk_x64_mac_hotspot_25.0.5.1_2.tar.gz:b4b96fb7b9babd1b4faab1238e1835d0d7dd77b0690d220643c749a9ac00db36'
+$script:PIN_JDK_FALLBACK_MAC_AARCH64 = 'OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz:248353ea41be39d5d2c1c67c7ce0ae4d1668966aacd0c5308464bc1be42f677b'
+$script:PIN_JDK_FALLBACK_WINDOWS_X64 = 'OpenJDK25U-jdk_x64_windows_hotspot_25.0.5.1_2.zip:849d380ab0a64d9098e7d3a2de28beb73841c3b255c8284f019ccd8748c5eb5b'
+$script:PIN_JDK_FALLBACK_URL_BASE = 'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/'
 $script:PIN_AGENT_PROFILE_REPO = 'ckir/aiprofiles'
 $script:PIN_CLAVITY_REPO = 'ckir/clavity'
 $script:PIN_REA_SPEC = 'rea-agents@latest'
@@ -1047,14 +1047,14 @@ function Get-ReaGitHubReleaseAssetsScrape {
     }
 }
 
-# True when Tag is a Temurin 21 release name such as jdk-21.0.13+9.
+# True when Tag is a Temurin PIN_JDK_MAJOR release name such as jdk-25.0.5.1+2.
 function Test-ReaJdkRelease {
     param([AllowEmptyString()][string]$Tag)
-    return ($Tag -match '^jdk-21(\.[0-9]+)*\+[0-9]+\z')
+    return ($Tag -match "^jdk-$($script:PIN_JDK_MAJOR)(\.[0-9]+)*\+[0-9]+\z")
 }
 
 # Reads the first asset of an Adoptium response: Release, Url, Sha256, SidecarUrl, Bytes. $null unless the release
-# name, the download link (host github.com, path /adoptium/temurin21-binaries/, no dot-dot segment), the sidecar
+# name, the download link (host github.com, path /adoptium/temurin<PIN_JDK_MAJOR>-binaries/, no dot-dot segment), the sidecar
 # link and the checksum all pass.
 function ConvertFrom-ReaAdoptium {
     param([string]$Path)
@@ -1085,7 +1085,7 @@ function ConvertFrom-ReaAdoptium {
         return $null
     }
     if ((Get-ReaUrlHost $jdk.Url) -cne 'github.com') { return $null }
-    if ($jdk.Url -notmatch '^[^:]*://[^/]*/adoptium/temurin21-binaries/.') {
+    if ($jdk.Url -notmatch "^[^:]*://[^/]*/adoptium/temurin$($script:PIN_JDK_MAJOR)-binaries/.") {
         Write-ReaLog ERROR net "unexpected JDK download path: $($jdk.Url)"
         return $null
     }
@@ -1098,7 +1098,7 @@ function ConvertFrom-ReaAdoptium {
     return $jdk
 }
 
-# Asks the Adoptium API for the latest Temurin 21 JDK and parses it. Returns Code and Jdk: Code 0 with the
+# Asks the Adoptium API for the latest Temurin PIN_JDK_MAJOR JDK and parses it. Returns Code and Jdk: Code 0 with the
 # parsed answer, 2 when the API cannot be reached (the caller uses the fallback pin), 1 when the answer fails
 # validation.
 function Resolve-ReaAdoptium {
@@ -1106,7 +1106,7 @@ function Resolve-ReaAdoptium {
     $tmp = [System.IO.Path]::GetTempFileName()
     Register-ReaTempFile $tmp
     try {
-        $url = 'https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=' + [uri]::EscapeDataString($Arch) + '&image_type=jdk&os=' + [uri]::EscapeDataString($Os) + '&vendor=eclipse'
+        $url = 'https://api.adoptium.net/v3/assets/latest/' + $script:PIN_JDK_MAJOR + '/hotspot?architecture=' + [uri]::EscapeDataString($Arch) + '&image_type=jdk&os=' + [uri]::EscapeDataString($Os) + '&vendor=eclipse'
         if (-not (Invoke-ReaHttpGet -Url $url -Destination $tmp)) {
             return [pscustomobject]@{ Code = 2; Jdk = $null }
         }
@@ -1129,7 +1129,7 @@ $script:TarExe = ''
 # The longest extracted path allowed: the classic Windows MAX_PATH of 260 less room for the tool's own files.
 $script:MaxPathLength = 240
 # The longest entry of the pinned Ghidra archive, in characters below the extraction directory (measured)
-$script:GhidraLongestEntry = 149
+$script:GhidraLongestEntry = 147
 
 # The tools directory: -ToolsDir, else %LOCALAPPDATA%\rea-tools.
 function Get-ReaLocalAppData {
@@ -2569,15 +2569,15 @@ function Get-ReaGhidraVersion {
     return ''
 }
 
-# Valid is $true when Dir holds a Ghidra of the 12.1 line (12.1 or 12.1.N); otherwise Reason says why.
+# Valid is $true when Dir holds a Ghidra of the 12.2 line (12.2 or 12.2.N); otherwise Reason says why.
 function Test-ReaGhidraValid {
     param([string]$Dir)
     $ver = Get-ReaGhidraVersion -Dir $Dir
     if (-not $ver) {
         return [pscustomobject]@{ Valid = $false; Reason = 'no application.version in Ghidra/application.properties' }
     }
-    if ($ver -match '^12\.1(\.[0-9]+)?$') { return [pscustomobject]@{ Valid = $true; Reason = '' } }
-    return [pscustomobject]@{ Valid = $false; Reason = "version $ver is not in the 12.1 line" }
+    if ($ver -match '^12\.2(\.[0-9]+)?$') { return [pscustomobject]@{ Valid = $true; Reason = '' } }
+    return [pscustomobject]@{ Valid = $false; Reason = "version $ver is not in the 12.2 line" }
 }
 
 # Installs the pinned Ghidra into ToolsDir\<top directory> and returns its path; a read-only run only logs what it
@@ -2704,9 +2704,9 @@ function Select-ReaGhidra {
             $script:Summary['ghidra'] = "reused GHIDRA_INSTALL_DIR: $EnvDir"
             return
         }
-        if ((Get-ReaGhidraVersion -Dir $EnvDir) -match '^12\.2(\.|$)') {
-            Write-ReaLog DEBUG ghidra "GHIDRA_INSTALL_DIR $EnvDir is a 12.2 install"
-            Write-ReaLog WARN ghidra '12.2 is not accepted by rea 6.8.0; installing 12.1.4 alongside'
+        if ((Get-ReaGhidraVersion -Dir $EnvDir) -match '^12\.1(\.|$)') {
+            Write-ReaLog DEBUG ghidra "GHIDRA_INSTALL_DIR $EnvDir is a 12.1 install"
+            Write-ReaLog WARN ghidra '12.1 is not accepted by rea 6.10.1; installing 12.2 alongside'
         } else {
             Write-ReaLog WARN ghidra "GHIDRA_INSTALL_DIR $EnvDir is not a usable Ghidra ($($check.Reason)); ignoring it"
         }
@@ -2752,7 +2752,7 @@ function Invoke-ReaStepGhidra {
     }
     Write-ReaLog DEBUG ghidra "selected: $script:GhidraDirSelected"
     if (([string](Get-ReaPlatform).Os) -eq 'mac' -and $script:GhidraOfficial) {
-        Write-ReaLog WARN ghidra 'the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
+        Write-ReaLog WARN ghidra 'the official 12.2 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
         $script:Summary['ghidra'] = "warn: $($script:Summary['ghidra']); no macOS native decompiler in the official archive"
     }
     if ($script:GhidraReused) {
@@ -2910,7 +2910,7 @@ function Invoke-ReaStepProfile {
 
 # --- steps rea-setup and rea-doctor ---
 
-$script:HintReaGhidraLine = 'rea 6.8.0 accepts Ghidra 12.1.x; if rea now requires another line, update the pins block (PIN_GHIDRA_*)'
+$script:HintReaGhidraLine = 'rea 6.10.1 accepts Ghidra 12.2.x; if rea now requires another line, update the pins block (PIN_GHIDRA_*)'
 $script:NoteMacDecompiler = 'build it as rea docs/installation.md describes (sections "Missing macOS native decompiler" and "macOS arm64 native decompiler")'
 $script:ReaEnvironmentNames = @('CLAUDE_CONFIG_DIR', 'GHIDRA_INSTALL_DIR', 'JAVA_HOME')
 

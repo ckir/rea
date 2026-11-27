@@ -126,7 +126,7 @@ Describe 'setup.ps1 network layer' {
         It 'reads the first 64-hex token of every sidecar layout' {
             Get-ReaSidecarSha256 (Join-Path $script:Fix 'sidecar-aiprofiles.sha256') | Should -Be 'f8114d71dc4d54a342ed13bc2fbe4b87f755af1de1c4e7ffaa47262a2eb1ac3d'
             Get-ReaSidecarSha256 (Join-Path $script:Fix 'sidecar-clavity.sha256') | Should -Be 'c9de4fe583d8c301b90196f3ecb25568f09b7c7ad832ba917fd951df7b15da1c'
-            Get-ReaSidecarSha256 (Join-Path $script:Fix 'sidecar-temurin.sha256.txt') | Should -Be 'd7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c'
+            Get-ReaSidecarSha256 (Join-Path $script:Fix 'sidecar-temurin.sha256.txt') | Should -Be '760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0'
         }
         It 'lower-cases an upper-case digest' {
             $f = Join-Path $script:Tmp 'upper'
@@ -159,23 +159,23 @@ Describe 'setup.ps1 network layer' {
     Describe 'Adoptium parsing' {
         It 'parses the release, size, checksum and sidecar' {
             $j = ConvertFrom-ReaAdoptium -Path (Join-Path $script:Fix 'adoptium-linux-x64.json')
-            $j.Release | Should -Be 'jdk-21.0.13+9'
-            $j.Bytes | Should -Be '207858352'
-            $j.Sha256 | Should -Be 'd7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c'
-            $j.SidecarUrl | Should -Be 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sha256.txt'
-            $j.Url | Should -Match '^https://github\.com/adoptium/temurin21-binaries/releases/download/.*\.tar\.gz$'
+            $j.Release | Should -Be 'jdk-25.0.5.1+2'
+            $j.Bytes | Should -Be '141362230'
+            $j.Sha256 | Should -Be '760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0'
+            $j.SidecarUrl | Should -Be 'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz.sha256.txt'
+            $j.Url | Should -Match '^https://github\.com/adoptium/temurin25-binaries/releases/download/.*\.tar\.gz$'
         }
         It 'validates release tags' {
             Test-ReaJdkRelease 'jdk-22.0.1+7' | Should -BeFalse
-            Test-ReaJdkRelease 'jdk-21.0.13+9' | Should -BeTrue
-            Test-ReaJdkRelease 'jdk-21+35' | Should -BeTrue
-            Test-ReaJdkRelease 'jdk-21.0.13+9;x' | Should -BeFalse
-            Test-ReaJdkRelease "jdk-21.0.13+9`n" | Should -BeFalse
+            Test-ReaJdkRelease 'jdk-25.0.5.1+2' | Should -BeTrue
+            Test-ReaJdkRelease 'jdk-25+35' | Should -BeTrue
+            Test-ReaJdkRelease 'jdk-25.0.5.1+2;x' | Should -BeFalse
+            Test-ReaJdkRelease "jdk-25.0.5.1+2`n" | Should -BeFalse
         }
         It 'refuses a changed release name, link path or link host' {
             $text = [System.IO.File]::ReadAllText((Join-Path $script:Fix 'adoptium-linux-x64.json'))
             $cases = @{
-                'bad-release' = $text.Replace('"release_name": "jdk-21.0.13+9"', '"release_name": "jdk-22.0.1+7"')
+                'bad-release' = $text.Replace('"release_name": "jdk-25.0.5.1+2"', '"release_name": "jdk-22.0.1+7"')
                 'bad-path'    = $text.Replace('"link": "https://github.com/adoptium/', '"link": "https://github.com/evil/')
                 'bad-host'    = $text.Replace('"link": "https://github.com/', '"link": "https://evil.example/')
             }
@@ -187,10 +187,10 @@ Describe 'setup.ps1 network layer' {
         }
         It 'takes the first element of a two-element array' {
             $text = [System.IO.File]::ReadAllText((Join-Path $script:Fix 'adoptium-linux-x64.json')).Trim()
-            $second = $text.Replace('jdk-21.0.13+9"', 'jdk-99.0.0+1"')
+            $second = $text.Replace('jdk-25.0.5.1+2"', 'jdk-99.0.0+1"')
             $f = Join-Path $script:Tmp 'two.json'
             [System.IO.File]::WriteAllText($f, '[' + $text.Substring(1, $text.Length - 2) + ',' + $second.Substring(1, $second.Length - 2) + ']')
-            (ConvertFrom-ReaAdoptium -Path $f).Release | Should -Be 'jdk-21.0.13+9'
+            (ConvertFrom-ReaAdoptium -Path $f).Release | Should -Be 'jdk-25.0.5.1+2'
         }
         It 'refuses an empty list and a non-JSON file' {
             $f = Join-Path $script:Tmp 'empty.json'
@@ -202,12 +202,12 @@ Describe 'setup.ps1 network layer' {
         }
         It 'refuses dot-dot path segments in the link and the sidecar link' {
             $text = [System.IO.File]::ReadAllText((Join-Path $script:Fix 'adoptium-linux-x64.json'))
-            $link = 'temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",'
-            $side = 'temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sha256.txt'
+            $link = 'temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz",'
+            $side = 'temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz.sha256.txt'
             $cases = @{
-                'dotdot'  = $text.Replace($link, 'temurin21-binaries/../../evil/releases/x.tar.gz",')
-                'dotdot2' = $text.Replace($link, 'temurin21-binaries/%2e%2e/evil/x.tar.gz",')
-                'dotdot3' = $text.Replace($side, 'temurin21-binaries/../x.sha256.txt')
+                'dotdot'  = $text.Replace($link, 'temurin25-binaries/../../evil/releases/x.tar.gz",')
+                'dotdot2' = $text.Replace($link, 'temurin25-binaries/%2e%2e/evil/x.tar.gz",')
+                'dotdot3' = $text.Replace($side, 'temurin25-binaries/../x.sha256.txt')
             }
             foreach ($name in $cases.Keys) {
                 $cases[$name] | Should -Not -Be $text -Because "$name must differ from the fixture"
@@ -219,7 +219,7 @@ Describe 'setup.ps1 network layer' {
         It 'refuses a checksum that is not 64 hex digits' {
             $text = [System.IO.File]::ReadAllText((Join-Path $script:Fix 'adoptium-linux-x64.json'))
             $f = Join-Path $script:Tmp 'badsum.json'
-            [System.IO.File]::WriteAllText($f, $text.Replace('d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c",', 'd7f5",'))
+            [System.IO.File]::WriteAllText($f, $text.Replace('760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0",', 'd7f5",'))
             ConvertFrom-ReaAdoptium -Path $f | Should -BeNullOrEmpty
         }
     }
@@ -747,8 +747,8 @@ Describe 'setup.ps1 network layer' {
             [void]$script:Plan.Add(@{ Status = 200 })
             $r = Resolve-ReaAdoptium -Os 'linux' -Arch 'x64'
             $r.Code | Should -Be 0
-            $r.Jdk.Release | Should -Be 'jdk-21.0.13+9'
-            $script:Calls[0] | Should -Be 'https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse'
+            $r.Jdk.Release | Should -Be 'jdk-25.0.5.1+2'
+            $script:Calls[0] | Should -Be 'https://api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse'
         }
         It 'returns code 2 when the API cannot be reached' {
             [void]$script:Plan.Add(@{ Status = 404 })

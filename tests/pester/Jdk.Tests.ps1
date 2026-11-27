@@ -24,8 +24,8 @@ BeforeAll {
     $script:T = Join-Path ([System.IO.Path]::GetTempPath()) ('rea jdk work ' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $script:T | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $script:Rel = 'jdk-21.0.13+9'
-    $script:Ban21 = "openjdk version `"21.0.13`" 2026-10-21 LTS`nOpenJDK Runtime Environment (build 21.0.13+9-LTS)`nOpenJDK 64-Bit Server VM (build 21.0.13+9-LTS, mixed mode)`n"
+    $script:Rel = 'jdk-25.0.5.1+2'
+    $script:Ban25 = "openjdk version `"25.0.5.1`" 2026-10-21 LTS`nOpenJDK Runtime Environment (build 25.0.5.1+2-LTS)`nOpenJDK 64-Bit Server VM (build 25.0.5.1+2-LTS, mixed mode)`n"
     $script:Ban17 = "openjdk version `"17.0.2`" 2022-01-18`nOpenJDK 64-Bit Server VM (build 17.0.2+8, mixed mode)`n"
 
     function script:Get-Code {
@@ -33,7 +33,7 @@ BeforeAll {
         try { & $Block } catch { return $_.Exception.Data['ReaCode'] }
         return 0
     }
-    # A fake JDK at Dir: empty java and javac; Banner (default: a 21.0.13 64-bit banner) and Arch go in files the
+    # A fake JDK at Dir: empty java and javac; Banner (default: a 25.0.5.1 64-bit banner) and Arch go in files the
     # runner reads. -NoJavac makes it a JRE.
     function script:New-FakeJdk {
         param([string]$Dir, [string]$Banner = '', [string]$Arch = '', [switch]$NoJavac, [switch]$Stdout, [switch]$Fail)
@@ -57,7 +57,7 @@ BeforeAll {
         if (Test-Path -LiteralPath (Join-Path $home_ 'banner')) {
             $text += [System.IO.File]::ReadAllText((Join-Path $home_ 'banner'))
         } else {
-            $text += $script:Ban21
+            $text += $script:Ban25
         }
         if (Test-Path -LiteralPath (Join-Path $home_ 'stream')) { return [pscustomobject]@{ ExitCode = 0; Stdout = $text; Stderr = '' } }
         return [pscustomobject]@{ ExitCode = 0; Stdout = ''; Stderr = $text }
@@ -74,13 +74,13 @@ BeforeAll {
         }
     }
     # A JDK archive named Name under Dir. Layout: normal, mac (Contents/Home), two (a second top directory),
-    # badname (jdk-21.0.99+1) or j17 (a JDK 17).
+    # badname (jdk-25.0.99+1) or j17 (a JDK 17).
     function script:New-JdkArchive {
         param([string]$Dir, [string]$Name, [string]$Layout = 'normal')
         $src = Join-Path $Dir ('src ' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $src | Out-Null
         $top = $script:Rel
-        if ($Layout -eq 'badname') { $top = 'jdk-21.0.99+1' }
+        if ($Layout -eq 'badname') { $top = 'jdk-25.0.99+1' }
         $homeDir = Join-Path $src $top
         if ($Layout -eq 'mac') { $homeDir = Join-Path (Join-Path $homeDir 'Contents') 'Home' }
         $banner = ''
@@ -146,9 +146,9 @@ Describe 'jdk' {
     }
 
     Context 'Test-ReaJdkValid' {
-        It 'accepts 21.0.13, 64-bit, amd64 on x64' {
-            New-FakeJdk -Dir (Join-Path $script:Case 'j 21')
-            $r = Test-ReaJdkValid -Dir (Join-Path $script:Case 'j 21') -Arch x64
+        It 'accepts 25.0.5.1, 64-bit, amd64 on x64' {
+            New-FakeJdk -Dir (Join-Path $script:Case 'j 25')
+            $r = Test-ReaJdkValid -Dir (Join-Path $script:Case 'j 25') -Arch x64
             $r.Valid | Should -BeTrue
             $r.Reason | Should -Be ''
         }
@@ -156,10 +156,10 @@ Describe 'jdk' {
             New-FakeJdk -Dir (Join-Path $script:Case 'j 17') -Banner $script:Ban17
             $r = Test-ReaJdkValid -Dir (Join-Path $script:Case 'j 17') -Arch x64
             $r.Valid | Should -BeFalse
-            $r.Reason | Should -Be 'major 17 < 21'
+            $r.Reason | Should -Be 'major 17 < 25'
         }
         It 'refuses a 32-bit banner' {
-            New-FakeJdk -Dir (Join-Path $script:Case 'j 32') -Banner "openjdk version `"21`"`nOpenJDK Client VM (build 21+35, mixed mode)`nOpenJDK 32-Bit Server VM`n"
+            New-FakeJdk -Dir (Join-Path $script:Case 'j 32') -Banner "openjdk version `"25`"`nOpenJDK Client VM (build 25+35, mixed mode)`nOpenJDK 32-Bit Server VM`n"
             $r = Test-ReaJdkValid -Dir (Join-Path $script:Case 'j 32') -Arch x64
             $r.Valid | Should -BeFalse
             $r.Reason | Should -Match '64-bit'
@@ -178,14 +178,14 @@ Describe 'jdk' {
             New-FakeJdk -Dir (Join-Path $script:Case 'j 8') -Banner "java version `"1.8.0_392`"`nJava HotSpot(TM) 64-Bit Server VM (build 25.392-b08, mixed mode)`n"
             $r = Test-ReaJdkValid -Dir (Join-Path $script:Case 'j 8') -Arch x64
             $r.Valid | Should -BeFalse
-            $r.Reason | Should -Be 'major 8 < 21'
+            $r.Reason | Should -Be 'major 8 < 25'
         }
         It 'accepts a version without dots, a later major, CRLF output and a banner on stdout' {
-            New-FakeJdk -Dir (Join-Path $script:Case 'j bare') -Banner "openjdk version `"21`"`nOpenJDK 64-Bit Server VM (build 21+35)`n"
-            New-FakeJdk -Dir (Join-Path $script:Case 'j 22') -Banner "openjdk version `"22.0.1`" 2024-04-16`nOpenJDK 64-Bit Server VM`n"
-            New-FakeJdk -Dir (Join-Path $script:Case 'j crlf') -Banner "openjdk version `"21.0.13`" 2026-10-21 LTS`r`nOpenJDK 64-Bit Server VM (build 21.0.13+9-LTS)`r`n" -Arch "amd64`r`n"
+            New-FakeJdk -Dir (Join-Path $script:Case 'j bare') -Banner "openjdk version `"25`"`nOpenJDK 64-Bit Server VM (build 25+35)`n"
+            New-FakeJdk -Dir (Join-Path $script:Case 'j 26') -Banner "openjdk version `"26.0.1`" 2027-04-16`nOpenJDK 64-Bit Server VM`n"
+            New-FakeJdk -Dir (Join-Path $script:Case 'j crlf') -Banner "openjdk version `"25.0.5.1`" 2026-10-21 LTS`r`nOpenJDK 64-Bit Server VM (build 25.0.5.1+2-LTS)`r`n" -Arch "amd64`r`n"
             New-FakeJdk -Dir (Join-Path $script:Case 'j out') -Stdout
-            foreach ($n in @('j bare', 'j 22', 'j crlf', 'j out')) {
+            foreach ($n in @('j bare', 'j 26', 'j crlf', 'j out')) {
                 (Test-ReaJdkValid -Dir (Join-Path $script:Case $n) -Arch x64).Valid | Should -BeTrue -Because $n
             }
         }
@@ -248,7 +248,7 @@ Describe 'jdk' {
                 $os, $arch = $k -split '-'
                 $name, $sha = $pins[$k] -split ':'
                 $f = Get-ReaJdkFallback -Os $os -Arch $arch
-                $f.Release | Should -Be 'jdk-21.0.13+9'
+                $f.Release | Should -Be 'jdk-25.0.5.1+2'
                 $f.Url | Should -Be ($script:PIN_JDK_FALLBACK_URL_BASE + $name) -Because $k
                 $f.Sha256 | Should -Be $sha -Because $k
                 $f.SidecarUrl | Should -Be ($script:PIN_JDK_FALLBACK_URL_BASE + $name + '.sha256.txt')
@@ -267,32 +267,32 @@ Describe 'jdk' {
         It 'dies with 1 when -JavaHome is a JDK 17' {
             New-FakeJdk -Dir (Join-Path $script:Case 'j 17') -Banner $script:Ban17
             Get-Code { Select-ReaJdk -FlagHome (Join-Path $script:Case 'j 17') -EnvHome '' } | Should -Be 1
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'major 17 < 21'
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'major 17 < 25'
         }
         It 'uses a valid -JavaHome' {
-            New-FakeJdk -Dir (Join-Path $script:Case 'j 21')
-            Select-ReaJdk -FlagHome (Join-Path $script:Case 'j 21') -EnvHome ''
-            $script:JavaHomeSelected | Should -Be (Join-Path $script:Case 'j 21')
+            New-FakeJdk -Dir (Join-Path $script:Case 'j 25')
+            Select-ReaJdk -FlagHome (Join-Path $script:Case 'j 25') -EnvHome ''
+            $script:JavaHomeSelected | Should -Be (Join-Path $script:Case 'j 25')
             $script:Summary['jdk'] | Should -Match 'reused -JavaHome'
         }
         It 'warns about an invalid JAVA_HOME and uses the valid tools-dir install' {
             New-FakeJdk -Dir (Join-Path $script:Case 'j jre') -NoJavac
-            $jdk = Join-Path $script:ToolsDir 'jdk-21.0.13+9'
+            $jdk = Join-Path $script:ToolsDir 'jdk-25.0.5.1+2'
             New-FakeJdk -Dir $jdk
             [System.IO.File]::WriteAllText((Join-Path $jdk '.install-complete'), 'x')
             Select-ReaJdk -FlagHome '' -EnvHome (Join-Path $script:Case 'j jre')
             $script:JavaHomeSelected | Should -Be $jdk
             $log = Get-Content -LiteralPath $script:LogFile -Raw
             $log | Should -Match 'WARN.*JAVA_HOME .*j jre is not a usable JDK .*JRE.*ignoring it'
-            $log | Should -Match 'reusing jdk-21\.0\.13\+9'
+            $log | Should -Match 'reusing jdk-25\.0\.5\.1\+2'
         }
         It 'uses a valid JAVA_HOME before the tools dir, without a WARN' {
-            New-FakeJdk -Dir (Join-Path $script:Case 'j 21')
-            $jdk = Join-Path $script:ToolsDir 'jdk-21.0.13+9'
+            New-FakeJdk -Dir (Join-Path $script:Case 'j 25')
+            $jdk = Join-Path $script:ToolsDir 'jdk-25.0.5.1+2'
             New-FakeJdk -Dir $jdk
             [System.IO.File]::WriteAllText((Join-Path $jdk '.install-complete'), 'x')
-            Select-ReaJdk -FlagHome '' -EnvHome (Join-Path $script:Case 'j 21')
-            $script:JavaHomeSelected | Should -Be (Join-Path $script:Case 'j 21')
+            Select-ReaJdk -FlagHome '' -EnvHome (Join-Path $script:Case 'j 25')
+            $script:JavaHomeSelected | Should -Be (Join-Path $script:Case 'j 25')
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Not -Match 'WARN'
         }
         It 'reads -JavaHome from the bound parameters, not from its JAVA_HOME default' {
@@ -303,22 +303,22 @@ Describe 'jdk' {
             Get-ReaJavaHomeFlag | Should -Be 'some dir'
         }
         It 'picks the newest valid install and skips one without the sentinel and one that is a JDK 17' {
-            $a = Join-Path $script:ToolsDir 'jdk-21.0.20+1'
+            $a = Join-Path $script:ToolsDir 'jdk-25.0.20+1'
             New-FakeJdk -Dir $a
             [System.IO.File]::WriteAllText((Join-Path $a '.install-complete'), 'x')
-            New-FakeJdk -Dir (Join-Path $script:ToolsDir 'jdk-21.0.99+1')
-            $c = Join-Path $script:ToolsDir 'jdk-21.1.0+1'
+            New-FakeJdk -Dir (Join-Path $script:ToolsDir 'jdk-25.0.99+1')
+            $c = Join-Path $script:ToolsDir 'jdk-25.1.0+1'
             New-FakeJdk -Dir $c -Banner $script:Ban17
             [System.IO.File]::WriteAllText((Join-Path $c '.install-complete'), 'x')
             Select-ReaJdk -FlagHome '' -EnvHome ''
             $script:JavaHomeSelected | Should -Be $a
             $log = Get-Content -LiteralPath $script:LogFile -Raw
-            $log | Should -Match 'WARN.*ignoring the install jdk-21\.1\.0\+1: major 17 < 21'
-            $log | Should -Match 'DEBUG.*ignoring jdk-21\.0\.99\+1: no \.install-complete'
+            $log | Should -Match 'WARN.*ignoring the install jdk-25\.1\.0\+1: major 17 < 25'
+            $log | Should -Match 'DEBUG.*ignoring jdk-25\.0\.99\+1: no \.install-complete'
         }
         It 'resolves macOS installs to Contents\Home' {
             Mock Get-ReaPlatform { return @{ Os = 'mac'; Arch = 'x64' } }
-            $jdk = Join-Path $script:ToolsDir 'jdk-21.0.13+9'
+            $jdk = Join-Path $script:ToolsDir 'jdk-25.0.5.1+2'
             $homeDir = Join-Path (Join-Path $jdk 'Contents') 'Home'
             New-FakeJdk -Dir $homeDir
             [System.IO.File]::WriteAllText((Join-Path $jdk '.install-complete'), 'x')
@@ -343,14 +343,14 @@ Describe 'jdk' {
         BeforeEach {
             $script:Srv = Join-Path $script:Case 'srv dir'
             New-Item -ItemType Directory -Path $script:Srv | Out-Null
-            $script:Name = 'OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip'
-            $script:Url = 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/' + $script:Name
+            $script:Name = 'OpenJDK25U-jdk_x64_windows_hotspot_25.0.5.1_2.zip'
+            $script:Url = 'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/' + $script:Name
             $script:ApiCode = 0
             $script:ApiSha = ''
             Mock Resolve-ReaAdoptium {
                 if ($script:ApiCode -ne 0) { return [pscustomobject]@{ Code = $script:ApiCode; Jdk = $null } }
                 return [pscustomobject]@{ Code = 0; Jdk = [pscustomobject]@{
-                        Release = 'jdk-21.0.13+9'; Url = $script:Url; Sha256 = $script:ApiSha
+                        Release = 'jdk-25.0.5.1+2'; Url = $script:Url; Sha256 = $script:ApiSha
                         SidecarUrl = $script:Url + '.sha256.txt'; Bytes = '12345'
                     }
                 }
@@ -380,39 +380,39 @@ Describe 'jdk' {
         It 'installs a zip: final dir, sentinel, no archive or staging left, JAVA_HOME set, size logged' {
             Initialize-JdkServe
             $home_ = Install-ReaJdk
-            $final = Join-Path $script:ToolsDir 'jdk-21.0.13+9'
+            $final = Join-Path $script:ToolsDir 'jdk-25.0.5.1+2'
             $home_ | Should -Be $final
             $script:JavaHomeSelected | Should -Be $final
-            Get-ListingName $script:ToolsDir | Should -Be @('jdk-21.0.13+9')
+            Get-ListingName $script:ToolsDir | Should -Be @('jdk-25.0.5.1+2')
             Test-Path -LiteralPath (Join-Path $final '.install-complete') | Should -BeTrue
             Test-Path -LiteralPath (Join-Path (Join-Path $final 'bin') (Get-ReaJdkExe 'javac')) | Should -BeTrue
-            $script:Summary['jdk'] | Should -Match '^jdk-21\.0\.13\+9 installed'
+            $script:Summary['jdk'] | Should -Match '^jdk-25\.0\.5\.1\+2 installed'
             $log = Get-Content -LiteralPath $script:LogFile -Raw
-            $log | Should -Match 'resolved jdk-21\.0\.13\+9: https://github\.com/adoptium/temurin21-binaries/.*\.zip \(12345 bytes\)'
-            $log | Should -Match 'installed jdk-21\.0\.13\+9'
+            $log | Should -Match 'resolved jdk-25\.0\.5\.1\+2: https://github\.com/adoptium/temurin25-binaries/.*\.zip \(12345 bytes\)'
+            $log | Should -Match 'installed jdk-25\.0\.5\.1\+2'
         }
         It 'installs a tar.gz' {
-            $script:Name = 'OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz'
-            $script:Url = 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/' + $script:Name
+            $script:Name = 'OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz'
+            $script:Url = 'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/' + $script:Name
             Initialize-JdkServe
-            Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
-            Get-ListingName $script:ToolsDir | Should -Be @('jdk-21.0.13+9')
+            Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-25.0.5.1+2')
+            Get-ListingName $script:ToolsDir | Should -Be @('jdk-25.0.5.1+2')
         }
         It 'installs the macOS layout and returns Contents\Home' {
             Mock Get-ReaPlatform { return @{ Os = 'mac'; Arch = 'x64' } }
             Initialize-JdkServe -Layout mac
             $home_ = Install-ReaJdk
-            $expected = Join-Path (Join-Path (Join-Path $script:ToolsDir 'jdk-21.0.13+9') 'Contents') 'Home'
+            $expected = Join-Path (Join-Path (Join-Path $script:ToolsDir 'jdk-25.0.5.1+2') 'Contents') 'Home'
             $home_ | Should -Be $expected
-            Test-Path -LiteralPath (Join-Path (Join-Path $script:ToolsDir 'jdk-21.0.13+9') '.install-complete') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path (Join-Path $script:ToolsDir 'jdk-25.0.5.1+2') '.install-complete') | Should -BeTrue
         }
         It 'goes through Select-ReaJdk and Invoke-ReaStepJdk, and a second run reuses the install' {
             Initialize-JdkServe
             Invoke-ReaStepJdk
-            $script:JavaHomeSelected | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
+            $script:JavaHomeSelected | Should -Be (Join-Path $script:ToolsDir 'jdk-25.0.5.1+2')
             Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
             Invoke-ReaStepJdk
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'reusing jdk-21\.0\.13\+9'
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'reusing jdk-25\.0\.5\.1\+2'
             Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
         }
         It 'rechecks an install plan under the lock: a JDK another run installed meanwhile is reused, not downloaded again' {
@@ -423,7 +423,7 @@ Describe 'jdk' {
             try { Invoke-ReaStepJdk } finally { $script:PlanJdk = $null }
             Should -Invoke Invoke-ReaHttpGet -Times 2 -Exactly
             $script:JdkReused | Should -BeTrue
-            $script:JavaHomeSelected | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
+            $script:JavaHomeSelected | Should -Be (Join-Path $script:ToolsDir 'jdk-25.0.5.1+2')
         }
         It 'uses the embedded pin with the verbatim WARN when Adoptium is unreachable' {
             Initialize-JdkServe
@@ -431,13 +431,13 @@ Describe 'jdk' {
             $saved = $script:PIN_JDK_FALLBACK_WINDOWS_X64
             try {
                 $script:PIN_JDK_FALLBACK_WINDOWS_X64 = $script:Name + ':' + $script:ApiSha
-                Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
+                Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-25.0.5.1+2')
             } finally {
                 $script:PIN_JDK_FALLBACK_WINDOWS_X64 = $saved
             }
             $log = Get-Content -LiteralPath $script:LogFile -Raw
-            $log | Should -Match 'WARN.*Adoptium API unreachable; installing the embedded fallback jdk-21\.0\.13\+9, possibly outdated'
-            $log | Should -Match 'resolved jdk-21\.0\.13\+9: https://github\.com/adoptium/temurin21-binaries/releases/download/jdk-21\.0\.13%2B9/OpenJDK21U-jdk_x64_windows'
+            $log | Should -Match 'WARN.*Adoptium API unreachable; installing the embedded fallback jdk-25\.0\.5\.1\+2, possibly outdated'
+            $log | Should -Match 'resolved jdk-25\.0\.5\.1\+2: https://github\.com/adoptium/temurin25-binaries/releases/download/jdk-25\.0\.5\.1%2B2/OpenJDK25U-jdk_x64_windows'
         }
         It 'refuses a fallback pin whose checksum does not match, with 5' {
             Initialize-JdkServe
@@ -458,15 +458,15 @@ Describe 'jdk' {
         It 'exits 5 when the sidecar disagrees with the API, before downloading the archive' {
             Initialize-JdkServe -Side bad
             Get-Code { Install-ReaJdk } | Should -Be 5
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'checksum mismatch for jdk-21\.0\.13\+9'
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'checksum mismatch for jdk-25\.0\.5\.1\+2'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly -ParameterFilter { $Url -like '*sha256.txt' }
             Should -Invoke Invoke-ReaHttpGet -Times 0 -Exactly -ParameterFilter { $Url -notlike '*sha256.txt' }
         }
         It 'warns and goes on when the sidecar is unreachable' {
             Initialize-JdkServe -Side none
-            Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-21.0.13+9')
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*checksum sidecar of jdk-21\.0\.13\+9 is unreachable'
+            Install-ReaJdk | Should -Be (Join-Path $script:ToolsDir 'jdk-25.0.5.1+2')
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*checksum sidecar of jdk-25\.0\.5\.1\+2 is unreachable'
         }
         It 'exits 5 and installs nothing for two top directories' {
             Initialize-JdkServe -Layout two
@@ -482,7 +482,7 @@ Describe 'jdk' {
         It 'exits 5 and installs nothing when the downloaded JDK is a 17' {
             Initialize-JdkServe -Layout j17
             Get-Code { Install-ReaJdk } | Should -Be 5
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'not a usable JDK: major 17 < 21'
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'not a usable JDK: major 17 < 25'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'a dry run logs the release, URL and size and writes nothing' {
@@ -490,23 +490,23 @@ Describe 'jdk' {
             $script:Opt.DryRun = $true
             Install-ReaJdk | Should -BeNullOrEmpty
             $log = Get-Content -LiteralPath $script:LogFile -Raw
-            $log | Should -Match 'resolved jdk-21\.0\.13\+9: https://github\.com/.*\.zip \(12345 bytes\)'
+            $log | Should -Match 'resolved jdk-25\.0\.5\.1\+2: https://github\.com/.*\.zip \(12345 bytes\)'
             $log | Should -Match 'read-only run, nothing installed'
             Test-Path -LiteralPath $script:ToolsDir | Should -BeFalse
             Should -Invoke Invoke-ReaHttpGet -Times 0 -Exactly
         }
         It 'prunes old installs, keeping the newest two, and never touches jdk-notes' {
             Initialize-JdkServe
-            foreach ($v in @('21.0.1+1', '21.0.2+1', '21.0.3+1')) {
+            foreach ($v in @('25.0.1+1', '25.0.2+1', '25.0.3+1')) {
                 $d = Join-Path $script:ToolsDir "jdk-$v"
                 New-FakeJdk -Dir $d
                 [System.IO.File]::WriteAllText((Join-Path $d '.install-complete'), 'x')
             }
             New-Item -ItemType Directory -Path (Join-Path $script:ToolsDir 'jdk-notes') | Out-Null
             [System.IO.File]::WriteAllText((Join-Path $script:ToolsDir 'jdk-notes/readme.txt'), 'keep')
-            New-Item -ItemType Directory -Path (Join-Path $script:ToolsDir 'jdk-21.0.0+1 stray') | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $script:ToolsDir 'jdk-25.0.0+1 stray') | Out-Null
             Install-ReaJdk | Out-Null
-            (Get-ListingName $script:ToolsDir | Sort-Object) | Should -Be @('jdk-21.0.0+1 stray', 'jdk-21.0.13+9', 'jdk-21.0.3+1', 'jdk-notes')
+            (Get-ListingName $script:ToolsDir | Sort-Object) | Should -Be @('jdk-25.0.0+1 stray', 'jdk-25.0.3+1', 'jdk-25.0.5.1+2', 'jdk-notes')
             Test-Path -LiteralPath (Join-Path $script:ToolsDir 'jdk-notes/readme.txt') | Should -BeTrue
         }
     }

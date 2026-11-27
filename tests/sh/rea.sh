@@ -277,7 +277,7 @@ rc=0
 run_rea d3 step_rea_doctor || rc=$?
 assert_eq 5 "$rc" "doctor: a bad Ghidra dies with 5"
 assert_match 'ERROR +\[rea-doctor\] .*installation,java' "$(logtext d3)" "doctor: installation and java are named"
-assert_eq "" "$(grep -c 'rea 6.8.0 accepts Ghidra' "$T/d3.log" | sed 's/^0$//')" "doctor: no version hint when the version check passes or is absent"
+assert_eq "" "$(grep -c 'rea 6.10.1 accepts Ghidra' "$T/d3.log" | sed 's/^0$//')" "doctor: no version hint when the version check passes or is absent"
 
 # the version check failing gets the pins hint
 sed 's/"name":"installation","ok":false/"name":"installation","ok":true/; s/"name":"java","ok":false/"name":"version","ok":false/' "$GB" >"$T/gv.json"
@@ -285,7 +285,7 @@ RS_PRE="STUB_NPX_FILE_1='$CO'; STUB_NPX_FILE_2='$T/gv.json'; STUB_NPX_EXIT_2=1; 
 rc=0
 run_rea d4 step_rea_doctor || rc=$?
 assert_eq 5 "$rc" "doctor: a version failure dies with 5"
-assert_match 'rea 6\.8\.0 accepts Ghidra 12\.1\.x; if rea now requires another line, update the pins block \(PIN_GHIDRA_\*\)' "$(logtext d4)" "doctor: the version hint is printed"
+assert_match 'rea 6\.10\.1 accepts Ghidra 12\.2\.x; if rea now requires another line, update the pins block \(PIN_GHIDRA_\*\)' "$(logtext d4)" "doctor: the version hint is printed"
 
 # mac + only native_decompiler: WARN, summary warn, success
 RS_PRE="OS=mac; STUB_NPX_FILE_1='$CO'; STUB_NPX_FILE_2='$GM'; STUB_NPX_EXIT_2=1; export STUB_NPX_FILE_1 STUB_NPX_FILE_2 STUB_NPX_EXIT_2"

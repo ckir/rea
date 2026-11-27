@@ -339,7 +339,7 @@ Describe 'rea steps' {
             $script:Answers[1] = @{ Out = $script:CO }
             $script:Answers[2] = @{ Out = $bad; Exit = 1 }
             script:Get-Code { Invoke-ReaStepReaDoctor } | Should -Be 5
-            Get-LogText | Should -Match 'rea 6\.8\.0 accepts Ghidra 12\.1\.x; if rea now requires another line, update the pins block \(PIN_GHIDRA_\*\)'
+            Get-LogText | Should -Match 'rea 6\.10\.1 accepts Ghidra 12\.2\.x; if rea now requires another line, update the pins block \(PIN_GHIDRA_\*\)'
         }
         It 'on mac a lone native_decompiler failure is a WARN and a warn summary' {
             Mock Get-ReaPlatform { return @{ Os = 'mac'; Arch = 'x64' } }

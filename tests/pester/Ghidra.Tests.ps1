@@ -23,10 +23,10 @@ BeforeAll {
     $script:T = Join-Path ([System.IO.Path]::GetTempPath()) ('rea ghidra work ' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $script:T | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $script:F412 = Join-Path $script:Root 'tests/fixtures/fake-ghidra'
-    $script:F122 = Join-Path $script:Root 'tests/fixtures/fake-ghidra-12.2.0'
-    $script:WarnMac = 'the official 12.1.4 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
-    $script:Top = 'ghidra_12.1.4_PUBLIC'
+    $script:FPIN = Join-Path $script:Root 'tests/fixtures/fake-ghidra'
+    $script:FOLD = Join-Path $script:Root 'tests/fixtures/fake-ghidra-12.1.4'
+    $script:WarnMac = 'the official 12.2 archive has no macOS native decompiler; rea doctor will report native_decompiler missing until it is built (rea docs/installation.md, "Missing macOS native decompiler" / "macOS arm64 native decompiler")'
+    $script:Top = 'ghidra_12.2_PUBLIC'
 
     function script:Get-Code {
         param([scriptblock]$Block)
@@ -50,7 +50,7 @@ BeforeAll {
         $src = Join-Path $Dir ('src ' + [guid]::NewGuid().ToString('N'))
         $top = $script:Top
         if ($Layout -eq 'badname') { $top = 'ghidra_12.1.9_PUBLIC' }
-        $version = '12.1.4'
+        $version = '12.2'
         if ($Layout -eq 'badver') { $version = '12.1.3' }
         $root = Join-Path $src $top
         New-GhidraProperty -Dir $root -Text "application.name=Ghidra`napplication.version=$version`n"
@@ -118,8 +118,8 @@ Describe 'ghidra' {
 
     Context 'Get-ReaGhidraVersion and Test-ReaGhidraValid' {
         It 'reads both fixtures' {
-            Get-ReaGhidraVersion -Dir $script:F412 | Should -Be '12.1.4'
-            Get-ReaGhidraVersion -Dir $script:F122 | Should -Be '12.2.0'
+            Get-ReaGhidraVersion -Dir $script:FPIN | Should -Be '12.2'
+            Get-ReaGhidraVersion -Dir $script:FOLD | Should -Be '12.1.4'
         }
         It 'is empty for a missing directory and a directory without application.properties' {
             Get-ReaGhidraVersion -Dir (Join-Path $script:Case 'nothing here') | Should -Be ''
@@ -135,12 +135,12 @@ Describe 'ghidra' {
             New-GhidraProperty -Dir $d -Text "application.layout.version=2`n"
             Get-ReaGhidraVersion -Dir $d | Should -Be ''
         }
-        It 'accepts <v>' -ForEach @(@{ v = '12.1' }, @{ v = '12.1.4' }, @{ v = '12.1.9' }) {
+        It 'accepts <v>' -ForEach @(@{ v = '12.2' }, @{ v = '12.2.1' }, @{ v = '12.2.9' }) {
             $d = Join-Path $script:Case 'v'
             New-GhidraProperty -Dir $d -Text "application.version=$v`n"
             (Test-ReaGhidraValid -Dir $d).Valid | Should -BeTrue
         }
-        It 'refuses <v>' -ForEach @(@{ v = '12.2.0' }, @{ v = '11.3.1' }, @{ v = '12.10.0' }, @{ v = '12.1.x' }, @{ v = '' }) {
+        It 'refuses <v>' -ForEach @(@{ v = '12.1.4' }, @{ v = '11.3.1' }, @{ v = '12.20.0' }, @{ v = '12.2.x' }, @{ v = '' }) {
             $d = Join-Path $script:Case 'v'
             New-GhidraProperty -Dir $d -Text "application.version=$v`n"
             $r = Test-ReaGhidraValid -Dir $d
@@ -155,60 +155,60 @@ Describe 'ghidra' {
     }
 
     Context 'Select-ReaGhidra precedence' {
-        It 'dies with 1 when -GhidraDir is a 12.2 install, and says why' {
-            Get-Code { Select-ReaGhidra -FlagDir $script:F122 -EnvDir '' } | Should -Be 1
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'not a usable Ghidra: version 12\.2\.0'
+        It 'dies with 1 when -GhidraDir is a 12.1 install, and says why' {
+            Get-Code { Select-ReaGhidra -FlagDir $script:FOLD -EnvDir '' } | Should -Be 1
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'not a usable Ghidra: version 12\.1\.4'
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'dies with 1 when -GhidraDir is missing' {
             Get-Code { Select-ReaGhidra -FlagDir (Join-Path $script:Case 'nothing here') -EnvDir '' } | Should -Be 1
         }
         It 'uses a valid -GhidraDir over the environment' {
-            Select-ReaGhidra -FlagDir $script:F412 -EnvDir $script:F122
-            $script:GhidraDirSelected | Should -Be $script:F412
+            Select-ReaGhidra -FlagDir $script:FPIN -EnvDir $script:FOLD
+            $script:GhidraDirSelected | Should -Be $script:FPIN
             $script:Summary['ghidra'] | Should -Match 'reused -GhidraDir'
         }
         It 'uses a valid GHIDRA_INSTALL_DIR without a WARN' {
-            Select-ReaGhidra -FlagDir '' -EnvDir $script:F412
-            $script:GhidraDirSelected | Should -Be $script:F412
+            Select-ReaGhidra -FlagDir '' -EnvDir $script:FPIN
+            $script:GhidraDirSelected | Should -Be $script:FPIN
             Get-Content -LiteralPath $script:LogFile -Raw | Should -Not -Match 'WARN'
         }
         It 'warns for an invalid environment value and reuses the marked tools-dir install' {
             $d = Join-Path $script:ToolsDir $script:Top
-            New-GhidraProperty -Dir $d -Text "application.version=12.1.4`n"
+            New-GhidraProperty -Dir $d -Text "application.version=12.2`n"
             [System.IO.File]::WriteAllText((Join-Path $d '.install-complete'), 'x')
             Select-ReaGhidra -FlagDir '' -EnvDir (Join-Path $script:Case 'nothing here')
             $script:GhidraDirSelected | Should -Be $d
             $script:GhidraOfficial | Should -BeTrue
             $log = Get-Content -LiteralPath $script:LogFile -Raw
             $log | Should -Match 'WARN.*GHIDRA_INSTALL_DIR .*nothing here is not a usable Ghidra .*ignoring it'
-            $log | Should -Match 'reusing ghidra_12\.1\.4_PUBLIC'
+            $log | Should -Match 'reusing ghidra_12\.2_PUBLIC'
         }
-        It 'logs the verbatim 12.2 WARN' {
+        It 'logs the verbatim 12.1 WARN' {
             $d = Join-Path $script:ToolsDir $script:Top
-            New-GhidraProperty -Dir $d -Text "application.version=12.1.4`n"
+            New-GhidraProperty -Dir $d -Text "application.version=12.2`n"
             [System.IO.File]::WriteAllText((Join-Path $d '.install-complete'), 'x')
-            Select-ReaGhidra -FlagDir '' -EnvDir $script:F122
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match '(?m)WARN +\[ghidra\] 12\.2 is not accepted by rea 6\.8\.0; installing 12\.1\.4 alongside\s*$'
+            Select-ReaGhidra -FlagDir '' -EnvDir $script:FOLD
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match '(?m)WARN +\[ghidra\] 12\.1 is not accepted by rea 6\.10\.1; installing 12\.2 alongside\s*$'
         }
         It 'treats a tools-dir install without .install-complete as absent' {
             $d = Join-Path $script:ToolsDir $script:Top
-            New-GhidraProperty -Dir $d -Text "application.version=12.1.4`n"
+            New-GhidraProperty -Dir $d -Text "application.version=12.2`n"
             $script:Opt.DryRun = $true
             Select-ReaGhidra -FlagDir '' -EnvDir ''
             $script:GhidraDirSelected | Should -Be ''
             $log = Get-Content -LiteralPath $script:LogFile -Raw
-            $log | Should -Match 'DEBUG.*ignoring ghidra_12\.1\.4_PUBLIC: no \.install-complete'
-            $log | Should -Match 'will install Ghidra 12\.1\.4'
+            $log | Should -Match 'DEBUG.*ignoring ghidra_12\.2_PUBLIC: no \.install-complete'
+            $log | Should -Match 'will install Ghidra 12\.2'
         }
-        It 'does not reuse a marked tools-dir install of 12.2' {
+        It 'does not reuse a marked tools-dir install of 12.1' {
             $d = Join-Path $script:ToolsDir $script:Top
-            New-GhidraProperty -Dir $d -Text "application.version=12.2.0`n"
+            New-GhidraProperty -Dir $d -Text "application.version=12.1.4`n"
             [System.IO.File]::WriteAllText((Join-Path $d '.install-complete'), 'x')
             $script:Opt.DryRun = $true
             Select-ReaGhidra -FlagDir '' -EnvDir ''
             $script:GhidraDirSelected | Should -Be ''
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*ignoring the install ghidra_12\.1\.4_PUBLIC: version 12\.2\.0'
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*ignoring the install ghidra_12\.2_PUBLIC: version 12\.1\.4'
         }
         It 'tells the flag from the environment through the bound parameters' {
             $script:Bound = @{}
@@ -244,10 +244,10 @@ Describe 'ghidra' {
             Get-ListingName $script:ToolsDir | Should -Be @($script:Top)
             Test-Path -LiteralPath (Join-Path $final '.install-complete') | Should -BeTrue
             Test-Path -LiteralPath (Join-Path $final 'Ghidra/application.properties') | Should -BeTrue
-            $script:Summary['ghidra'] | Should -Match '^12\.1\.4 installed'
+            $script:Summary['ghidra'] | Should -Match '^12\.2 installed'
             $log = Get-Content -LiteralPath $script:LogFile -Raw
-            $log | Should -Match "will install Ghidra 12\.1\.4 from https://github\.com/.*\.zip \($($script:ZipSize) bytes\) into"
-            $log | Should -Match 'installed Ghidra 12\.1\.4'
+            $log | Should -Match "will install Ghidra 12\.2 from https://github\.com/.*\.zip \($($script:ZipSize) bytes\) into"
+            $log | Should -Match 'installed Ghidra 12\.2'
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
         }
         It 'refuses a tools directory that makes the longest path too long before anything is downloaded' {
@@ -264,7 +264,7 @@ Describe 'ghidra' {
             $script:GhidraDirSelected | Should -Be (Join-Path $script:ToolsDir $script:Top)
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
             Invoke-ReaStepGhidra
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'reusing ghidra_12\.1\.4_PUBLIC'
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'reusing ghidra_12\.2_PUBLIC'
             Should -Invoke Invoke-ReaHttpGet -Times 1 -Exactly
         }
         It 'rechecks an install plan under the lock: a Ghidra another run installed meanwhile is reused, not downloaded again' {
@@ -280,7 +280,7 @@ Describe 'ghidra' {
         It 'replaces an install directory without .install-complete (rename over the existing directory)' {
             Initialize-GhidraServe
             $old = Join-Path $script:ToolsDir $script:Top
-            New-GhidraProperty -Dir $old -Text "application.version=12.1.4`n"
+            New-GhidraProperty -Dir $old -Text "application.version=12.2`n"
             [System.IO.File]::WriteAllText((Join-Path $old 'stale-file'), 'half')
             Invoke-ReaStepGhidra
             Test-Path -LiteralPath (Join-Path $old '.install-complete') | Should -BeTrue
@@ -295,20 +295,20 @@ Describe 'ghidra' {
             Test-Path -LiteralPath (Join-Path (Join-Path $script:ToolsDir $script:Top) '.install-complete') | Should -BeTrue
             $log = Get-Content -LiteralPath $script:LogFile -Raw
             $log | Should -Match ('(?m)WARN +\[ghidra\] ' + [regex]::Escape($script:WarnMac) + '\s*$')
-            $script:Summary['ghidra'] | Should -Match '^warn: 12\.1\.4 installed'
+            $script:Summary['ghidra'] | Should -Match '^warn: 12\.2 installed'
         }
-        It 'installs alongside a 12.2 GHIDRA_INSTALL_DIR after the verbatim WARN' {
+        It 'installs alongside a 12.1 GHIDRA_INSTALL_DIR after the verbatim WARN' {
             Initialize-GhidraServe
-            $env:GHIDRA_INSTALL_DIR = $script:F122
+            $env:GHIDRA_INSTALL_DIR = $script:FOLD
             Invoke-ReaStepGhidra
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*12\.2 is not accepted by rea 6\.8\.0; installing 12\.1\.4 alongside'
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'WARN.*12\.1 is not accepted by rea 6\.10\.1; installing 12\.2 alongside'
             $script:GhidraDirSelected | Should -Be (Join-Path $script:ToolsDir $script:Top)
             Test-Path -LiteralPath (Join-Path (Join-Path $script:ToolsDir $script:Top) '.install-complete') | Should -BeTrue
         }
         It 'exits 5 and installs nothing when the archive reports another version' {
             Initialize-GhidraServe -Layout badver
             Get-Code { Install-ReaGhidra } | Should -Be 5
-            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match "reports version '12\.1\.3', expected 12\.1\.4"
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match "reports version '12\.1\.3', expected 12\.2"
             Get-ListingName $script:ToolsDir | Should -BeNullOrEmpty
         }
         It 'exits 5 and installs nothing for two top directories' {
@@ -345,7 +345,7 @@ Describe 'ghidra' {
             $script:Opt.DryRun = $true
             Install-ReaGhidra | Should -BeNullOrEmpty
             $log = Get-Content -LiteralPath $script:LogFile -Raw
-            $log | Should -Match "will install Ghidra 12\.1\.4 from https://github\.com/.*\.zip \($($script:ZipSize) bytes\) into .*ghidra_12\.1\.4_PUBLIC"
+            $log | Should -Match "will install Ghidra 12\.2 from https://github\.com/.*\.zip \($($script:ZipSize) bytes\) into .*ghidra_12\.2_PUBLIC"
             $log | Should -Match 'read-only run, nothing installed'
             Test-Path -LiteralPath $script:ToolsDir | Should -BeFalse
             Should -Invoke Invoke-ReaHttpGet -Times 0 -Exactly

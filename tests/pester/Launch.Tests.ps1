@@ -222,16 +222,16 @@ Describe 'the plan phase' {
     }
 
     It 'Invoke-ReaPlanJdk plans an install with the size of the listing and keeps the resolution' {
-        Mock Resolve-ReaJdkRelease { [pscustomobject]@{ Release = 'jdk-21.0.13+9'; Url = 'https://github.com/x'; Sha256 = ('0' * 64); SidecarUrl = ''; Bytes = '12345678' } }
+        Mock Resolve-ReaJdkRelease { [pscustomobject]@{ Release = 'jdk-25.0.5.1+2'; Url = 'https://github.com/x'; Sha256 = ('0' * 64); SidecarUrl = ''; Bytes = '12345678' } }
         Invoke-ReaPlanJdk
         $script:PlanJdk | Should -Be 'install'
         $script:PlanJdkBytes | Should -Be 12345678
-        $script:JdkPlanned.Release | Should -Be 'jdk-21.0.13+9'
+        $script:JdkPlanned.Release | Should -Be 'jdk-25.0.5.1+2'
         @(script:Get-Listing $script:ToolsDir).Count | Should -Be 0
     }
 
     It 'Invoke-ReaPlanJdk uses the estimate when the listing gave no size' {
-        Mock Resolve-ReaJdkRelease { [pscustomobject]@{ Release = 'jdk-21.0.13+9'; Url = 'https://github.com/x'; Sha256 = ('0' * 64); SidecarUrl = ''; Bytes = '' } }
+        Mock Resolve-ReaJdkRelease { [pscustomobject]@{ Release = 'jdk-25.0.5.1+2'; Url = 'https://github.com/x'; Sha256 = ('0' * 64); SidecarUrl = ''; Bytes = '' } }
         Invoke-ReaPlanJdk
         $script:PlanJdkBytes | Should -Be $script:JdkDownloadEstimateBytes
     }
@@ -294,14 +294,14 @@ Describe 'the disclosures and the plan summary' {
         $script:PlanToolsBin = 'update'
         $script:PlanToolsBinText = 'clavity-ls 1.0.0 (update)'
         $script:PlanJdk = 'install'
-        $script:PlanJdkText = 'jdk-21.0.13+9 into x'
+        $script:PlanJdkText = 'jdk-25.0.5.1+2 into x'
         $script:PlanJdkBytes = [int64]218103808
         $script:PlanGhidra = 'reuse'
         $script:PlanGhidraText = 'C:\g'
         Show-ReaPlanSummary
         @($script:Lines | Where-Object { $_ -match '^  [a-z-]+: ' }).Count | Should -Be 7
         ($script:Lines -join "`n") | Should -Match 'tools-bin: +would update clavity-ls'
-        ($script:Lines -join "`n") | Should -Match 'jdk: +would install jdk-21\.0\.13\+9 into x \(208\.0 MB\)'
+        ($script:Lines -join "`n") | Should -Match 'jdk: +would install jdk-25\.0\.5\.1\+2 into x \(208\.0 MB\)'
         ($script:Lines -join "`n") | Should -Match 'ghidra: +would reuse '
         $script:PlanGhidra = 'skip'
         $script:Lines.Clear()
@@ -400,7 +400,7 @@ Describe 'the summary' {
     It 'names what was done, where, and what to do next' {
         $script:Summary['profile'] = 'created rea: C:\p\claude'
         $script:Summary['tools_bin'] = "agent-profile 1.0.0: install`r`nclavity-ls 1.0.0: skip (already latest)"
-        $script:Summary['jdk'] = 'jdk-21.0.13+9 installed: C:\j'
+        $script:Summary['jdk'] = 'jdk-25.0.5.1+2 installed: C:\j'
         $script:Summary['ghidra'] = '12.1.4 installed: C:\g'
         $script:Summary['rea_setup'] = 'registered rea in C:\p\claude'
         $script:Summary['rea_doctor'] = 'ok: ghidra 12.1.4'
@@ -412,7 +412,7 @@ Describe 'the summary' {
         $text | Should -Match 'profile: +created rea: C:\\p\\claude'
         $text | Should -Match 'agent-profile 1\.0\.0: install'
         $text | Should -Match 'clavity-ls 1\.0\.0: skip'
-        $text | Should -Match 'jdk: +jdk-21\.0\.13\+9 installed'
+        $text | Should -Match 'jdk: +jdk-25\.0\.5\.1\+2 installed'
         $text | Should -Match 'ghidra: +12\.1\.4 installed'
         $text | Should -Match 'rea doctor: +ok: ghidra 12\.1\.4'
         $text | Should -Match ([regex]::Escape('log file:    C:\some log\file.log'))
@@ -601,7 +601,7 @@ Describe 'the dry run end to end' {
         Mock Get-ReaFreeMb { 100000 }
         Mock Resolve-ReaAgentProfile { [pscustomobject]@{ Tag = 'v1.0.0'; Version = '1.0.0'; Asset = 'a.zip'; Url = 'https://github.com/x/a.zip'; SidecarUrl = 'https://github.com/x/a.zip.sha256' } }
         Mock Resolve-ReaClavityRelease { [pscustomobject]@{ Tag = 'v2'; Version = '2.0.0'; Asset = 'c.tar.gz'; Url = 'https://github.com/x/c.tar.gz'; SidecarUrl = 'https://github.com/x/c.tar.gz.sha256' } }
-        Mock Resolve-ReaJdkRelease { [pscustomobject]@{ Release = 'jdk-21.0.13+9'; Url = 'https://github.com/adoptium/x.zip'; Sha256 = ('0' * 64); SidecarUrl = ''; Bytes = '218103808' } }
+        Mock Resolve-ReaJdkRelease { [pscustomobject]@{ Release = 'jdk-25.0.5.1+2'; Url = 'https://github.com/adoptium/x.zip'; Sha256 = ('0' * 64); SidecarUrl = ''; Bytes = '218103808' } }
         Mock Get-ReaDownload { throw 'a dry run must not download' }
         Mock Invoke-ReaHttpGet { throw 'a dry run must not download' }
         $script:Before = @(script:Get-Listing $script:State)
@@ -620,8 +620,8 @@ Describe 'the dry run end to end' {
 
     It 'prints the disclosures and the plan with would install, and the summary on stdout' {
         ($script:Notices -join "`n") | Should -Match 'Download: 751\.3 MB in total'
-        ($script:Notices -join "`n") | Should -Match 'jdk: +would install jdk-21\.0\.13\+9'
-        ($script:Notices -join "`n") | Should -Match 'ghidra: +would install Ghidra 12\.1\.4'
+        ($script:Notices -join "`n") | Should -Match 'jdk: +would install jdk-25\.0\.5\.1\+2'
+        ($script:Notices -join "`n") | Should -Match 'ghidra: +would install Ghidra 12\.2'
         ($script:Notices -join "`n") | Should -Match 'tools-bin: +would install agent-profile 1\.0\.0 \(install\), clavity-ls 2\.0\.0 \(install\)'
         ($script:Out -join "`n") | Should -Match 'Dry run: nothing was changed'
         ($script:Out -join "`n") | Should -Match 'env file: +not written'

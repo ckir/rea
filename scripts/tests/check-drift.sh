@@ -39,9 +39,9 @@ case_() {
 
 case_ "real pins are identical" 0 "" "" "pins identical"
 case_ "a changed ps1 value fails" 1 "" "s/^\\(.script:PIN_GHIDRA_ZIP_BYTES = '\\)[0-9]*/\\19/" "pins differ"
-case_ "a changed sh value fails" 1 "s/^PIN_JDK_MAJOR=21/PIN_JDK_MAJOR=22/" "" "pins differ"
+case_ "a changed sh value fails" 1 "s/^PIN_JDK_MAJOR=.*/PIN_JDK_MAJOR=99/" "" "pins differ"
 case_ "a pin missing from ps1 fails" 1 "" "/PIN_REA_SPEC/d" "pins differ"
-case_ "a bad sha fails on both sides" 1 "s/^PIN_GHIDRA_SHA256=dd/PIN_GHIDRA_SHA256=DD/" "s/PIN_GHIDRA_SHA256 = 'dd/PIN_GHIDRA_SHA256 = 'DD/" "not 64 lower-case hex"
+case_ "a bad sha fails on both sides" 1 "s/^PIN_GHIDRA_SHA256=./PIN_GHIDRA_SHA256=G/" "s/\\(PIN_GHIDRA_SHA256 = '\\)./\\1G/" "not 64 lower-case hex"
 case_ "a host outside the allow list fails" 1 "s#github.com/NationalSecurityAgency#evil.example/NationalSecurityAgency#" "s#github.com/NationalSecurityAgency#evil.example/NationalSecurityAgency#" "not in PIN_ALLOWED_HOSTS"
 case_ "empty ps1 pin list fails" 1 "" "s/pins begin/pins start/" "exactly one"
 case_ "empty sh pin list fails" 1 "s/pins end/pins stop/" "" "exactly one"

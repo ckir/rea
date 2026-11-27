@@ -1,5 +1,7 @@
 GPL/DemanglerGnu/os/linux_x86_64/demangler_gnu_v2_24
 GPL/DemanglerGnu/os/linux_x86_64/demangler_gnu_v2_41
+Ghidra/Debug/Debugger-agent-dbgeng/data/debugger-launchers/ssh-dbgeng-attach.sh
+Ghidra/Debug/Debugger-agent-dbgeng/data/debugger-launchers/ssh-dbgeng.sh
 Ghidra/Debug/Debugger-agent-drgn/data/debugger-launchers/core-drgn.sh
 Ghidra/Debug/Debugger-agent-drgn/data/debugger-launchers/kernel-drgn.sh
 Ghidra/Debug/Debugger-agent-drgn/data/debugger-launchers/local-drgn.sh
@@ -19,6 +21,8 @@ Ghidra/Debug/Debugger-agent-lldb/data/debugger-launchers/local-lldb.sh
 Ghidra/Debug/Debugger-agent-lldb/data/debugger-launchers/remote-lldb.sh
 Ghidra/Debug/Debugger-agent-lldb/data/debugger-launchers/ssh-lldb-win.sh
 Ghidra/Debug/Debugger-agent-lldb/data/debugger-launchers/ssh-lldb.sh
+Ghidra/Debug/Debugger-agent-x64dbg/data/debugger-launchers/ssh-x64dbg-attach.sh
+Ghidra/Debug/Debugger-agent-x64dbg/data/debugger-launchers/ssh-x64dbg.sh
 Ghidra/Debug/Debugger-isf/support/runISFServer
 Ghidra/Debug/Debugger-jpda/data/debugger-launchers/attach-java.jsh
 Ghidra/Debug/Debugger-jpda/data/debugger-launchers/bypid-java.jsh
@@ -114,6 +118,7 @@ docs/GhidraClass/ExerciseFiles/Advanced/sharedReturn
 docs/GhidraClass/ExerciseFiles/Advanced/switch
 docs/GhidraClass/ExerciseFiles/Advanced/write
 ghidraRun
+server/certTool
 server/ghidraSvr
 server/jaas_external_program.example.sh
 server/svrAdmin
@@ -132,3 +137,4 @@ support/jshellRun
 support/launch.sh
 support/pyghidraRun
 support/sleigh
+support/updateServerAllowList

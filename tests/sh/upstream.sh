@@ -10,7 +10,7 @@
 # code runs unchanged. The rea source file is the real GhidraReleasePolicy.ts (tests/fixtures). Every run proves
 # that no archive was requested and that nothing was written under the tools, bin and home directories.
 # The fixture tests/fixtures/GhidraReleasePolicy.ts is src/ghidra/GhidraReleasePolicy.ts of github.com/morluto/rea
-# at the tag rea-agents-6.8.0, unchanged.
+# at the tag rea-agents-6.10.1, unchanged.
 # shellcheck source=/dev/null
 . "$(dirname "$0")/lib.sh"
 cd "$ROOT" || exit 1
@@ -58,10 +58,10 @@ CURL=curl_local
 export CURL ALLOWED_SCHEMES ALLOWED_HOSTS RETRY_WAITS SLEEP OS ARCH OPT_DRY_RUN OPT_CHECK_UPSTREAM OPT_YES TOOLS_DIR BIN_DIR LOG_FILE CONSOLE_LEVEL
 FIX=$ROOT/tests/fixtures
 PIN_PATH=${PIN_GHIDRA_URL#https://}
-REA_PATH=/raw.githubusercontent.com/morluto/rea/rea-agents-6.8.0/src/ghidra/GhidraReleasePolicy.ts
+REA_PATH=/raw.githubusercontent.com/morluto/rea/rea-agents-6.10.1/src/ghidra/GhidraReleasePolicy.ts
 AP_ASSET=agent-profile-x86_64-unknown-linux-gnu.tar.gz
 CL_ASSET=clavity-ls-linux-x64-0.17.0.tar.gz
-JDK_ASSET=OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz
+JDK_ASSET=OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz
 
 # curl_local ARG...: curl with every allow-listed host sent to the fake server (BASE) instead
 curl_local() {
@@ -105,7 +105,7 @@ scn_end() {
 HEX64=0000000000000000000000000000000000000000000000000000000000000000
 
 # mk_up NAME [CASE]: builds the files and the scenario of a fake world in which every upstream expectation
-# holds, except as CASE says, starts the server and sets BASE. CASES: policy-new (rea supports 12.2.0),
+# holds, except as CASE says, starts the server and sets BASE. CASES: policy-new (rea supports 12.3),
 # policy-404, policy-noconst, npm-nover, len-bad (Content-Length one short), head405 (HEAD refused, the ranged
 # GET answers the length), evil (the Ghidra redirect leaves the allow-list), ap-badsum, cl-two, jdk-diff, ap-gone (the latest-release page answers 410: unreachable upstream).
 mk_up() {
@@ -114,9 +114,9 @@ mk_up() {
   mu_dir="$T/srv $mu_name"
   mkdir -p "$mu_dir"
   cp "$FIX/GhidraReleasePolicy.ts" "$mu_dir/policy.ts"
-  sed 's/"12\.1\.4"/"12.2.0"/' "$FIX/GhidraReleasePolicy.ts" >"$mu_dir/policy-new.ts"
+  sed 's/"12\.2"/"12.3"/' "$FIX/GhidraReleasePolicy.ts" >"$mu_dir/policy-new.ts"
   grep -v 'SUPPORTED_GHIDRA_VERSION = ' "$FIX/GhidraReleasePolicy.ts" >"$mu_dir/policy-noconst.ts"
-  printf '{"name":"rea-agents","version":"6.8.0"}\n' >"$mu_dir/npm.json"
+  printf '{"name":"rea-agents","version":"6.10.1"}\n' >"$mu_dir/npm.json"
   printf '{"name":"rea-agents"}\n' >"$mu_dir/npm-nover.json"
   printf '{"version":%s}\n' "${UP_NPM_RAW:-0}" >"$mu_dir/npm-raw.json"
   {
@@ -133,7 +133,7 @@ mk_up() {
   mu_apsum=ap.sha256
   mu_cl="$FIX/github-release-clavity.json"
   mu_jdksum="$FIX/sidecar-temurin.sha256.txt"
-  mu_gh='{"status":200,"body_file":"blob","content_length":569649598}'
+  mu_gh='{"status":200,"body_file":"blob","content_length":569712708}'
   mu_aplatest='{"status":302,"location":"{base}/r/aiprofiles/releases/tag/v0.1.2"}'
   mu_ghhop='{"status":302,"location":"{base}/dl/ghidra.zip"}'
   mu_pol='{"status":200,"body_file":"policy.ts"}'
@@ -145,8 +145,8 @@ mk_up() {
     npm-raw) mu_npm=npm-raw.json ;;
     policy-min) mu_pol='{"status":200,"body_file":"policy-min.ts"}' ;;
     tag-dots) mu_aplatest='{"status":302,"location":"{base}/r/aiprofiles/releases/tag/.."}' ;;
-    len-bad) mu_gh='{"status":200,"body_file":"blob","content_length":569649597}' ;;
-    head405) mu_gh='{"status":206,"head_status":405,"headers":{"Content-Range":"bytes 0-0/569649598"}}' ;;
+    len-bad) mu_gh='{"status":200,"body_file":"blob","content_length":569712707}' ;;
+    head405) mu_gh='{"status":206,"head_status":405,"headers":{"Content-Range":"bytes 0-0/569712708"}}' ;;
     evil) mu_ghhop='{"status":302,"location":"https://evil.example/ghidra.zip"}' ;;
     ap-badsum) mu_apsum=ap-bad.sha256 ;;
     cl-two) mu_cl="$mu_dir/cl-two.json" ;;
@@ -164,9 +164,9 @@ mk_up() {
   scn_ent /api.github.com/repos/ckir/clavity/releases/latest "{\"status\":200,\"body_file\":\"$mu_cl\"}"
   scn_ent "/github.com/ckir/clavity/releases/download/clavity-v31/$CL_ASSET.sha256" '{"status":302,"location":"{base}/dl/cl.sha256"}'
   scn_ent /dl/cl.sha256 '{"status":200,"body_file":"cl.sha256"}'
-  scn_ent "/api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse" "{\"status\":200,\"body_file\":\"$FIX/adoptium-linux-x64.json\"}"
-  scn_ent "/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/$JDK_ASSET.sha256.txt" "{\"status\":200,\"body_file\":\"$mu_jdksum\"}"
-  scn_ent "/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/$JDK_ASSET" '{"status":200,"body_file":"blob"}'
+  scn_ent "/api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse" "{\"status\":200,\"body_file\":\"$FIX/adoptium-linux-x64.json\"}"
+  scn_ent "/github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/$JDK_ASSET.sha256.txt" "{\"status\":200,\"body_file\":\"$mu_jdksum\"}"
+  scn_ent "/github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/$JDK_ASSET" '{"status":200,"body_file":"blob"}'
   scn_ent "/$PIN_PATH" "$mu_ghhop"
   scn_ent /dl/ghidra.zip "$mu_gh"
   scn_ent /registry.npmjs.org/rea-agents/latest "{\"status\":200,\"body_file\":\"$mu_npm\"}"
@@ -226,15 +226,15 @@ tree_of() {
 # --- rea_supported_ghidra ---
 mk_up supported ok
 rc=$(run_cu sup1 rea_supported_ghidra)
-assert_eq 0 "$rc" "rea_supported_ghidra: 6.8.0 supports the pinned 12.1.4"
-assert_match '^ok rea_supported_ghidra: rea-agents 6\.8\.0 supports Ghidra 12\.1\.4$' "$(cat "$T/sup1.out")" "rea_supported_ghidra: ok line"
+assert_eq 0 "$rc" "rea_supported_ghidra: 6.10.1 supports the pinned 12.2"
+assert_match '^ok rea_supported_ghidra: rea-agents 6\.10\.1 supports Ghidra 12\.2$' "$(cat "$T/sup1.out")" "rea_supported_ghidra: ok line"
 
 assert_eq 1 "$(count_prefix /raw.githubusercontent.com/)" "rea_supported_ghidra: the prefix counter sees the one raw request of a good answer"
 
 mk_up policy-min policy-min
 rc=$(run_cu supmin rea_supported_ghidra)
 assert_eq 0 "$rc" "rea_supported_ghidra: MIN_SUPPORTED_GHIDRA_VERSION is not the constant; the SUPPORTED one wins"
-assert_match 'supports Ghidra 12\.1\.4$' "$(cat "$T/supmin.out")" "rea_supported_ghidra: the word boundary picks 12.1.4"
+assert_match 'supports Ghidra 12\.2$' "$(cat "$T/supmin.out")" "rea_supported_ghidra: the word boundary picks 12.2"
 
 # a hostile registry answer is refused before any rea-agents-... request
 hn=0
@@ -257,12 +257,12 @@ assert_match '^FAIL agent-profile' "$(cat "$T/tagdots.out")" "release tag ..: ag
 mk_up policy-new policy-new
 rc=$(run_cu sup2 rea_supported_ghidra)
 assert_eq 5 "$rc" "rea_supported_ghidra: a newer Ghidra is a verification failure"
-assert_match 'rea 6\.8\.0 now supports Ghidra 12\.2\.0; update PIN_GHIDRA_\*' "$(cat "$T/sup2.err")" "rea_supported_ghidra: the PIN_GHIDRA_* hint"
+assert_match 'rea 6\.10\.1 now supports Ghidra 12\.3; update PIN_GHIDRA_\*' "$(cat "$T/sup2.err")" "rea_supported_ghidra: the PIN_GHIDRA_* hint"
 
 mk_up policy-404 policy-404
 rc=$(run_cu sup3 rea_supported_ghidra)
 assert_eq 5 "$rc" "rea_supported_ghidra: a 404 is a verification failure"
-assert_match 'raw\.githubusercontent\.com/morluto/rea/rea-agents-6\.8\.0/src/ghidra/GhidraReleasePolicy\.ts' "$(cat "$T/sup3.err")" "rea_supported_ghidra: the 404 names the URL"
+assert_match 'raw\.githubusercontent\.com/morluto/rea/rea-agents-6\.10\.1/src/ghidra/GhidraReleasePolicy\.ts' "$(cat "$T/sup3.err")" "rea_supported_ghidra: the 404 names the URL"
 
 mk_up policy-noconst policy-noconst
 rc=$(run_cu sup4 rea_supported_ghidra)
@@ -288,15 +288,15 @@ assert_eq 5 "$(printf '%s\n' "$out" | grep -c '^ok ')" "step_check_upstream: fiv
 assert_eq 0 "$(printf '%s\n' "$out" | grep -c '^FAIL')" "step_check_upstream: no FAIL line"
 assert_match '^ok agent-profile: v0\.1\.2 agent-profile-x86_64-unknown-linux-gnu\.tar\.gz' "$out" "step_check_upstream: agent-profile line"
 assert_match "^ok clavity-ls: clavity-v31 $CL_ASSET" "$out" "step_check_upstream: clavity-ls line"
-assert_match '^ok adoptium: jdk-21\.0\.13\+9 ' "$out" "step_check_upstream: adoptium line"
-assert_match '^ok ghidra: 569649598 bytes' "$out" "step_check_upstream: ghidra line"
-assert_match '^ok rea_supported_ghidra: rea-agents 6\.8\.0 supports Ghidra 12\.1\.4$' "$out" "step_check_upstream: rea line"
+assert_match '^ok adoptium: jdk-25\.0\.5\.1\+2 ' "$out" "step_check_upstream: adoptium line"
+assert_match '^ok ghidra: 569712708 bytes' "$out" "step_check_upstream: ghidra line"
+assert_match '^ok rea_supported_ghidra: rea-agents 6\.10\.1 supports Ghidra 12\.2$' "$out" "step_check_upstream: rea line"
 assert_eq "$before" "$after" "step_check_upstream: nothing written under the work tree (tools, bin, home, tmp)"
 assert_eq "" "$(tree_of "$TOOLS_DIR")" "step_check_upstream: no tools dir"
 assert_eq "" "$(tree_of "$BIN_DIR")" "step_check_upstream: no bin dir"
 assert_eq "" "$(ls -A "$TMP_DIR")" "step_check_upstream: no temporary file left"
 for p in "/github.com/ckir/aiprofiles/releases/latest/download/$AP_ASSET" /dl/ap.tgz "/github.com/ckir/clavity/releases/download/clavity-v31/$CL_ASSET" \
-  "/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/$JDK_ASSET" "/$PIN_PATH" /dl/ghidra.zip; do
+  "/github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/$JDK_ASSET" "/$PIN_PATH" /dl/ghidra.zip; do
   assert_eq 0 "$(count_of "$p")" "step_check_upstream: no GET of the archive $p"
 done
 
@@ -316,7 +316,7 @@ for uc in policy-new:rea_supported_ghidra:5 len-bad:ghidra:5 evil:ghidra:5 ap-ba
 done
 mk_up f-len len-bad
 rc=$(run_cu f-len step_check_upstream)
-assert_match '569649597.*569649598|569649598.*569649597' "$(cat "$T/f-len.err")" "Content-Length mismatch: both numbers are named"
+assert_match '569712707.*569712708|569712708.*569712707' "$(cat "$T/f-len.err")" "Content-Length mismatch: both numbers are named"
 mk_up f-evil evil
 rc=$(run_cu f-evil step_check_upstream)
 assert_match 'evil\.example' "$(cat "$T/f-evil.err")" "off-list redirect: the host is named"
@@ -325,7 +325,7 @@ assert_match 'evil\.example' "$(cat "$T/f-evil.err")" "off-list redirect: the ho
 mk_up h405 head405
 rc=$(run_cu h405 step_check_upstream)
 assert_eq 0 "$rc" "step_check_upstream: HEAD answered 405, Content-Range gives the length"
-assert_match '^ok ghidra: 569649598 bytes' "$(cat "$T/h405.out")" "step_check_upstream: head405 ghidra line"
+assert_match '^ok ghidra: 569712708 bytes' "$(cat "$T/h405.out")" "step_check_upstream: head405 ghidra line"
 
 # --- main with --check-upstream: preflight, prereq, check, and nothing else ---
 # stubs.sh: every step main would run, each recording its name in $T/calls

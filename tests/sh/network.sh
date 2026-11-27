@@ -32,7 +32,7 @@ assert_eq github.com "$(url_host 'https://u:p@GitHub.com:8443/x')" "url_host str
 
 assert_eq f8114d71dc4d54a342ed13bc2fbe4b87f755af1de1c4e7ffaa47262a2eb1ac3d "$(sidecar_sha256 "$FIX/sidecar-aiprofiles.sha256")" "sidecar two-space"
 assert_eq c9de4fe583d8c301b90196f3ecb25568f09b7c7ad832ba917fd951df7b15da1c "$(sidecar_sha256 "$FIX/sidecar-clavity.sha256")" "sidecar asterisk"
-assert_eq d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c "$(sidecar_sha256 "$FIX/sidecar-temurin.sha256.txt")" "sidecar temurin"
+assert_eq 760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0 "$(sidecar_sha256 "$FIX/sidecar-temurin.sha256.txt")" "sidecar temurin"
 printf 'ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD\n' >"$TMP/upper"
 assert_eq abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd "$(sidecar_sha256 "$TMP/upper")" "sidecar uppercase is lowered"
 printf 'not a checksum\n' >"$TMP/junk"
@@ -45,25 +45,25 @@ assert_eq "clavity-ls-win-x64-0.17.0.tar.gz" "$(json_query "$FIX/github-release-
 assert_eq "" "$(json_query "$FIX/github-release-clavity.json" 'd.nothing')" "json undefined is empty"
 assert_eq "" "$(json_query "$FIX/github-release-clavity.json" 'null')" "json null is empty"
 
-assert_eq "jdk-21.0.13+9 207858352" "$(
+assert_eq "jdk-25.0.5.1+2 141362230" "$(
   adoptium_parse "$FIX/adoptium-linux-x64.json"
   echo "$JDK_RELEASE $JDK_BYTES"
 )" "adoptium parse"
-assert_eq "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sha256.txt" "$(
+assert_eq "760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0 https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz.sha256.txt" "$(
   adoptium_parse "$FIX/adoptium-linux-x64.json"
   echo "$JDK_SHA256 $JDK_SIDECAR_URL"
 )" "adoptium parse sha and sidecar"
-assert_match '^https://github\.com/adoptium/temurin21-binaries/releases/download/.*\.tar\.gz$' "$(
+assert_match '^https://github\.com/adoptium/temurin25-binaries/releases/download/.*\.tar\.gz$' "$(
   adoptium_parse "$FIX/adoptium-linux-x64.json"
   echo "$JDK_URL"
 )" "adoptium parse url"
 assert_status 1 "bad tag" jdk_release_valid jdk-22.0.1+7
-assert_status 0 "good tag" jdk_release_valid jdk-21.0.13+9
-assert_status 0 "good tag, no patch" jdk_release_valid jdk-21+35
-assert_status 1 "tag with suffix" jdk_release_valid 'jdk-21.0.13+9;x'
+assert_status 0 "good tag" jdk_release_valid jdk-25.0.5.1+2
+assert_status 0 "good tag, no patch" jdk_release_valid jdk-25+35
+assert_status 1 "tag with suffix" jdk_release_valid 'jdk-25.0.5.1+2;x'
 
 # A response whose release name, link host or link path is outside the rules is refused.
-sed 's/"release_name": "jdk-21.0.13+9"/"release_name": "jdk-22.0.1+7"/' "$FIX/adoptium-linux-x64.json" >"$TMP/bad-release.json"
+sed 's/"release_name": "jdk-25.0.5.1+2"/"release_name": "jdk-22.0.1+7"/' "$FIX/adoptium-linux-x64.json" >"$TMP/bad-release.json"
 assert_status 1 "adoptium bad release" adoptium_parse "$TMP/bad-release.json"
 sed 's#"link": "https://github.com/adoptium/#"link": "https://github.com/evil/#' "$FIX/adoptium-linux-x64.json" >"$TMP/bad-path.json"
 assert_status 1 "adoptium bad url path" adoptium_parse "$TMP/bad-path.json"
@@ -228,11 +228,11 @@ GITHUB_TOKEN=github_pat_11AA-bb.cc_DD http_get https://api.github.com/x "$TMP/ou
 assert_match 'Bearer github_pat_11AA-bb.cc_DD' "$(cat "$STUB_CFG")" "fine-grained token shape is sent"
 
 # --- adoptium_parse refuses a dot-dot path segment ---
-sed 's#temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",#temurin21-binaries/../../evil/releases/x.tar.gz",#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot.json"
+sed 's#temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz",#temurin25-binaries/../../evil/releases/x.tar.gz",#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot.json"
 assert_status 1 "adoptium dot-dot in link" adoptium_parse "$TMP/dotdot.json"
-sed 's#temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",#temurin21-binaries/%2e%2e/evil/x.tar.gz",#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot2.json"
+sed 's#temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz",#temurin25-binaries/%2e%2e/evil/x.tar.gz",#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot2.json"
 assert_status 1 "adoptium encoded dot-dot in link" adoptium_parse "$TMP/dotdot2.json"
-sed 's#temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz.sha256.txt#temurin21-binaries/../x.sha256.txt#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot3.json"
+sed 's#temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz.sha256.txt#temurin25-binaries/../x.sha256.txt#' "$FIX/adoptium-linux-x64.json" >"$TMP/dotdot3.json"
 assert_status 1 "adoptium dot-dot in sidecar link" adoptium_parse "$TMP/dotdot3.json"
 
 # --- GitHub parsing halves, offline ---

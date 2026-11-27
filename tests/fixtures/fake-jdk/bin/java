@@ -7,7 +7,7 @@
 
 # Test stub for a JDK's java. It runs no Java; it prints what the files next to bin/ say, so a test copies
 # this directory and writes them:
-#   banner  the text of -version (default: a Temurin 21.0.13 64-bit banner)
+#   banner  the text of -version (default: a Temurin 25.0.5.1 64-bit banner)
 #   arch    the os.arch value of -XshowSettings:properties (default: amd64)
 #   stream  out to print on stdout instead of stderr
 #   fail    when present the stub exits 1 without output
@@ -34,9 +34,9 @@ banner() {
       emit "$line"
     done <"$home/banner"
   else
-    emit 'openjdk version "21.0.13" 2026-10-21 LTS'
-    emit 'OpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)'
-    emit 'OpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)'
+    emit 'openjdk version "25.0.5.1" 2026-10-21 LTS'
+    emit 'OpenJDK Runtime Environment Temurin-25.0.5.1+2 (build 25.0.5.1+2-LTS)'
+    emit 'OpenJDK 64-Bit Server VM Temurin-25.0.5.1+2 (build 25.0.5.1+2-LTS, mixed mode, sharing)'
   fi
 }
 for a in "$@"; do

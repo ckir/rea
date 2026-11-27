@@ -310,14 +310,14 @@ Describe 'extraction' {
     It 'extracts a zip: directory entries become directories, files get their parents' {
         $d = Join-Path $script:T 'extract zip'
         Expand-ReaArchive -Path (Join-Path $script:T 'clean.zip') -Destination $d | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.1.4_PUBLIC') -PathType Container | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.1.4_PUBLIC/ok.txt') -PathType Leaf | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.1.4_PUBLIC/dir with space/inner file.txt') -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.2_PUBLIC') -PathType Container | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.2_PUBLIC/ok.txt') -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.2_PUBLIC/dir with space/inner file.txt') -PathType Leaf | Should -BeTrue
     }
     It 'extracts a zip whose file entries have no directory entry first' {
         $d = Join-Path $script:T 'extract zip exec'
         Expand-ReaArchive -Path (Join-Path $script:T 'exec.zip') -Destination $d | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.1.4_PUBLIC/support/analyzeHeadless') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $d 'ghidra_12.2_PUBLIC/support/analyzeHeadless') | Should -BeTrue
     }
     It 'does not overwrite an existing file' {
         $d = Join-Path $script:T 'extract twice'
@@ -338,7 +338,7 @@ Describe 'extraction' {
         try {
             $d = Join-Path $script:T 'extract long'
             $full = [System.IO.Path]::GetFullPath($d)
-            $longest = $full.Length + 1 + 'ghidra_12.1.4_PUBLIC/dir with space/inner file.txt'.Length
+            $longest = $full.Length + 1 + 'ghidra_12.2_PUBLIC/dir with space/inner file.txt'.Length
             $script:MaxPathLength = $longest - 1
             foreach ($n in @('clean.zip', 'clean.tar.gz')) {
                 if ($n -eq 'clean.tar.gz') { $script:MaxPathLength = $full.Length + 1 + 'top/dir with space/inner file.txt'.Length - 1 }
@@ -436,20 +436,20 @@ Describe 'Remove-ReaTree' {
         Clear-ReaTempFile
         Test-Path -LiteralPath $reg | Should -BeFalse
         $orph = Join-Path $script:T 'tree orph'
-        New-Item -ItemType Directory -Path (Join-Path $orph 'jdk-21.0.1+1.tmp.999999') -Force | Out-Null
-        & $mkLink (Join-Path $orph 'jdk-21.0.1+1.tmp.999999/l')
+        New-Item -ItemType Directory -Path (Join-Path $orph 'jdk-25.0.1+1.tmp.999999') -Force | Out-Null
+        & $mkLink (Join-Path $orph 'jdk-25.0.1+1.tmp.999999/l')
         Remove-ReaOrphan -Dir $orph
-        Test-Path -LiteralPath (Join-Path $orph 'jdk-21.0.1+1.tmp.999999') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $orph 'jdk-25.0.1+1.tmp.999999') | Should -BeFalse
         $tools = Join-Path $script:T 'tree jdks'
-        foreach ($n in @('jdk-21.0.1+1', 'jdk-21.0.2+1', 'jdk-21.0.3+1')) {
+        foreach ($n in @('jdk-25.0.1+1', 'jdk-25.0.2+1', 'jdk-25.0.3+1')) {
             New-Item -ItemType Directory -Path (Join-Path $tools $n) -Force | Out-Null
             Set-Content -LiteralPath (Join-Path $tools "$n/.install-complete") -Value x
         }
-        & $mkLink (Join-Path $tools 'jdk-21.0.1+1/l')
+        & $mkLink (Join-Path $tools 'jdk-25.0.1+1/l')
         $saved = $env:JAVA_HOME
         $env:JAVA_HOME = ''
         try { Remove-ReaOldJdk -ToolsDir $tools } finally { $env:JAVA_HOME = $saved }
-        Test-Path -LiteralPath (Join-Path $tools 'jdk-21.0.1+1') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $tools 'jdk-25.0.1+1') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $outside 'keep') | Should -BeTrue
     }
 }
@@ -596,21 +596,21 @@ Describe 'orphan cleanup' {
     BeforeEach { Mock Write-ReaLog {} }
     It 'removes dead-pid and old directories and keeps the rest' {
         $t = Join-Path $script:T 'orphans'
-        foreach ($n in @('agent-profile.tmp.999999', 'clavity-ls.exe.old.999999', "jdk-21.0.1+1.tmp.$PID", "jdk-21 old live.tmp.$PID", 'jdk-21.0.2+1.tmp.abc', 'other.dir')) {
+        foreach ($n in @('agent-profile.tmp.999999', 'clavity-ls.exe.old.999999', "jdk-25.0.1+1.tmp.$PID", "jdk-25 old live.tmp.$PID", 'jdk-25.0.2+1.tmp.abc', 'other.dir')) {
             New-Item -ItemType Directory -Path (Join-Path $t $n) -Force | Out-Null
         }
-        Set-OldAge -Path (Join-Path $t "jdk-21 old live.tmp.$PID") -Hours 72
+        Set-OldAge -Path (Join-Path $t "jdk-25 old live.tmp.$PID") -Hours 72
         Remove-ReaOrphan -Dir $t
         Test-Path -LiteralPath (Join-Path $t 'agent-profile.tmp.999999') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $t 'clavity-ls.exe.old.999999') | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $t "jdk-21.0.1+1.tmp.$PID") | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $t "jdk-21 old live.tmp.$PID") | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $t 'jdk-21.0.2+1.tmp.abc') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $t "jdk-25.0.1+1.tmp.$PID") | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $t "jdk-25 old live.tmp.$PID") | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $t 'jdk-25.0.2+1.tmp.abc') | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $t 'other.dir') | Should -BeTrue
     }
     It 'never touches a *.tmp.<n> or *.old.<n> name the script does not create (the bin dir is shared with other tools)' {
         $t = Join-Path $script:T 'orphans foreign'
-        $mine = 'agent-profile.tmp.999999', 'clavity-ls.exe.old.999999', 'jdk-21.0.1+1.tmp.999999', 'jdk-21.0.1+1.work.tmp.999999', 'ghidra.work.tmp.999999', 'ghidra_12.1.4_PUBLIC.old.999999', 'env.ps1.tmp.999999'
+        $mine = 'agent-profile.tmp.999999', 'clavity-ls.exe.old.999999', 'jdk-25.0.1+1.tmp.999999', 'jdk-25.0.1+1.work.tmp.999999', 'ghidra.work.tmp.999999', 'ghidra_12.2_PUBLIC.old.999999', 'env.ps1.tmp.999999'
         $foreign = 'vim.tmp.999999', 'notes.old.999999', 'my.backup.old.999999', 'jdk-notes.tmp.999999', 'ghidra-notes.old.999999'
         foreach ($n in @($mine) + @($foreign)) {
             New-Item -ItemType Directory -Path (Join-Path $t $n) -Force | Out-Null
@@ -632,18 +632,18 @@ Describe 'staging and Complete-ReaInstall' {
     AfterEach { Clear-ReaTempFile }
     It 'creates NAME.tmp.PID and registers it for cleanup' {
         $t = Join-Path $script:T 'stage tools'
-        $s = New-ReaStaging -Dir $t -Name 'ghidra_12.1.4_PUBLIC'
-        $s | Should -Be (Join-Path $t "ghidra_12.1.4_PUBLIC.tmp.$PID")
+        $s = New-ReaStaging -Dir $t -Name 'ghidra_12.2_PUBLIC'
+        $s | Should -Be (Join-Path $t "ghidra_12.2_PUBLIC.tmp.$PID")
         Test-Path -LiteralPath $s -PathType Container | Should -BeTrue
         Clear-ReaTempFile
         Test-Path -LiteralPath $s | Should -BeFalse
     }
     It 'replaces an incomplete directory and writes the sentinel inside staging' {
         $t = Join-Path $script:T 'swap tools'
-        $final = Join-Path $t 'ghidra_12.1.4_PUBLIC'
+        $final = Join-Path $t 'ghidra_12.2_PUBLIC'
         New-Item -ItemType Directory -Path $final -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $final 'incomplete-leftover') -Value x
-        $s = New-ReaStaging -Dir $t -Name 'ghidra_12.1.4_PUBLIC'
+        $s = New-ReaStaging -Dir $t -Name 'ghidra_12.2_PUBLIC'
         Set-Content -LiteralPath (Join-Path $s 'marker') -Value x
         Complete-ReaInstall -Staging $s -Final $final | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $final 'marker') | Should -BeTrue
@@ -670,10 +670,10 @@ Describe 'staging and Complete-ReaInstall' {
     }
     It 'rolls back when the second move fails' {
         $t = Join-Path $script:T 'rollback tools'
-        $final = Join-Path $t 'jdk-21.0.13+9'
+        $final = Join-Path $t 'jdk-25.0.13+9'
         New-Item -ItemType Directory -Path $final -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $final 'old-content') -Value x
-        $s = New-ReaStaging -Dir $t -Name 'jdk-21.0.13+9'
+        $s = New-ReaStaging -Dir $t -Name 'jdk-25.0.13+9'
         $script:RollbackFinal = $final
         Mock Move-Item { throw 'simulated failure' } -ParameterFilter { $LiteralPath -eq $script:RollbackStaging }
         $script:RollbackStaging = $s
@@ -710,9 +710,9 @@ Describe 'JDK pruning' {
         }
     }
     AfterEach { $env:JAVA_HOME = $script:SavedJavaHome }
-    It 'keeps the newest two, orders 21.0.13+10 > 21.0.13+9 > 21.0.9+10 and never touches other directories' {
-        New-Jdk 'jdk-21.0.13+9', 'jdk-21.0.9+10', 'jdk-21.0.13+10', 'jdk-17.0.1+1'
-        foreach ($n in @('not-a-jdk', 'jdk-21.0.13+9.tmp.1', 'ghidra_12.1.4_PUBLIC', 'jdk-notes', 'jdk-21-scratch', 'jdk-0.0.1-user/sub', 'jdk-mac-old')) {
+    It 'keeps the newest two, orders 25.0.13+10 > 25.0.13+9 > 25.0.9+10 and never touches other directories' {
+        New-Jdk 'jdk-25.0.13+9', 'jdk-25.0.9+10', 'jdk-25.0.13+10', 'jdk-17.0.1+1'
+        foreach ($n in @('not-a-jdk', 'jdk-25.0.13+9.tmp.1', 'ghidra_12.2_PUBLIC', 'jdk-notes', 'jdk-25-scratch', 'jdk-0.0.1-user/sub', 'jdk-mac-old')) {
             New-Item -ItemType Directory -Path (Join-Path $script:Pj $n) -Force | Out-Null
         }
         Set-Content -LiteralPath (Join-Path $script:Pj 'jdk-notes/keep.txt') -Value x
@@ -720,12 +720,12 @@ Describe 'JDK pruning' {
         Set-Content -LiteralPath (Join-Path $script:Pj 'jdk-1.8.0+1/Contents/Home/release') -Value x
         Remove-ReaOldJdk -ToolsDir $script:Pj
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-notes/keep.txt') | Should -BeTrue
-        foreach ($n in @('jdk-21-scratch', 'jdk-0.0.1-user/sub', 'jdk-mac-old', 'not-a-jdk', 'ghidra_12.1.4_PUBLIC', 'jdk-21.0.13+9.tmp.1')) {
+        foreach ($n in @('jdk-25-scratch', 'jdk-0.0.1-user/sub', 'jdk-mac-old', 'not-a-jdk', 'ghidra_12.2_PUBLIC', 'jdk-25.0.13+9.tmp.1')) {
             Test-Path -LiteralPath (Join-Path $script:Pj $n) | Should -BeTrue
         }
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.13+10') | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.13+9') | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.9+10') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.13+10') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.13+9') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.9+10') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-17.0.1+1') | Should -BeFalse
         # a JDK without our sentinel is a user's own, whatever its release file says
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-1.8.0+1') | Should -BeTrue
@@ -735,26 +735,26 @@ Describe 'JDK pruning' {
         Set-Content -LiteralPath (Join-Path $script:Pj 'jdk-8.0.1+1/release') -Value x
         New-Item -ItemType Directory -Path (Join-Path $script:Pj 'jdk-11.0.2+9') -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $script:Pj 'jdk-11.0.2+9/release') -Value x
-        New-Jdk 'jdk-21.0.1+1', 'jdk-21.0.2+1', 'jdk-21.0.3+1'
+        New-Jdk 'jdk-25.0.1+1', 'jdk-25.0.2+1', 'jdk-25.0.3+1'
         Remove-ReaOldJdk -ToolsDir $script:Pj
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-8.0.1+1') | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-11.0.2+9') | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.1+1') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.1+1') | Should -BeFalse
     }
     It 'never prunes the JDK in use, even when JAVA_HOME points below it' {
-        New-Jdk 'jdk-21.0.9+10', 'jdk-21.0.13+9', 'jdk-21.0.13+10', 'jdk-21.0.20+1'
-        $env:JAVA_HOME = Join-Path $script:Pj 'jdk-21.0.9+10/Contents/Home'
+        New-Jdk 'jdk-25.0.9+10', 'jdk-25.0.13+9', 'jdk-25.0.13+10', 'jdk-25.0.20+1'
+        $env:JAVA_HOME = Join-Path $script:Pj 'jdk-25.0.9+10/Contents/Home'
         Remove-ReaOldJdk -ToolsDir $script:Pj
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.9+10') | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.13+9') | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.20+1') | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.13+10') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.9+10') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.13+9') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.20+1') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.13+10') | Should -BeTrue
     }
     It 'honours -InUse and a sibling with the same prefix is not the one in use' {
-        New-Jdk 'jdk-21.0.1+1', 'jdk-21.0.1+10', 'jdk-21.0.5+1', 'jdk-21.0.6+1'
-        Remove-ReaOldJdk -ToolsDir $script:Pj -InUse (Join-Path $script:Pj 'jdk-21.0.1+10')
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.1+10') | Should -BeTrue
-        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-21.0.1+1') | Should -BeFalse
+        New-Jdk 'jdk-25.0.1+1', 'jdk-25.0.1+10', 'jdk-25.0.5+1', 'jdk-25.0.6+1'
+        Remove-ReaOldJdk -ToolsDir $script:Pj -InUse (Join-Path $script:Pj 'jdk-25.0.1+10')
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.1+10') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Pj 'jdk-25.0.1+1') | Should -BeFalse
     }
     It 'is fine on a missing directory' {
         { Remove-ReaOldJdk -ToolsDir (Join-Path $script:T 'no such tools') } | Should -Not -Throw

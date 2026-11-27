@@ -56,8 +56,8 @@ macOS and `setup.ps1 -CheckUpstream -Yes` on Windows. It downloads no archive an
 one ok or FAIL line per expectation (latest releases, asset names, URLs, the embedded Ghidra archive size) and exits 5
 when one breaks.
 
-When it fails because of Ghidra (`rea` accepts only the 12.1.x line, so a newer 12.1.y may be fine and a 12.2
-is not): read the FAIL line, then edit the Ghidra pins in BOTH `setup.sh` and `setup.ps1`
+When it fails because of Ghidra (`rea` accepts the Ghidra line it was verified against, so a newer patch of that line may be fine and a
+new minor is not; rea 6.10.1 takes 12.2.x, and a Ghidra that raises its minimum Java also needs `PIN_JDK_*` moved): read the FAIL line, then edit the Ghidra pins in BOTH `setup.sh` and `setup.ps1`
 (`PIN_GHIDRA_VERSION`, `PIN_GHIDRA_TOPDIR`, `PIN_GHIDRA_URL`, `PIN_GHIDRA_SHA256`, `PIN_GHIDRA_ZIP_BYTES`,
 `PIN_GHIDRA_UNPACKED_MB`) with the values of the new release asset, the hash from NSA's published checksum
 (never from the file you downloaded alone), run `just drift`, run `sh setup.sh --check-upstream --yes`, then

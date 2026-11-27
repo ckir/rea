@@ -29,7 +29,7 @@ import sys
 import tarfile
 import zipfile
 
-TOP = "ghidra_12.1.4_PUBLIC"
+TOP = "ghidra_12.2_PUBLIC"
 
 
 def tar_add(tf, name, data=b"x", kind=tarfile.REGTYPE, link="", mode=0o644):
