@@ -1649,6 +1649,7 @@ function Expand-ReaArchive {
     try {
         [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
     } catch {
+        Write-ReaLog -Level ERROR -Step archive -Message ('cannot create ' + $Destination + ': ' + $_.Exception.Message)
         return $false
     }
     if (-not (Test-ReaPathLengthOk -Path $Path -Destination $Destination)) { return $false }

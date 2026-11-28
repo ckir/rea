@@ -359,6 +359,13 @@ Describe 'extraction' {
         Expand-ReaArchive -Path (Join-Path $script:T 'nope.tar.gz') -Destination $d | Should -BeFalse
         Test-Path -LiteralPath $d | Should -BeFalse
     }
+    It 'logs why it fails when the destination cannot be created (a file where its parent should be)' {
+        Mock Write-ReaLog {}
+        $blocker = Join-Path $script:T 'dest-blocker'
+        Set-Content -LiteralPath $blocker -Value 'a file, not a directory'
+        Expand-ReaArchive -Path (Join-Path $script:T 'clean.zip') -Destination (Join-Path $blocker 'sub') | Should -BeFalse
+        Should -Invoke Write-ReaLog -Times 1 -Exactly -ParameterFilter { $Message -like 'cannot create *dest-blocker*' }
+    }
 }
 
 Describe 'Remove-ReaTree' {
