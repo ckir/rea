@@ -18,3 +18,10 @@ it is done.
   `rm` or `Remove-Item` of `ghidra_*` in `setup.sh` or `setup.ps1`; see the end of the ghidra step, `setup.sh` near
   line 2049). A Ghidra directory can hold user projects, so do not delete it unprompted: print the stale directories
   and their size and let the user remove them, or add an explicit prune option.
+- [ ] No test pins the JDK size estimate: `JDK_DOWNLOAD_ESTIMATE_BYTES` (`setup.sh`) and
+  `$script:JdkDownloadEstimateBytes` (`setup.ps1`), now 141362230, can be reverted to the Temurin 21 figure with every
+  test still green (measured 2026-11-28 by the AGY-TEST-AUDIT). Pin both against the size in
+  `tests/fixtures/adoptium-linux-x64.json`.
+- [ ] No test asserts the message `setup.ps1` prints after `Expand-ReaArchive` fails on the Ghidra archive
+  ("cannot extract the Ghidra archive (the cause is logged above; ..."), including the computed `-ToolsDir` length
+  bound. Add a Pester test that makes the extraction fail and asserts the exit code and the message.
