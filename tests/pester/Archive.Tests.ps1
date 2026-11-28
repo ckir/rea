@@ -363,8 +363,14 @@ Describe 'extraction' {
         Mock Write-ReaLog {}
         $blocker = Join-Path $script:T 'dest-blocker'
         Set-Content -LiteralPath $blocker -Value 'a file, not a directory'
-        Expand-ReaArchive -Path (Join-Path $script:T 'clean.zip') -Destination (Join-Path $blocker 'sub') | Should -BeFalse
-        Should -Invoke Write-ReaLog -Times 1 -Exactly -ParameterFilter { $Message -like 'cannot create *dest-blocker*' }
+        $dest = Join-Path $blocker 'sub'
+        # The reason the log must carry is the one the same call raises here.
+        $script:ExpectedCreateFailure = ''
+        try { [System.IO.Directory]::CreateDirectory($dest) | Out-Null } catch { $script:ExpectedCreateFailure = $_.Exception.Message }
+        $script:ExpectedCreateFailure | Should -Not -BeNullOrEmpty
+        $script:ExpectedCreateLine = 'cannot create ' + $dest + ': ' + $script:ExpectedCreateFailure
+        Expand-ReaArchive -Path (Join-Path $script:T 'clean.zip') -Destination $dest | Should -BeFalse
+        Should -Invoke Write-ReaLog -Times 1 -Exactly -ParameterFilter { $Level -eq 'ERROR' -and $Step -eq 'archive' -and $Message -ceq $script:ExpectedCreateLine }
     }
 }
 
