@@ -81,7 +81,7 @@ Use Windows PowerShell 5.1 (`powershell.exe`) unless stated. Get the script from
    with `the install location must be on a fixed NTFS volume`. Report `(Get-Volume).FileSystem` and DriveType of
    the `%LOCALAPPDATA%` volume. Also confirm `rea doctor --provider ghidra` (inside the run) did not complain
    about the volume.
-6. **Longest Ghidra path versus MAX_PATH.** The longest entry in the Ghidra zip is 149 characters below the
+6. **Longest Ghidra path versus MAX_PATH.** The longest entry in the Ghidra zip is 147 characters below the
    extraction directory; the script refuses when the result would pass 240. With `LongPathsEnabled` unset,
    run with a deliberately long tools dir:
    `-ToolsDir C:\<a directory name padded so the full path is 70 characters> -Yes -NoLaunch` (a dry run is not

@@ -178,9 +178,9 @@ if it does, the script has no special message for it, and you have to clear the 
 
 ## Windows: path length
 
-Ghidra's longest entry is 149 characters long below the extraction directory. The script refuses to extract
+Ghidra's longest entry is 147 characters long below the extraction directory. The script refuses to extract
 when the result would pass 240 characters (Windows' limit is 260 unless `LongPathsEnabled` is set), so keep a
-`-ToolsDir` at most 64 characters long. The default `%LOCALAPPDATA%\rea-tools` is well under that.
+`-ToolsDir` at most 66 characters long. The default `%LOCALAPPDATA%\rea-tools` is well under that.
 
 ## Limits
 

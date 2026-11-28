@@ -2626,7 +2626,7 @@ function Install-ReaGhidra {
         }
         $extract = Join-Path $work 'x'
         if (-not (Expand-ReaArchive -Path $archive -Destination $extract)) {
-            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message 'cannot extract the Ghidra archive (the longest path in it is 149 characters beyond the extraction directory: a -ToolsDir of at most 64 characters stays under the 240 limit)'
+            Stop-Rea -Code $script:EX_VERIFY -Step ghidra -Message "cannot extract the Ghidra archive (the longest path in it is $($script:GhidraLongestEntry) characters beyond the extraction directory: a -ToolsDir of at most $($script:MaxPathLength - $script:GhidraLongestEntry - 27) characters stays under the $($script:MaxPathLength) limit)"
         }
         Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
         $items = @(Get-ChildItem -LiteralPath $extract -Force)
