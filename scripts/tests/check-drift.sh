@@ -61,4 +61,15 @@ PIN_EXTRA=x" "" "pins differ"
 case_ "a duplicated marker fails" 1 "/pins end/a\\
 # --- pins end ---" "" "exactly one"
 case_ "an http URL in a pin fails" 1 "s#^PIN_AGENT_PROFILE_REPO=.*#PIN_AGENT_PROFILE_REPO=http://github.com/x/#" "s#^\\(.script:PIN_AGENT_PROFILE_REPO = \\).*#\\1'http://github.com/x/'#" "http://"
+
+# Every pin is compared: changing ONE pin's value in setup.ps1 alone must fail with "pins differ", for each pin in the
+# real setup.sh. A check that skipped a pin (a filter, a truncated list) would pass the named cases above for the pins
+# they happen to name and miss the rest.
+pin_names=$(sed -n '/^# --- pins begin ---$/,/^# --- pins end ---$/p' "$root/setup.sh" | sed -n 's/^\(PIN_[A-Z0-9_]*\)=.*/\1/p')
+pin_count=0
+for pin_name in $pin_names; do
+  pin_count=$((pin_count + 1))
+  case_ "changing only $pin_name in setup.ps1 fails" 1 "" "s#^\\(.script:$pin_name = '\\).*#\\1changed-by-test'#" "pins differ"
+done
+check "the per-pin loop found the pins (at least 19)" "$([ "$pin_count" -ge 19 ] && echo yes || echo "no, found $pin_count")" yes
 exit "$failures"

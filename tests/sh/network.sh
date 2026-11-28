@@ -61,6 +61,13 @@ assert_status 1 "bad tag" jdk_release_valid jdk-22.0.1+7
 assert_status 0 "good tag" jdk_release_valid jdk-25.0.5.1+2
 assert_status 0 "good tag, no patch" jdk_release_valid jdk-25+35
 assert_status 1 "tag with suffix" jdk_release_valid 'jdk-25.0.5.1+2;x'
+assert_status 1 "tag of the next major" jdk_release_valid jdk-26+35
+assert_status 1 "tag of the previous LTS" jdk_release_valid jdk-21.0.5+11
+assert_status 1 "tag whose major only starts with the pin" jdk_release_valid jdk-250+1
+assert_status 1 "tag with no build number" jdk_release_valid jdk-25
+assert_status 1 "tag with a pre-release suffix" jdk_release_valid jdk-25.0.6-beta+1
+assert_status 1 "tag with an empty patch part" jdk_release_valid 'jdk-25.+1'
+assert_status 1 "tag with a doubled dot" jdk_release_valid 'jdk-25..1+2'
 
 # A response whose release name, link host or link path is outside the rules is refused.
 sed 's/"release_name": "jdk-25.0.5.1+2"/"release_name": "jdk-22.0.1+7"/' "$FIX/adoptium-linux-x64.json" >"$TMP/bad-release.json"
@@ -69,6 +76,18 @@ sed 's#"link": "https://github.com/adoptium/#"link": "https://github.com/evil/#'
 assert_status 1 "adoptium bad url path" adoptium_parse "$TMP/bad-path.json"
 sed 's#"link": "https://github.com/#"link": "https://evil.example/#' "$FIX/adoptium-linux-x64.json" >"$TMP/bad-host.json"
 assert_status 1 "adoptium bad url host" adoptium_parse "$TMP/bad-host.json"
+# A link under another Temurin repository (a stale major, a longer major, or no file after the repository) is refused.
+for ar_repo in temurin21-binaries temurin26-binaries temurin250-binaries temurin2-binaries; do
+  sed "/\"link\":/s#/adoptium/temurin25-binaries/#/adoptium/$ar_repo/#" "$FIX/adoptium-linux-x64.json" >"$TMP/repo-$ar_repo.json"
+  if cmp -s "$FIX/adoptium-linux-x64.json" "$TMP/repo-$ar_repo.json"; then
+    echo "network.sh: the sed did not change the link for $ar_repo" >&2
+    exit 1
+  fi
+  assert_status 1 "adoptium link under $ar_repo is refused" adoptium_parse "$TMP/repo-$ar_repo.json"
+done
+sed '/"link":/s#"https://github.com/adoptium/temurin25-binaries/releases/download/.*"#"https://github.com/adoptium/temurin25-binaries/"#' "$FIX/adoptium-linux-x64.json" >"$TMP/repo-bare.json"
+assert_eq 1 "$(grep -c '"link": "https://github.com/adoptium/temurin25-binaries/"' "$TMP/repo-bare.json")" "adoptium bare repository link: the sed made the link bare"
+assert_status 1 "adoptium link with nothing after the repository is refused" adoptium_parse "$TMP/repo-bare.json"
 printf '[]\n' >"$TMP/empty.json"
 assert_status 1 "adoptium empty list" adoptium_parse "$TMP/empty.json"
 

@@ -255,6 +255,17 @@ Describe 'jdk' {
             }
             Get-ReaJdkFallback -Os linux -Arch aarch64 | Should -BeNullOrEmpty
         }
+        It 'pins the real archives (measured 2026-11-28) and the captured Adoptium answer' {
+            # The test above only reads each pin back, so a stale hash or a wrong URL base would pass it.
+            $script:PIN_JDK_FALLBACK_URL_BASE | Should -BeExactly 'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/'
+            $script:PIN_JDK_FALLBACK_LINUX_X64 | Should -BeExactly 'OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz:760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0'
+            $script:PIN_JDK_FALLBACK_MAC_X64 | Should -BeExactly 'OpenJDK25U-jdk_x64_mac_hotspot_25.0.5.1_2.tar.gz:b4b96fb7b9babd1b4faab1238e1835d0d7dd77b0690d220643c749a9ac00db36'
+            $script:PIN_JDK_FALLBACK_MAC_AARCH64 | Should -BeExactly 'OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz:248353ea41be39d5d2c1c67c7ce0ae4d1668966aacd0c5308464bc1be42f677b'
+            $script:PIN_JDK_FALLBACK_WINDOWS_X64 | Should -BeExactly 'OpenJDK25U-jdk_x64_windows_hotspot_25.0.5.1_2.zip:849d380ab0a64d9098e7d3a2de28beb73841c3b255c8284f019ccd8748c5eb5b'
+            $live = ConvertFrom-ReaAdoptium -Path (Join-Path $script:Root 'tests/fixtures/adoptium-linux-x64.json')
+            $live | Should -Not -BeNullOrEmpty
+            $script:PIN_JDK_FALLBACK_LINUX_X64 | Should -BeExactly (($live.Url -split '/')[-1] + ':' + $live.Sha256)
+        }
     }
 
     Context 'Select-ReaJdk precedence' {
@@ -448,6 +459,11 @@ Describe 'jdk' {
         It 'exits 5 when the Adoptium answer fails validation' {
             $script:ApiCode = 1
             Get-Code { Install-ReaJdk } | Should -Be 5
+        }
+        It 'exits 3 and says so when the API is unreachable and the platform has no pin (linux aarch64)' {
+            Mock Resolve-ReaAdoptium { [pscustomobject]@{ Code = 2; Jdk = $null } }
+            Get-Code { Resolve-ReaJdkRelease -Os linux -Arch aarch64 } | Should -Be 3
+            Get-Content -LiteralPath $script:LogFile -Raw | Should -Match 'no JDK build for linux aarch64'
         }
         It 'exits 5 and installs nothing on an archive checksum mismatch' {
             Initialize-JdkServe -BadApi -Side none

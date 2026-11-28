@@ -140,7 +140,7 @@ Describe 'ghidra' {
             New-GhidraProperty -Dir $d -Text "application.version=$v`n"
             (Test-ReaGhidraValid -Dir $d).Valid | Should -BeTrue
         }
-        It 'refuses <v>' -ForEach @(@{ v = '12.1.4' }, @{ v = '11.3.1' }, @{ v = '12.20.0' }, @{ v = '12.2.x' }, @{ v = '' }) {
+        It 'refuses <v>' -ForEach @(@{ v = '12.1.4' }, @{ v = '11.3.1' }, @{ v = '12.20.0' }, @{ v = '12.3.0' }, @{ v = '12.3' }, @{ v = '112.2' }, @{ v = '12.2.x' }, @{ v = '' }) {
             $d = Join-Path $script:Case 'v'
             New-GhidraProperty -Dir $d -Text "application.version=$v`n"
             $r = Test-ReaGhidraValid -Dir $d

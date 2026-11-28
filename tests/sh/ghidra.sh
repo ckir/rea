@@ -110,6 +110,12 @@ mk_props "$T/v 11" 11.3.1
 assert_status 1 "valid: 11.3.1 is refused" ghidra_valid "$T/v 11"
 mk_props "$T/v 12.20" 12.20.0
 assert_status 1 "valid: 12.20.0 is not the 12.2 line" ghidra_valid "$T/v 12.20"
+mk_props "$T/v 12.3" 12.3.0
+assert_status 1 "valid: 12.3.0 is the next line, not 12.2" ghidra_valid "$T/v 12.3"
+mk_props "$T/v 12.3 bare" 12.3
+assert_status 1 "valid: 12.3 is refused" ghidra_valid "$T/v 12.3 bare"
+mk_props "$T/v 112.2" 112.2
+assert_status 1 "valid: 112.2 only ends in 12.2" ghidra_valid "$T/v 112.2"
 mk_props "$T/v 12.2x" 12.2.x
 assert_status 1 "valid: 12.2.x is refused" ghidra_valid "$T/v 12.2x"
 mk_props "$T/v empty" ""

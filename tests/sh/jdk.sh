@@ -198,6 +198,18 @@ done
 assert_status 1 "fallback: linux aarch64 has none" jdk_fallback linux aarch64
 assert_match '^jdk-25\.0\.5\.1\+2$' "$PIN_JDK_FALLBACK_RELEASE" "fallback release name"
 
+# The loop above only reads each pin back, so a stale hash or a wrong URL base would pass it. These are the real
+# archives, measured on 2026-11-28 (the downloaded files' sha256), and the live Adoptium answer captured in the fixture.
+assert_eq "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/" "$PIN_JDK_FALLBACK_URL_BASE" "fallback pin: the URL base"
+assert_eq "OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz:760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0" "$PIN_JDK_FALLBACK_LINUX_X64" "fallback pin: linux x64"
+assert_eq "OpenJDK25U-jdk_x64_mac_hotspot_25.0.5.1_2.tar.gz:b4b96fb7b9babd1b4faab1238e1835d0d7dd77b0690d220643c749a9ac00db36" "$PIN_JDK_FALLBACK_MAC_X64" "fallback pin: mac x64"
+assert_eq "OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz:248353ea41be39d5d2c1c67c7ce0ae4d1668966aacd0c5308464bc1be42f677b" "$PIN_JDK_FALLBACK_MAC_AARCH64" "fallback pin: mac aarch64"
+assert_eq "OpenJDK25U-jdk_x64_windows_hotspot_25.0.5.1_2.zip:849d380ab0a64d9098e7d3a2de28beb73841c3b255c8284f019ccd8748c5eb5b" "$PIN_JDK_FALLBACK_WINDOWS_X64" "fallback pin: windows x64"
+assert_eq "$PIN_JDK_FALLBACK_LINUX_X64" "$(
+  adoptium_parse "$ROOT/tests/fixtures/adoptium-linux-x64.json"
+  echo "${JDK_URL##*/}:$JDK_SHA256"
+)" "fallback pin: linux x64 equals the captured Adoptium answer"
+
 # --- fake release server ---
 scn_start() {
   SCN=$1
@@ -541,6 +553,28 @@ rc=0
 run_step i-down2 || rc=$?
 assert_eq 5 "$rc" "fallback: a pin whose checksum does not match is refused with 5"
 assert_eq "" "$(listing "$TOOLS_DIR")" "fallback: nothing installed on a mismatch"
+
+# --- jdk_resolve: the exit code for each way the Adoptium answer can go wrong ---
+rc=0
+(
+  LOG_FILE=$T/res-invalid.log
+  OS=linux
+  ARCH=x64
+  eval 'adoptium_resolve() { return 1; }'
+  jdk_resolve
+) >/dev/null 2>&1 || rc=$?
+assert_eq 5 "$rc" "resolve: an answer that fails validation exits 5"
+assert_match 'the Adoptium answer for linux x64 failed validation' "$(cat "$T/res-invalid.log")" "resolve: an invalid answer is logged"
+rc=0
+(
+  LOG_FILE=$T/res-noarch.log
+  OS=linux
+  ARCH=aarch64
+  eval 'adoptium_resolve() { return 2; }'
+  jdk_resolve
+) >/dev/null 2>&1 || rc=$?
+assert_eq 3 "$rc" "resolve: an unreachable API on a platform with no pin exits 3"
+assert_match 'no JDK build for linux aarch64' "$(cat "$T/res-noarch.log")" "resolve: the missing platform build is logged"
 
 # --- dry run: logs the plan, writes nothing ---
 mk_srv dry linux normal good ok

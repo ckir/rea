@@ -172,6 +172,26 @@ Describe 'setup.ps1 network layer' {
             Test-ReaJdkRelease 'jdk-25.0.5.1+2;x' | Should -BeFalse
             Test-ReaJdkRelease "jdk-25.0.5.1+2`n" | Should -BeFalse
         }
+        It 'refuses the release tag <tag>' -ForEach @(
+            @{ tag = 'jdk-26+35' }, @{ tag = 'jdk-21.0.5+11' }, @{ tag = 'jdk-250+1' }, @{ tag = 'jdk-25' },
+            @{ tag = 'jdk-25.0.6-beta+1' }, @{ tag = 'jdk-25.+1' }, @{ tag = 'jdk-25..1+2' }
+        ) {
+            Test-ReaJdkRelease $tag | Should -BeFalse
+        }
+        It 'refuses a link under the Temurin repository <repo>' -ForEach @(
+            @{ repo = 'temurin21-binaries/releases/download/jdk-25.0.5.1%2B2/x.tar.gz' },
+            @{ repo = 'temurin26-binaries/releases/download/jdk-25.0.5.1%2B2/x.tar.gz' },
+            @{ repo = 'temurin250-binaries/releases/download/jdk-25.0.5.1%2B2/x.tar.gz' },
+            @{ repo = 'temurin2-binaries/releases/download/jdk-25.0.5.1%2B2/x.tar.gz' },
+            @{ repo = 'temurin25-binaries/' }
+        ) {
+            $text = [System.IO.File]::ReadAllText((Join-Path $script:Fix 'adoptium-linux-x64.json'))
+            $link = '"link": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz",'
+            $text.Contains($link) | Should -BeTrue
+            $f = Join-Path $script:Tmp 'repo.json'
+            [System.IO.File]::WriteAllText($f, $text.Replace($link, '"link": "https://github.com/adoptium/' + $repo + '",'))
+            ConvertFrom-ReaAdoptium -Path $f | Should -BeNullOrEmpty
+        }
         It 'refuses a changed release name, link path or link host' {
             $text = [System.IO.File]::ReadAllText((Join-Path $script:Fix 'adoptium-linux-x64.json'))
             $cases = @{
