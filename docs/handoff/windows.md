@@ -39,7 +39,7 @@ Windows-specific has been run.
 - Do not use `powershell -File .\setup.ps1` without `-ExecutionPolicy Bypass` for the first run: a stock
   `Restricted` policy refuses it, which is itself the thing item 3 checks.
 - `-InstallHopper` is rejected on Windows (exit 2); do not try it.
-- A real run installs about 1.2 GB under `%LOCALAPPDATA%\rea-tools` and downloads about 778 MB.
+- A real run installs about 1.2 GB under `%LOCALAPPDATA%\rea-tools` and downloads about 711 MB.
 - `-Yes` skips the question but the disclosures are still printed.
 
 ## Items, in order (item 1 gates the rest)
@@ -86,7 +86,7 @@ Use Windows PowerShell 5.1 (`powershell.exe`) unless stated. Get the script from
    run with a deliberately long tools dir:
    `-ToolsDir C:\<a directory name padded so the full path is 70 characters> -Yes -NoLaunch` (a dry run is not
    enough, it extracts nothing). Note that the whole Ghidra zip (about 570 MB) is downloaded and verified
-   before the path check can fail. Expect exit 5 with `the longest path to extract would be`. Then a 64-character tools dir must succeed. Delete the spare
+   before the path check can fail. Expect exit 5 with `the longest path to extract would be`. Then a 66-character tools dir must succeed. Delete the spare
    directory afterwards. Report the lengths you used.
 7. **SmartScreen and antivirus.** After item 3, run `Get-ChildItem $env:LOCALAPPDATA\rea-tools\bin | Get-Item |
    Select Name,Length` and `Get-MpThreatDetection` (if Defender). Report: whether `agent-profile.exe` and
