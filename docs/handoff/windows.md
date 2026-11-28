@@ -85,8 +85,9 @@ Use Windows PowerShell 5.1 (`powershell.exe`) unless stated. Get the script from
    extraction directory; the script refuses when the result would pass 240. With `LongPathsEnabled` unset,
    run with a deliberately long tools dir:
    `-ToolsDir C:\<a directory name padded so the full path is 70 characters> -Yes -NoLaunch` (a dry run is not
-   enough, it extracts nothing). Note that the whole Ghidra zip (about 570 MB) is downloaded and verified
-   before the path check can fail. Expect exit 5 with `the longest path to extract would be`. Then a 66-character tools dir must succeed. Delete the spare
+   enough, it extracts nothing). The path check runs before the Ghidra zip (about 570 MB) is downloaded, so the
+   refusal comes at once and downloads nothing. Expect exit 5 with `the longest path to extract would be`. Then a
+   66-character tools dir must succeed (that run does download and extract the zip). Delete the spare
    directory afterwards. Report the lengths you used.
 7. **SmartScreen and antivirus.** After item 3, run `Get-ChildItem $env:LOCALAPPDATA\rea-tools\bin | Get-Item |
    Select Name,Length` and `Get-MpThreatDetection` (if Defender). Report: whether `agent-profile.exe` and
